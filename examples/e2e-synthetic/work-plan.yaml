@@ -1,0 +1,111 @@
+objective:
+  description: Apply the planned adoption change set so agent execution in this repository
+    is bounded, evidenced, and reviewable.
+  id: OBJ-ADOPT
+  title: Adopt orders-service as an AI-native execution environment
+outcomes:
+- description: Every actionable adoption change is closed with evidence.
+  id: OUT-ADOPT
+  objective_id: OBJ-ADOPT
+  title: Adoption changes applied
+packages:
+- description: Every actionable adoption change is closed with evidence.
+  id: pkg-OUT-ADOPT
+  outcome_id: OUT-ADOPT
+  title: Adoption changes applied
+  work_item_ids:
+  - wi-38a82847d273
+  - wi-9faa032e39cd
+  - wi-dcc714550913
+quality_issues: []
+schema_version: '0.1'
+work_items:
+- acceptance_criteria:
+  - CONSOLIDATE applied to instruction-surface-mentions
+  - regression evidence passes
+  authority_class: repository-write
+  consequence_class: high
+  current_facts:
+  - Adjudicate unreconciled mentions with owner authority; do not auto-prescribe
+  dependencies: []
+  escalation_conditions: []
+  id: wi-38a82847d273
+  implementation_references: []
+  objective: Apply the planned adoption change set so agent execution in this repository
+    is bounded, evidenced, and reviewable.
+  out_of_scope: []
+  required_evidence:
+  - deterministic-test
+  - repository-revision
+  rollback_boundary_id: adopt-consolidate-instruction-surface-mentions
+  runtime_external_validation_requirement: 're-read the changed repository files from
+    the working tree after the change; evidence required before closure: deterministic-test,
+    repository-revision'
+  schema_version: '0.1'
+  scope:
+  - instruction-surface-mentions
+  stop_conditions:
+  - blocked adoption path cannot be resolved within scope
+  title: 'Adopt: instruction-surface-mentions'
+  work_class: ADOPTION
+  write_scope_id: scope-consolidate-instruction-surface-mentions
+- acceptance_criteria:
+  - CONSOLIDATE applied to agent-instruction-surfaces
+  - regression evidence passes
+  authority_class: repository-write
+  consequence_class: high
+  current_facts:
+  - Consolidate deliberately; observed mentions are not normative
+  dependencies: []
+  escalation_conditions: []
+  id: wi-9faa032e39cd
+  implementation_references: []
+  objective: Apply the planned adoption change set so agent execution in this repository
+    is bounded, evidenced, and reviewable.
+  out_of_scope: []
+  required_evidence:
+  - deterministic-test
+  - repository-revision
+  rollback_boundary_id: adopt-consolidate-agent-instruction-surfaces
+  runtime_external_validation_requirement: 're-read the changed repository files from
+    the working tree after the change; evidence required before closure: deterministic-test,
+    repository-revision'
+  schema_version: '0.1'
+  scope:
+  - AGENTS.md
+  - CLAUDE.md
+  stop_conditions:
+  - blocked adoption path cannot be resolved within scope
+  title: 'Adopt: agent-instruction-surfaces'
+  work_class: ADOPTION
+  write_scope_id: scope-consolidate-agent-instruction-surfaces
+- acceptance_criteria:
+  - HARDEN applied to test-harness
+  - regression evidence passes
+  authority_class: repository-write
+  consequence_class: medium
+  current_facts:
+  - Tightening controls does not expand authority, but editing the test harness writes
+    repository files and needs bounded write policy
+  dependencies: []
+  escalation_conditions: []
+  id: wi-dcc714550913
+  implementation_references: []
+  objective: Apply the planned adoption change set so agent execution in this repository
+    is bounded, evidenced, and reviewable.
+  out_of_scope: []
+  required_evidence:
+  - deterministic-test
+  - repository-revision
+  rollback_boundary_id: adopt-harden-test-harness
+  runtime_external_validation_requirement: 're-read the changed repository files from
+    the working tree after the change; evidence required before closure: deterministic-test,
+    repository-revision'
+  schema_version: '0.1'
+  scope:
+  - Makefile
+  stop_conditions:
+  - blocked adoption path cannot be resolved within scope
+  title: 'Adopt: test-harness'
+  work_class: ADOPTION
+  write_scope_id: scope-harden-test-harness

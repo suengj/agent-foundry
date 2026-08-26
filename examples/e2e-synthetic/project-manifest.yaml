@@ -1,0 +1,141 @@
+access:
+  sensitivity: internal
+assurance:
+  required:
+  - deterministic-tests
+  - independent-review
+execution:
+  ambiguity: bounded-judgment
+  autonomy: suggest
+  concurrency: single-writer
+impact:
+  consequence: medium
+  external_effect: repository-write
+  reversibility: versioned
+observations:
+- content: observed candidate 'multiple-instruction-surfaces' for agent-rule-fragmentation
+    (not promoted to manifest field)
+  provenance:
+    confidence: 1.0
+    kind: observed
+    source_ref: .
+  subject: classification-candidate:agent-rule-fragmentation
+- content: '- uses: actions/checkout@v4'
+  provenance:
+    confidence: 0.5
+    kind: inferred
+    source_ref: .github/workflows/ci.yml
+  subject: convention-mention:ci-checkout
+- content: Do not commit generated artifacts to this repository.
+  provenance:
+    confidence: 0.5
+    kind: inferred
+    source_ref: AGENTS.md
+  subject: convention-mention:git-policy
+- content: pytest -q
+  provenance:
+    confidence: 0.5
+    kind: inferred
+    source_ref: Makefile
+  subject: convention-mention:test-invocation
+- content: Run the test suite with pytest before proposing any change.
+  provenance:
+    confidence: 0.5
+    kind: inferred
+    source_ref: AGENTS.md
+  subject: convention-mention:test-runner
+- content: Tests run under pytest. Keep the order model in `src/orders/`.
+  provenance:
+    confidence: 0.5
+    kind: inferred
+    source_ref: CLAUDE.md
+  subject: convention-mention:test-runner
+project:
+  intake_mode: brownfield
+  name: orders-service
+  primary_artifact: code
+  work_modes:
+    primary: build
+    secondary:
+    - analyze
+readiness_findings:
+- blocker: false
+  dimension: authority-ownership-clarity
+  message: Project docs or agent instruction surfaces provide ownership hints
+  provenance:
+    confidence: 0.8
+    kind: observed
+    source_ref: .
+  severity: low
+- blocker: false
+  dimension: credential-permission-isolation
+  message: Integration or credential declaration surfaces present; verify SecretRef
+    usage
+  provenance:
+    confidence: 0.85
+    kind: observed
+    source_ref: .
+  severity: medium
+- blocker: false
+  dimension: fragmented-agent-rule-surfaces
+  message: Multiple agent instruction surfaces observed; observed behavior must not
+    be treated as normative without consolidation
+  provenance:
+    confidence: 1.0
+    kind: observed
+    source_ref: AGENTS.md
+  severity: high
+- blocker: false
+  dimension: observability
+  message: Runtime observability cannot be confirmed from repository inventory alone
+  provenance:
+    confidence: 0.0
+    kind: inferred
+    source_ref: .
+  severity: medium
+- blocker: false
+  dimension: repository-legibility
+  message: Repository structure is legible within traversal bounds
+  provenance:
+    confidence: 0.9
+    kind: observed
+    source_ref: .
+  severity: low
+- blocker: false
+  dimension: reproducibility
+  message: Package or Foundry metadata surfaces support reproducible setup
+  provenance:
+    confidence: 0.75
+    kind: inferred
+    source_ref: .
+  severity: low
+- blocker: false
+  dimension: runtime-isolation
+  message: Deploy/runtime surfaces observed; isolation requirements need explicit
+    review
+  provenance:
+    confidence: 0.6
+    kind: inferred
+    source_ref: .
+  severity: medium
+- blocker: false
+  dimension: testability
+  message: Deterministic test entrypoints are observable
+  provenance:
+    confidence: 0.9
+    kind: observed
+    source_ref: .
+  severity: low
+- blocker: false
+  dimension: unreconciled-subject-mentions
+  message: Multiple agent instruction surfaces reference test-runner and have not
+    been reconciled
+  provenance:
+    confidence: 0.5
+    kind: inferred
+    source_ref: AGENTS.md
+  severity: high
+schema_version: '0.1'
+state:
+  persistence: persistent-internal
+  temporal_mode: batch

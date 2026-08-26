@@ -105,28 +105,36 @@ The first public release does **not** require:
 
 See [`docs/foundry/09-release-and-versioning.md`](docs/foundry/09-release-and-versioning.md) for the full public-release gate and compatibility policy, and [`CHANGELOG.md`](CHANGELOG.md) for user-visible evolution.
 
-## Intended end-user flow
+## End-user flow
 
-Once the V0.1 Core is implemented, the intended CLI experience is approximately:
-
-```bash
-agent-foundry inspect <project-path>
-agent-foundry profile <project-path>
-agent-foundry adopt <project-path> --preview
-agent-foundry work plan <objective>
-agent-foundry resolve <project-path>
-agent-foundry integration check <project-path>
-agent-foundry compile <work-item>
-agent-foundry render <execution-bundle>
-agent-foundry validate <artifact>
-agent-foundry reconcile <project-path>
-```
-
-A future controlled mutation surface may add:
+These commands ship today, and this is the whole list:
 
 ```bash
-agent-foundry adopt <project-path> --apply
+agent-foundry doctor [<project-path>]         # check the install, and a project if one is in scope
+agent-foundry inspect <project-path>          # read-only inventory, conventions, readiness
+agent-foundry adopt <project-path>            # ProjectManifest + AdoptionChangeSet (preview only)
+agent-foundry resolve-toolkit <project-path>  # version-pinned Project Toolkit, or a Task Toolkit
+agent-foundry integration-check <file>        # integration preflight, credentials never read
+agent-foundry compile --work-item <file> ...  # ExecutionBundle, or --render for Markdown
+agent-foundry validate <artifact> --kind ...  # run every validator that applies to one artifact
+agent-foundry version
 ```
+
+`adopt` is preview-only: it prints a plan and writes nothing. There is no `--apply`.
+
+Still intended, and **not yet built** — no subcommand exists for any of these:
+
+```text
+agent-foundry profile <project-path>       # ProjectProfile synthesis as a first-class stage
+agent-foundry work plan <objective>        # decomposition from the CLI (Python API only today)
+agent-foundry render <execution-bundle>    # standalone render (today: compile --render)
+agent-foundry reconcile <project-path>     # reconciliation from the CLI (Python API only today)
+agent-foundry adopt <project-path> --apply # controlled mutation surface
+```
+
+Everything the CLI does is a thin dispatch over the Python API; there is no logic
+behind a command that a Python caller cannot reach. See
+[`docs/foundry/v0.1-readiness-report.md`](docs/foundry/v0.1-readiness-report.md) §7.
 
 External mutations remain preview-first unless a narrower project policy explicitly grants bounded automatic authority.
 

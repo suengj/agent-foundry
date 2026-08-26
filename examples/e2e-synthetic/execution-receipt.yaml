@@ -1,0 +1,66 @@
+adapter_versions: {}
+artifact_identities:
+- digest: 2afaf8fecf4d29d766b6797ddd7435d2abf158d6238210968ca5f5a27cb6b5f0
+  kind: execution-bundle
+  ref: wi-dcc714550913/RUN-EXAMPLE-001
+  version: null
+- digest: 5edf704b39a0967d4064d03cf25f578ee2b8ff8e8f3b80e835200f135573a122
+  kind: task-toolkit
+  ref: wi-dcc714550913
+  version: null
+- digest: 83178ec754b3380aeade912bf9e2f1f646444c4c6e53c4f818e5c8d97162bd0e
+  kind: toolkit-lock
+  ref: orders-service
+  version: '>=0.1,<0.2'
+- digest: baa09e79636e90b1ad146fd255e4ebd532552c27c9f28026eb0f95320cafe4bf
+  kind: capability-registry
+  ref: builtin
+  version: '>=0.1,<0.2'
+attained_evidence_states:
+- IMPLEMENTED
+- VALIDATED
+base_revision: e2e-base-0000000000000000000000000000000000
+budget: null
+budget_profile_id: default
+budget_profile_version: 1.0.0
+candidate_revision: e2e-cand-0000000000000000000000000000000000
+cleanup_state: null
+evidence_bundle_id: EV-RUN-EXAMPLE-001
+evidence_state: VALIDATED
+execution_state: stopped
+findings: []
+finished_at: '2026-05-04T10:30:00Z'
+integrated_revision: null
+limitations:
+- evidence_class: null
+  reason: V0.1 compiles and verifies contracts; no runtime executed this bundle, so
+    evidence was supplied by the end-to-end harness
+  subject: execution runtime
+next_action: null
+not_required_evidence_states:
+- RUNTIME_APPLIED
+- RUNTIME_VERIFIED
+- USER_ACCEPTED
+permission_profile_id: repository-write-bounded
+permission_profile_version: 1.0.0
+review_decision:
+  blocking: false
+  decided_at: '2026-05-04T10:30:00Z'
+  evidence_refs:
+  - artifacts/deterministic-test.log
+  - artifacts/repository-revision.log
+  findings: []
+  implementing_role_id: builder
+  outcome: approved
+  reviewed_revision: e2e-cand-0000000000000000000000000000000000
+  reviewer_role: reviewer
+  run_id: RUN-EXAMPLE-001
+  work_item_id: wi-dcc714550913
+role_id: builder
+run_id: RUN-EXAMPLE-001
+runtime_verification_ref: null
+schema_version: '0.1'
+started_at: '2026-05-04T09:00:00Z'
+work_item_id: wi-dcc714550913
+work_lifecycle_state: in-review
+workflow_id: builder-reviewer

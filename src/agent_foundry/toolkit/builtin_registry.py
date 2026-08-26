@@ -284,7 +284,14 @@ def build_default_registry() -> CapabilityRegistry:
             triggers=SkillTriggers(
                 artifact_types=["source-code"],
                 work_modes=[PrimaryWorkMode.BUILD, PrimaryWorkMode.OPERATE],
+                # ADOPTION is here because adoption is repository-writing work: the
+                # planner marks its own HARDEN/CONSOLIDATE/MIGRATE changes
+                # `bounded-policy` precisely because applying them edits files. Without
+                # it, the only work class the adoption planner emits was the one class
+                # no write-bearing skill would accept, so a retrofit plan compiled to a
+                # read-only bundle that could not carry it out.
                 work_classes=[
+                    WorkClass.ADOPTION,
                     WorkClass.CAPABILITY,
                     WorkClass.BASELINE,
                     WorkClass.INCIDENT,
@@ -304,7 +311,11 @@ def build_default_registry() -> CapabilityRegistry:
             triggers=SkillTriggers(
                 artifact_types=["source-code"],
                 work_modes=[PrimaryWorkMode.BUILD, PrimaryWorkMode.OPERATE],
+                # Adoption units carry "regression evidence passes" as an acceptance
+                # criterion, so the class that has to produce that evidence must be
+                # able to select the skill that produces it.
                 work_classes=[
+                    WorkClass.ADOPTION,
                     WorkClass.CAPABILITY,
                     WorkClass.BASELINE,
                     WorkClass.INCIDENT,
@@ -321,7 +332,10 @@ def build_default_registry() -> CapabilityRegistry:
             provides=["validation.review"],
             required_capabilities=["validation.review"],
             triggers=SkillTriggers(
+                # An adoption change the planner marks `explicit-authority` is exactly
+                # the kind an independent-review assurance requirement is for.
                 work_classes=[
+                    WorkClass.ADOPTION,
                     WorkClass.CAPABILITY,
                     WorkClass.RESIDUAL_HARDENING,
                     WorkClass.CONTRACT_AMENDMENT,

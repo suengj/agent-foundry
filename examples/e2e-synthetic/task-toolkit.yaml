@@ -1,0 +1,127 @@
+budget_profile_ids:
+- default
+capability_ids:
+- inspection.read
+- repository.read
+- repository.write
+- validation.review
+- validation.test
+decisions:
+- action: include
+  component_id: inspection.read
+  component_kind: capability
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: required by selected task skills
+  source: work-item
+- action: include
+  component_id: repository.read
+  component_kind: capability
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: required by selected task skills
+  source: work-item
+- action: include
+  component_id: repository.write
+  component_kind: capability
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: required by selected task skills
+  source: work-item
+- action: include
+  component_id: validation.review
+  component_kind: capability
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: required by selected task skills
+  source: work-item
+- action: include
+  component_id: validation.test
+  component_kind: capability
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: required by selected task skills
+  source: work-item
+- action: include
+  component_id: work-tracker
+  component_kind: integration
+  policy_id: null
+  project_fact: work_item.authority_class=repository-write; task ceiling repository-write
+  rationale: integration preflight health authorized meets required authorized within
+    work item authority
+  source: work-item
+- action: include
+  component_id: builder
+  component_kind: role
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: required by selected task workflow or skills
+  source: work-item
+- action: include
+  component_id: explorer
+  component_kind: role
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: required by selected task workflow or skills
+  source: work-item
+- action: include
+  component_id: reviewer
+  component_kind: role
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: required by selected task workflow or skills
+  source: work-item
+- action: include
+  component_id: bounded-change
+  component_kind: skill
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: skill triggers match work item class
+  source: work-item
+- action: include
+  component_id: deterministic-test
+  component_kind: skill
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: skill triggers match work item class
+  source: work-item
+- action: include
+  component_id: independent-review
+  component_kind: skill
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: skill triggers match work item class
+  source: work-item
+- action: include
+  component_id: repository-inspection
+  component_kind: skill
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: skill triggers match work item class
+  source: work-item
+- action: include
+  component_id: builder-reviewer
+  component_kind: workflow
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: work item class ADOPTION selects workflow
+  source: work-item
+integration_ids:
+- work-tracker
+permission_profile_ids:
+- repository-write-bounded
+role_ids:
+- builder
+- explorer
+- reviewer
+schema_version: '0.1'
+skill_ids:
+- bounded-change
+- deterministic-test
+- independent-review
+- repository-inspection
+validator_ids:
+- evidence-contract
+- schema-compat
+work_item_id: wi-dcc714550913
+workflow_id: builder-reviewer

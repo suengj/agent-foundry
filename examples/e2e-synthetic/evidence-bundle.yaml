@@ -1,0 +1,36 @@
+identity:
+  base_revision: e2e-base-0000000000000000000000000000000000
+  candidate_revision: e2e-cand-0000000000000000000000000000000000
+  integrated_revision: null
+items:
+- description: null
+  evidence_class: deterministic-test
+  kind: deterministic-test
+  observed_at: '2026-05-04T10:30:00Z'
+  provenance:
+    confidence: null
+    kind: observed
+    source_ref: artifacts/deterministic-test.log
+  proves_revision: e2e-cand-0000000000000000000000000000000000
+  ref: artifacts/deterministic-test.log
+  result: pass
+- description: null
+  evidence_class: repository-revision
+  kind: repository-revision
+  observed_at: '2026-05-04T10:30:00Z'
+  provenance:
+    confidence: null
+    kind: observed
+    source_ref: artifacts/repository-revision.log
+  proves_revision: e2e-cand-0000000000000000000000000000000000
+  ref: artifacts/repository-revision.log
+  result: pass
+not_required_classes: []
+provenance:
+- confidence: null
+  kind: observed
+  source_ref: artifacts/run.log
+run_id: RUN-EXAMPLE-001
+schema_version: '0.1'
+unresolved: []
+work_item_id: wi-dcc714550913

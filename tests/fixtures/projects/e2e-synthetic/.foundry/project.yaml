@@ -1,0 +1,26 @@
+schema_version: "0.1"
+project:
+  name: orders-service
+  intake_mode: brownfield
+  work_modes:
+    primary: build
+    secondary:
+      - analyze
+  primary_artifact: code
+state:
+  persistence: persistent-internal
+  temporal_mode: batch
+impact:
+  external_effect: repository-write
+  reversibility: versioned
+  consequence: medium
+execution:
+  autonomy: suggest
+  ambiguity: bounded-judgment
+  concurrency: single-writer
+assurance:
+  required:
+    - deterministic-tests
+    - independent-review
+access:
+  sensitivity: internal

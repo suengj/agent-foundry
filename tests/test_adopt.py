@@ -549,10 +549,58 @@ def test_adopt_does_not_mutate_brownfield_fixture_tree(tmp_path: Path) -> None:
 
 
 def test_observed_conventions_are_not_promoted_to_normative_manifest_fields() -> None:
-    result = plan_adoption(inspect_project(BROWNFIELD))
+    """Nothing observed or inferred becomes a manifest field or a normative claim.
+
+    The fixture declares `execution.autonomy: suggest`, so the field is populated --
+    by the owner's declaration, which is the only evidence kind entitled to set it.
+    What must not happen is a convention mention or an inference arriving at the same
+    field, so this pins the provenance of the value rather than its absence.
+    """
+    intake = inspect_project(BROWNFIELD)
+    result = plan_adoption(intake)
     for observation in result.manifest.observations:
         assert observation.provenance.kind != ProvenanceKind.NORMATIVE
+
+    autonomy_findings = [
+        finding
+        for finding in intake.classification_findings
+        if finding.dimension == "execution.autonomy"
+    ]
+    assert autonomy_findings
+    assert all(
+        finding.provenance.kind == ProvenanceKind.DECLARED for finding in autonomy_findings
+    )
+    assert result.manifest.execution.autonomy is Autonomy.SUGGEST
+
+
+def test_foundry_artifacts_without_a_declaration_still_ask_for_one() -> None:
+    """A `.foundry/` directory is not a declaration.
+
+    The scratch-only fixture carries adoption notes under `.foundry/` and no
+    `project.yaml`. Retaining the notes is right; treating their presence as evidence
+    that the project is declared is not, because every manifest field a toolkit
+    decision reads is still unknown.
+    """
+    change_set = plan_adoption(inspect_project(FOUNDRY_SCRATCH_ONLY)).change_set
+    by_target = {
+        (change.target, change.action) for change in change_set.changes
+    }
+    assert ("foundry-artifact-surfaces", AdoptionAction.KEEP) in by_target
+    assert ("foundry-project-declaration", AdoptionAction.MIGRATE) in by_target
+
+
+def test_undeclared_dimensions_stay_unset_in_the_manifest() -> None:
+    """A dimension no one declared is not filled in from inference.
+
+    `impact.external_effect` bounds what a compiled bundle may touch. The fixture
+    without a declaration file leaves it undeclared, and inspection evidence must
+    not supply a value for it.
+    """
+    intake = inspect_project(FOUNDRY_SCRATCH_ONLY)
+    result = plan_adoption(intake)
+    assert result.manifest.impact.external_effect is None
     assert result.manifest.execution.autonomy is None
+    assert result.manifest.project.name is None
 
 
 def test_cli_adopt_json(tmp_path: Path) -> None:

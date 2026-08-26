@@ -132,18 +132,35 @@ def _scope_contained_in_bounds(compiled_scope: str, bound_scopes: list[str]) -> 
 
 
 def _forbidden_scopes(role_scopes: list[str], compiled_write_scope: list[str]) -> list[str]:
+    """Role bounds this bundle was withheld from *entirely*.
+
+    Membership is decided by containment, not by string equality. A role bound of
+    `tests/` narrowed to a grant of `tests/conftest.py` is partially granted: listing
+    the parent as forbidden produces an authority block that grants a path and forbids
+    the directory holding it, which write-scope containment validation rejects as the
+    contradiction it is. There is no path expression for "`tests/` except one file", so
+    a partially granted bound is simply not listed — the positive `write_scope` is the
+    grant, and anything outside it is denied by not appearing there.
+    """
     if not role_scopes:
         return []
-    allowed = {
+    granted = [
         path
         for path in (_normalize_scope_path(scope) for scope in compiled_write_scope)
         if path is not None
-    }
-    return sorted(
-        scope
-        for scope in role_scopes
-        if _normalize_scope_path(scope) not in allowed
-    )
+    ]
+    forbidden: list[str] = []
+    for scope in role_scopes:
+        role_path = _normalize_scope_path(scope)
+        if role_path is None:
+            continue
+        overlaps = any(
+            _is_scope_prefix(role_path, grant) or _is_scope_prefix(grant, role_path)
+            for grant in granted
+        )
+        if not overlaps:
+            forbidden.append(scope)
+    return sorted(forbidden)
 
 
 def compute_compiled_authority(

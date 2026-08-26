@@ -243,11 +243,15 @@ VALIDATOR_CLAIMS: tuple[ValidatorClaim, ...] = (
             "the bundle names work, run and role, carries an objective, acceptance "
             "criteria, required evidence, stop conditions, a compiled authority and a "
             "task toolkit, and that allowed capabilities are drawn from that toolkit, "
-            "are disjoint from the forbidden set, and agree with the authority block"
+            "are disjoint from the forbidden set, and agree with the authority block; "
+            "and that a bundle carrying repository-write authority grants at least one "
+            "write path, so it is not internally consistent and operationally empty"
         ),
         cannot_prove=(
             "that the bundle is sufficient to do the work; completeness of a contract "
-            "is not adequacy of a plan"
+            "is not adequacy of a plan. A non-empty write scope is not a *correct* "
+            "one: paths that resolve and contain, but point away from the change the "
+            "work item describes, are indistinguishable here"
         ),
         independently_derived=True,
         checks_output_of="agent_foundry.compile.api.compile_work_item",

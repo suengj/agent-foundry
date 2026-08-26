@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 from agent_foundry.models.base import FOUNDRY_SCHEMA_VERSION, SchemaCompatibilityError
 from agent_foundry.models.common import (
     AssuranceMode,
@@ -1434,7 +1436,17 @@ def _select_task_integrations(
 def _work_item_workflow_for_item(
     work_item: WorkItemContract,
     available_workflow_ids: list[str],
+    is_satisfiable: Callable[[str], bool] = lambda _workflow_id: True,
 ) -> str | None:
+    """Pick the pinned workflow this item can actually run, or None.
+
+    A workflow names the skills its shape depends on. Pinning one whose skills this
+    work item may not carry produces a Task Toolkit that declares a collaboration it
+    cannot staff — coherent-looking, and rejected downstream by toolkit-coherence
+    validation. Both the preference order and the fallback are filtered by
+    `is_satisfiable`, so "no suitable workflow" resolves to no workflow rather than
+    to whichever id sorts first.
+    """
     if not available_workflow_ids:
         return None
 
@@ -1456,11 +1468,13 @@ def _work_item_workflow_for_item(
     elif work_item.work_class == WorkClass.ADOPTION:
         preference = ["investigator-synthesis"]
 
-    available = set(available_workflow_ids)
+    available = {
+        workflow_id for workflow_id in available_workflow_ids if is_satisfiable(workflow_id)
+    }
     for workflow_id in preference:
         if workflow_id in available:
             return workflow_id
-    return sorted(available_workflow_ids)[0]
+    return sorted(available)[0] if available else None
 
 
 def resolve_task_toolkit(
@@ -1484,10 +1498,37 @@ def resolve_task_toolkit(
     selected_capabilities: set[str] = set()
     decisions: list[ResolutionDecision] = []
 
-    workflow_id = _work_item_workflow_for_item(work_item, project_lock.workflow_ids)
+    from agent_foundry.models.registry import WorkflowSpec
+
+    def _workflow_satisfiable(candidate_id: str) -> bool:
+        candidate = index["workflows"].get(candidate_id)
+        if not isinstance(candidate, WorkflowSpec):
+            return False
+        return all(
+            skill_id in project_lock.skill_ids
+            and _skill_allowed_for_work_item(work_item, skill_id, skills)
+            for skill_id in candidate.required_skills
+        )
+
+    workflow_id = _work_item_workflow_for_item(
+        work_item, project_lock.workflow_ids, _workflow_satisfiable
+    )
+    if workflow_id is None and project_lock.workflow_ids:
+        decisions.append(
+            _decision(
+                ResolutionAction.EXCLUDE,
+                "workflow",
+                sorted(project_lock.workflow_ids)[0],
+                "no pinned workflow's required skills are available to this work item",
+                ResolutionSource.WORK_ITEM,
+                project_fact=(
+                    f"work_item.work_class={work_item.work_class.value}; "
+                    f"work_item.authority_class={work_item.authority_class.value}"
+                ),
+            )
+        )
     if workflow_id is not None:
         workflow = index["workflows"].get(workflow_id)
-        from agent_foundry.models.registry import WorkflowSpec
 
         if isinstance(workflow, WorkflowSpec):
             for skill_id in workflow.required_skills:

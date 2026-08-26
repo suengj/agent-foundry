@@ -25,4 +25,8 @@ packages = ["src/agent_foundry"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# The repository root is on the path so the end-to-end suite can import its own
+# harness as `tests.e2e.pipeline`. Without it, bare `pytest` collects those modules
+# as top-level `e2e.*` and the intra-suite imports fail — which is exactly how CI
+# would run them.
+pythonpath = ["src", "."]

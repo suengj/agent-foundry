@@ -14,6 +14,7 @@ from agent_foundry.models.io import dump_json, dump_yaml
 from agent_foundry.compile import compile_work_item
 from agent_foundry.render import render_execution_bundle_markdown
 from agent_foundry.toolkit import check_integrations, resolve_task_toolkit_for_work_item, resolve_toolkit
+from agent_foundry.verify.cli_api import ARTIFACT_KINDS
 
 # Project artifacts live in a *target project*, never at a path derived from where
 # this package happens to be installed. Resolving them relative to __file__ works only
@@ -27,6 +28,13 @@ CONSTITUTION_RELPATH = Path("docs") / "ai" / "PROJECT_AGENT_CONSTITUTION.md"
 DOCTOR_OK = 0
 DOCTOR_PACKAGE_FAILED = 1
 DOCTOR_PROJECT_FAILED = 2
+
+# `validate` distinguishes "the artifact was examined and rejected" from "the
+# request could not be carried out". A caller wiring this into CI needs to fail the
+# build on the first and fix the invocation on the second.
+VALIDATE_OK = 0
+VALIDATE_REJECTED = 1
+VALIDATE_INPUT_ERROR = 2
 
 
 def find_project_root(start: Path) -> Path | None:
@@ -269,6 +277,66 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_contract(model: type, path: Path):
+    """Load one contract from YAML or JSON, chosen by file extension."""
+    from agent_foundry.models.io import load_json
+
+    data = Path(path).read_bytes()
+    if Path(path).suffix.lower() == ".json":
+        return load_json(model, data)
+    return load_yaml(model, data)
+
+
+def _cmd_validate(args: argparse.Namespace) -> int:
+    from agent_foundry.models.io import dump_json_raw, dump_yaml_raw
+    from agent_foundry.models.registry import CapabilityRegistry
+    from agent_foundry.toolkit import default_registry
+    from agent_foundry.verify.cli_api import (
+        ValidateInputError,
+        model_for_kind,
+        validate_artifact,
+    )
+
+    try:
+        model = model_for_kind(args.kind)
+        artifact = _load_contract(model, Path(args.artifact))
+        project_lock = (
+            _load_contract(ToolkitLock, Path(args.toolkit_lock)) if args.toolkit_lock else None
+        )
+        work_item = (
+            _load_contract(WorkItemContract, Path(args.work_item)) if args.work_item else None
+        )
+        registry = (
+            _load_contract(CapabilityRegistry, Path(args.registry))
+            if args.registry
+            else default_registry()
+        )
+        reports = validate_artifact(
+            args.kind,
+            artifact,
+            project_lock=project_lock,
+            registry=registry,
+            work_item=work_item,
+        )
+    except ValidateInputError as exc:
+        print(str(exc), file=sys.stderr)
+        return VALIDATE_INPUT_ERROR
+    except (OSError, ValueError) as exc:
+        print(f"could not read {args.artifact!r} as {args.kind}: {exc}", file=sys.stderr)
+        return VALIDATE_INPUT_ERROR
+
+    payload_data = [report.model_dump(mode="json") for report in reports]
+    if args.format == "json":
+        payload = dump_json_raw(payload_data)
+    else:
+        payload = dump_yaml_raw(payload_data)
+    sys.stdout.buffer.write(payload)
+
+    # A report with no findings is not an acceptance. `accepted()` is False for an
+    # empty report by construction, and that is the answer this exit code carries.
+    return VALIDATE_OK if all(report.accepted() for report in reports) else VALIDATE_REJECTED
+
+
 def _cmd_integration_check(args: argparse.Namespace) -> int:
     from agent_foundry.models import IntegrationSpec
     from agent_foundry.models.io import dump_json_raw, dump_yaml_raw, parse_json, parse_yaml
@@ -433,6 +501,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="Structured output format (default: json)",
     )
     compile_cmd.set_defaults(func=_cmd_compile)
+
+    validate_cmd = sub.add_parser(
+        "validate",
+        help="Run every published validator that applies to one contract artifact",
+        description=(
+            "Exit 0 when every report is accepted; 1 when an artifact was examined "
+            "and rejected; 2 when the request itself could not be carried out."
+        ),
+    )
+    validate_cmd.add_argument("artifact", help="Path to the contract artifact (YAML or JSON)")
+    validate_cmd.add_argument(
+        "--kind",
+        required=True,
+        choices=ARTIFACT_KINDS,
+        help="Artifact kind, which selects the validators that apply",
+    )
+    validate_cmd.add_argument(
+        "--toolkit-lock",
+        help="Path to the pinned ToolkitLock; toolkit coherence is skipped without it",
+    )
+    validate_cmd.add_argument(
+        "--work-item",
+        help="Path to the WorkItemContract; write-scope containment is skipped without it",
+    )
+    validate_cmd.add_argument(
+        "--registry",
+        help="Path to a CapabilityRegistry (defaults to the builtin registry)",
+    )
+    validate_cmd.add_argument(
+        "--format",
+        choices=("json", "yaml"),
+        default="json",
+        help="Structured output format (default: json)",
+    )
+    validate_cmd.set_defaults(func=_cmd_validate)
 
     integration_cmd = sub.add_parser(
         "integration-check",

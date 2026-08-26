@@ -5,10 +5,12 @@ from __future__ import annotations
 from enum import Enum
 from typing import TypeVar
 
+from agent_foundry.inspect.classification import DECLARED_LIST_SEPARATOR
 from agent_foundry.models.base import FOUNDRY_SCHEMA_VERSION
 from agent_foundry.models.common import (
     AccessSensitivity,
     Ambiguity,
+    AssuranceMode,
     Autonomy,
     Concurrency,
     ConsequenceClass,
@@ -108,26 +110,85 @@ def _manifest_value(
         return None
     parsed = _parse_enum(finding.value, enum_type)
     if parsed is None and finding.provenance.kind == ProvenanceKind.DECLARED:
-        source_ref = finding.provenance.source_ref or (
-            finding.evidence_refs[0] if finding.evidence_refs else "."
-        )
-        synthesis_readiness.append(
-            ReadinessFinding(
-                dimension="declared-value-invalid",
-                severity=ConsequenceClass.HIGH,
-                message=(
-                    f"Declared {dimension} value {finding.value!r} is not valid "
-                    f"(source: {source_ref})"
-                ),
-                blocker=False,
-                provenance=Provenance(
-                    kind=ProvenanceKind.DECLARED,
-                    confidence=finding.provenance.confidence,
-                    source_ref=source_ref,
-                ),
-            )
-        )
+        _record_invalid_declaration(finding, dimension, finding.value, synthesis_readiness)
     return parsed
+
+
+def _record_invalid_declaration(
+    finding: ClassificationFinding,
+    dimension: str,
+    value: str,
+    synthesis_readiness: list[ReadinessFinding],
+) -> None:
+    """Report a declared value that is not a member of its vocabulary.
+
+    The field stays unset rather than guessing: an owner who wrote a value Foundry
+    does not recognise has said something, and dropping it silently would leave the
+    manifest looking merely undeclared.
+    """
+    source_ref = finding.provenance.source_ref or (
+        finding.evidence_refs[0] if finding.evidence_refs else "."
+    )
+    synthesis_readiness.append(
+        ReadinessFinding(
+            dimension="declared-value-invalid",
+            severity=ConsequenceClass.HIGH,
+            message=(
+                f"Declared {dimension} value {value!r} is not valid "
+                f"(source: {source_ref})"
+            ),
+            blocker=False,
+            provenance=Provenance(
+                kind=ProvenanceKind.DECLARED,
+                confidence=finding.provenance.confidence,
+                source_ref=source_ref,
+            ),
+        )
+    )
+
+
+def _manifest_list(
+    grouped: dict[str, list[ClassificationFinding]],
+    dimension: str,
+    enum_type: type[E],
+    synthesis_readiness: list[ReadinessFinding],
+) -> list[E]:
+    """Promote a declared list dimension, reporting any member that is not valid.
+
+    An unrecognised member is not silently dropped and does not poison the members
+    beside it: the valid ones are kept and the invalid one raises a
+    `declared-value-invalid` readiness finding, the same treatment a scalar gets.
+    """
+    finding = _best_finding(grouped.get(dimension, []))
+    if finding is None or finding.value is None:
+        return []
+    if not _eligible_for_manifest(finding):
+        return []
+    if finding.value == "":
+        return []
+    values: list[E] = []
+    for raw in finding.value.split(DECLARED_LIST_SEPARATOR):
+        parsed = _parse_enum(raw, enum_type)
+        if parsed is None:
+            if finding.provenance.kind == ProvenanceKind.DECLARED:
+                _record_invalid_declaration(finding, dimension, raw, synthesis_readiness)
+            continue
+        values.append(parsed)
+    return values
+
+
+def _manifest_name(grouped: dict[str, list[ClassificationFinding]]) -> str | None:
+    """Promote the declared project name.
+
+    The name is a free-form identifier, not a vocabulary member, so there is no
+    value to reject — only a declaration to honour or an absence to report.
+    """
+    finding = _best_finding(grouped.get("project.name", []))
+    if finding is None or finding.value is None:
+        return None
+    if not _eligible_for_manifest(finding):
+        return None
+    return finding.value
 
 
 def _synthesis_observations(intake: ProjectIntake) -> list[ProjectObservation]:
@@ -181,28 +242,48 @@ def synthesize_manifest(intake: ProjectIntake) -> ProjectManifest:
         grouped, "primary_artifact", PrimaryArtifactState, synthesis_readiness
     )
 
-    work_modes = WorkModes(primary=primary_work_mode) if primary_work_mode is not None else None
+    secondary_work_modes = _manifest_list(
+        grouped, "secondary_work_modes", PrimaryWorkMode, synthesis_readiness
+    )
+    work_modes = (
+        WorkModes(primary=primary_work_mode, secondary=secondary_work_modes)
+        if primary_work_mode is not None or secondary_work_modes
+        else None
+    )
 
     state = ProjectState(
         persistence=_manifest_value(grouped, "state.persistence", Statefulness, synthesis_readiness),
-        temporal_mode=None,
+        temporal_mode=_manifest_value(
+            grouped, "state.temporal_mode", TemporalMode, synthesis_readiness
+        ),
     )
     impact = ProjectImpact(
         external_effect=_manifest_value(
             grouped, "impact.external_effect", ExternalEffectClass, synthesis_readiness
         ),
-        reversibility=None,
-        consequence=None,
+        reversibility=_manifest_value(
+            grouped, "impact.reversibility", Reversibility, synthesis_readiness
+        ),
+        consequence=_manifest_value(
+            grouped, "impact.consequence", ConsequenceClass, synthesis_readiness
+        ),
     )
     execution = ProjectExecution(
         autonomy=_manifest_value(grouped, "execution.autonomy", Autonomy, synthesis_readiness),
-        ambiguity=None,
-        concurrency=None,
+        ambiguity=_manifest_value(grouped, "execution.ambiguity", Ambiguity, synthesis_readiness),
+        concurrency=_manifest_value(
+            grouped, "execution.concurrency", Concurrency, synthesis_readiness
+        ),
     )
     access = ProjectAccess(
         sensitivity=_manifest_value(
             grouped, "access.sensitivity", AccessSensitivity, synthesis_readiness
         ),
+    )
+    assurance = ProjectAssurance(
+        required=_manifest_list(
+            grouped, "assurance.required", AssuranceMode, synthesis_readiness
+        )
     )
 
     readiness_findings = sorted(
@@ -213,7 +294,7 @@ def synthesize_manifest(intake: ProjectIntake) -> ProjectManifest:
     return ProjectManifest(
         schema_version=FOUNDRY_SCHEMA_VERSION,
         project=ProjectInfo(
-            name=None,
+            name=_manifest_name(grouped),
             intake_mode=intake_mode,
             work_modes=work_modes,
             primary_artifact=primary_artifact,
@@ -221,7 +302,7 @@ def synthesize_manifest(intake: ProjectIntake) -> ProjectManifest:
         state=state,
         impact=impact,
         execution=execution,
-        assurance=ProjectAssurance(required=[]),
+        assurance=assurance,
         access=access,
         observations=_synthesis_observations(intake),
         readiness_findings=readiness_findings,

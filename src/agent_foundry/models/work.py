@@ -141,6 +141,16 @@ class AdoptionGap(FoundryModel):
     target: str
     action: AdoptionAction
     rationale: str
+    scope: tuple[str, ...] = Field(default_factory=tuple)
+    """Repository paths the change touches.
+
+    `target` names a logical surface ("test-harness"), which is not a path and so
+    intersects with nothing when compiled write authority is computed. Without this,
+    an adoption Work Item compiled for a builder carried repository-write authority
+    over an empty write scope: a bundle that validates and authorizes nothing.
+    Empty stays legal — a change to a file that does not exist yet has no path to
+    name — and the resulting bundle grants no write, which is the honest outcome.
+    """
     suggested_work_class: WorkClass = WorkClass.ADOPTION
     authority_class: ExternalEffectClass = ExternalEffectClass.REPOSITORY_WRITE
     consequence_class: ConsequenceClass = ConsequenceClass.MEDIUM

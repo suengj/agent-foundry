@@ -6,6 +6,12 @@ from agent_foundry.models.execution import ExecutionBundle
 from agent_foundry.secrets import raise_on_embedded_secrets
 
 
+# How many selection records the rendered summary shows. The bundle is canonical;
+# this is a projection, and a projection that grew without bound would stop being a
+# concise agent-facing contract.
+_PROVENANCE_SUMMARY_LIMIT = 10
+
+
 def _bullet_lines(items: list[str]) -> list[str]:
     return [f"- {item}" for item in sorted(items)]
 
@@ -133,9 +139,18 @@ def render_execution_bundle_markdown(bundle: ExecutionBundle) -> str:
     ]
     if selected_provenance:
         lines.append("## Selection provenance (summary)")
-        for record in selected_provenance[:10]:
+        for record in selected_provenance[:_PROVENANCE_SUMMARY_LIMIT]:
             lines.append(
                 f"- {record.component_kind}/{record.component_id}: {record.rationale}"
+            )
+        # A summary that stops without saying so reads as the complete list. The
+        # bundle is the canonical record; this says how much of it is shown and where
+        # the rest is, rather than quietly dropping it.
+        omitted = len(selected_provenance) - _PROVENANCE_SUMMARY_LIMIT
+        if omitted > 0:
+            lines.append(
+                f"- ... and {omitted} further selection record(s); the ExecutionBundle "
+                "`provenance` field carries all of them"
             )
         lines.append("")
 

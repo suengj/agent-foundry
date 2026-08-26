@@ -187,6 +187,32 @@ def _foundry_retention_changes(intake: ProjectIntake) -> list[AdoptionChangeItem
             )
         return changes
 
+    # Nothing declares this project's characteristics, so every manifest field a
+    # toolkit decision reads is unknown and the resolved toolkit is empty. The
+    # retrofit plan has to say that out loud: without it the planner reports a clean
+    # adoption while the pipeline behind it can select nothing at all. This is keyed
+    # on the *declaration*, not on `.foundry/` being empty — a project carrying
+    # adoption notes and no `project.yaml` needs the proposal exactly as much as one
+    # carrying no `.foundry/` at all.
+    changes.append(
+        _change(
+            target="foundry-project-declaration",
+            action=AdoptionAction.MIGRATE,
+            summary=(
+                "Declare project characteristics in .foundry/project.yaml; "
+                "undeclared characteristics resolve to an empty toolkit"
+            ),
+            kind=ProvenanceKind.INFERRED,
+            authority_requirement=AuthorityRequirement.BOUNDED_POLICY,
+            status=AdoptionChangeStatus.PROPOSED,
+            rationale=(
+                "Toolkit, role and authority selection read declared project "
+                "characteristics; inference may not supply them"
+            ),
+            priority=1,
+        )
+    )
+
     artifact_observations = [
         observation
         for observation in intake.observations
@@ -374,6 +400,7 @@ def _authority_proposal_changes(
             kind=ProvenanceKind.INFERRED,
             authority_requirement=AuthorityRequirement.EXPLICIT_AUTHORITY,
             status=AdoptionChangeStatus.PROPOSED,
+            source_ref=_primary_ref([*test_refs, *ci_refs]),
             evidence_refs=[*test_refs, *ci_refs],
             confidence=0.6,
             rationale="Inference must not silently expand autonomy scope",

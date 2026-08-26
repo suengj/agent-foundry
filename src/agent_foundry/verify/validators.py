@@ -1865,6 +1865,25 @@ def validate_execution_bundle_completeness(bundle: ExecutionBundle) -> Validatio
                     f"authority write_scope {authority_scope!r}",
                 )
             )
+        # Repository-write authority *is* the set of repository paths it may touch.
+        # Granted with none, the bundle presents as write-authorized and authorizes
+        # nothing: every capability check passes, every containment check passes,
+        # and an executor holding it cannot change a single file. A contract that
+        # is internally consistent and operationally empty is the failure mode this
+        # finding exists to name, so it is reported rather than passed.
+        if (
+            authority.get("external_effect") == ExternalEffectClass.REPOSITORY_WRITE.value
+            and not bundle_scope
+        ):
+            findings.append(
+                _finding(
+                    validator_id,
+                    ValidationOutcome.BLOCKED,
+                    subject,
+                    "compiled authority is repository-write but the bundle grants no "
+                    "write path, so the bundle authorizes no change it could make",
+                )
+            )
 
     task_toolkit = data.get("task_toolkit")
     if not task_toolkit:

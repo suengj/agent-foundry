@@ -257,6 +257,12 @@ def test_read_only_work_item_compiles_on_repository_write_project():
 
 
 def test_read_only_work_item_compiles_on_publication_project():
+    """A read-only item stays read-only however much authority the project has.
+
+    The role is `explorer`: a discovery item selects no skill that a reviewer may
+    exercise, so the reviewer is not staffed for it. That the project pins a reviewer
+    for other work does not make one available here -- see the sibling test below.
+    """
     manifest = _sample_manifest(
         impact={
             "external_effect": "publication",
@@ -266,9 +272,34 @@ def test_read_only_work_item_compiles_on_publication_project():
     )
     work_item = _read_only_discovery_work_item()
     _, lock = resolve_toolkit(manifest)
-    result = compile_work_item(work_item, manifest, lock, "reviewer", "RUN-RO-PUB")
+    result = compile_work_item(work_item, manifest, lock, "explorer", "RUN-RO-PUB")
     assert result.bundle.authority.external_effect == ExternalEffectClass.READ_ONLY
     assert "builder" not in result.task_toolkit.role_ids
+
+
+def test_project_pinned_role_is_not_available_to_an_unrelated_work_item():
+    """A role in the Project Toolkit is not thereby staffed on every Work Item.
+
+    A discovery item triggers no skill the reviewer is allowed to exercise, and the
+    workflow that would require a reviewer needs skills this work class cannot carry.
+    Compiling for the reviewer anyway must fail rather than hand back a bundle naming
+    a role the task toolkit never resolved.
+    """
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "publication",
+            "reversibility": "versioned",
+            "consequence": "high",
+        }
+    )
+    _, lock = resolve_toolkit(manifest)
+    assert "reviewer" in lock.role_ids
+
+    with pytest.raises(CompileError) as excinfo:
+        compile_work_item(
+            _read_only_discovery_work_item(), manifest, lock, "reviewer", "RUN-RO-PUB-REVIEW"
+        )
+    assert "reviewer" in str(excinfo.value)
 
 
 def test_repository_write_work_item_compiles_as_control():

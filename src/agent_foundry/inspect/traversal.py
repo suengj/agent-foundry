@@ -129,6 +129,24 @@ class TraversalResult:
         )
 
 
+# The file a Python virtual environment always carries at its root, whatever the
+# directory is called. Name matching alone missed `.venv-lane`, `env`, `.direnv/python*`
+# and every other local convention, and a virtualenv holds thousands of files: the
+# traversal budget was spent inside it before the repository's own source was reached,
+# and inspection then reported "no test entrypoints observed" about a repository with
+# a full test suite. Absence of evidence produced by a truncated walk reads exactly
+# like evidence of absence, so the walk must not be truncated by an environment.
+VENV_MARKER_FILENAME = "pyvenv.cfg"
+
+
+def _is_virtualenv_dir(path: Path) -> bool:
+    """True when *path* is a Python virtual environment root, by its marker file."""
+    try:
+        return (path / VENV_MARKER_FILENAME).is_file()
+    except OSError:
+        return False
+
+
 def _should_skip_dir(name: str) -> bool:
     if name in SKIP_DIR_NAMES:
         return True
@@ -220,7 +238,7 @@ def walk_repository(
                 result.skip_refused()
                 continue
 
-            if is_dir and _should_skip_dir(child.name):
+            if is_dir and (_should_skip_dir(child.name) or _is_virtualenv_dir(resolved)):
                 result.skip_ignored_dir()
                 continue
 
