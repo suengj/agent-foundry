@@ -159,6 +159,19 @@ def _integration_work_tracker() -> IntegrationSpec:
     )
 
 
+def _integration_repository() -> IntegrationSpec:
+    return IntegrationSpec(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        id="repository",
+        kind=IntegrationKind.INTEGRATION,
+        transport=IntegrationTransport.LOCAL_SERVICE,
+        version="1",
+        capabilities=["repository.read", "repository.write"],
+        permissions=IntegrationPermissions(write_requires=AuthorityRequirement.BOUNDED_POLICY),
+        health=IntegrationHealthRequirement(required=IntegrationHealthState.CONFIGURED),
+    )
+
+
 def test_default_registry_is_small_and_inspectable() -> None:
     registry = default_registry()
     assert len(registry.roles) == 7
@@ -169,12 +182,13 @@ def test_default_registry_is_small_and_inspectable() -> None:
 
 def test_resolve_project_toolkit_from_sample_manifest() -> None:
     manifest = load_yaml(ProjectManifest, (FIXTURES / "project_manifest.yaml").read_bytes())
-    resolution, lock = resolve_toolkit(manifest)
+    resolution, lock = resolve_toolkit(manifest, integrations=[_integration_repository()])
     assert "bounded-change" in lock.skill_ids
     assert "independent-review" in lock.skill_ids
     assert "builder-reviewer" in lock.workflow_ids
     assert "runtime-verifier" in lock.role_ids
     assert "runtime.verify" in lock.capability_ids
+    assert lock.integration_ids == ["repository"]
     assert resolution.integration_health
     assert all(item.message for item in resolution.integration_health)
 
@@ -1406,3 +1420,454 @@ def test_validate_task_toolkit_against_ceiling_rejects_looser_profile() -> None:
             work_item,
             task_profiles,
         )
+
+
+# --- SUE-338: integration preflight and fail-closed integration reconciliation -------------
+
+
+def _integration_health(state: IntegrationHealthState, integration_id: str = "work-tracker") -> IntegrationHealth:
+    return IntegrationHealth(integration_id=integration_id, state=state)
+
+
+def _shared_service_manifest() -> ProjectManifest:
+    return _sample_manifest(
+        impact={
+            "external_effect": "shared-service-write",
+            "reversibility": "versioned",
+            "consequence": "medium",
+        },
+        assurance={"required": ["deterministic-tests"]},
+    )
+
+
+def _work_tracker_lock() -> ToolkitLock:
+    _, lock = resolve_toolkit(
+        _shared_service_manifest(),
+        integrations=[_integration_work_tracker()],
+        desired_integration_ids=["work-tracker"],
+    )
+    assert lock.integration_ids == ["work-tracker"]
+    return lock
+
+
+def test_task_toolkit_retains_integration_whose_preflight_health_is_sufficient() -> None:
+    lock = _work_tracker_lock()
+    work_item = _sample_work_item(authority_class="shared-service-write")
+    task = resolve_task_toolkit_for_work_item(
+        work_item,
+        lock,
+        integrations=[_integration_work_tracker()],
+        integration_health=[_integration_health(IntegrationHealthState.AUTHORIZED)],
+    )
+    assert task.integration_ids == ["work-tracker"]
+    include = [
+        decision
+        for decision in task.decisions
+        if decision.action == ResolutionAction.INCLUDE
+        and decision.component_kind == "integration"
+        and decision.component_id == "work-tracker"
+    ]
+    assert include and "authorized" in include[0].rationale
+
+
+def test_task_toolkit_subtracts_integration_whose_health_is_unavailable() -> None:
+    lock = _work_tracker_lock()
+    work_item = _sample_work_item(authority_class="shared-service-write")
+    task = resolve_task_toolkit_for_work_item(
+        work_item,
+        lock,
+        integrations=[_integration_work_tracker()],
+        integration_health=[_integration_health(IntegrationHealthState.UNAVAILABLE)],
+    )
+    assert task.integration_ids == []
+    exclude = [
+        decision
+        for decision in task.decisions
+        if decision.action == ResolutionAction.EXCLUDE
+        and decision.component_kind == "integration"
+        and decision.component_id == "work-tracker"
+    ]
+    assert exclude, "unavailable integration must be explained, not silently dropped"
+    assert "unavailable" in exclude[0].rationale
+
+
+def test_task_toolkit_subtracts_integration_when_health_is_unobserved() -> None:
+    lock = _work_tracker_lock()
+    work_item = _sample_work_item(authority_class="shared-service-write")
+    task = resolve_task_toolkit_for_work_item(
+        work_item,
+        lock,
+        integrations=[_integration_work_tracker()],
+        integration_health=[],
+    )
+    assert task.integration_ids == []
+
+
+def test_task_toolkit_subtracts_integration_exceeding_work_item_authority() -> None:
+    lock = _work_tracker_lock()
+    read_only_item = _sample_work_item(
+        authority_class="read-only",
+        work_class="DISCOVERY",
+    )
+    task = resolve_task_toolkit_for_work_item(
+        read_only_item,
+        lock,
+        integrations=[_integration_work_tracker()],
+        integration_health=[_integration_health(IntegrationHealthState.AUTHORIZED)],
+    )
+    assert task.integration_ids == []
+    exclude = [
+        decision
+        for decision in task.decisions
+        if decision.action == ResolutionAction.EXCLUDE
+        and decision.component_kind == "integration"
+        and decision.component_id == "work-tracker"
+    ]
+    assert exclude and "work.write" in exclude[0].rationale
+
+
+def test_task_toolkit_subtracts_integration_with_no_declared_spec() -> None:
+    lock = _work_tracker_lock()
+    work_item = _sample_work_item(authority_class="shared-service-write")
+    task = resolve_task_toolkit_for_work_item(
+        work_item,
+        lock,
+        integrations=[],
+        integration_health=[_integration_health(IntegrationHealthState.HEALTHY)],
+    )
+    assert task.integration_ids == []
+
+
+def test_undeclared_integration_is_not_pinned_in_project_lock() -> None:
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "read-only",
+            "reversibility": "trivial",
+            "consequence": "low",
+        },
+        assurance={"required": []},
+    )
+    _, lock = resolve_toolkit(manifest, desired_integration_ids=["work-tracker"])
+    assert lock.integration_ids == []
+    exclude = [
+        decision
+        for decision in lock.decisions
+        if decision.action == ResolutionAction.EXCLUDE
+        and decision.component_kind == "integration"
+        and decision.component_id == "work-tracker"
+    ]
+    assert exclude and "no IntegrationSpec declared" in exclude[0].rationale
+
+
+def test_absent_integration_spec_is_never_wider_than_a_supplied_one() -> None:
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "read-only",
+            "reversibility": "trivial",
+            "consequence": "low",
+        },
+        assurance={"required": []},
+    )
+    _, without_spec = resolve_toolkit(manifest, desired_integration_ids=["work-tracker"])
+    _, with_spec = resolve_toolkit(
+        manifest,
+        integrations=[_integration_work_tracker()],
+        desired_integration_ids=["work-tracker"],
+    )
+    assert set(without_spec.integration_ids) <= set(with_spec.integration_ids)
+    assert without_spec.integration_ids == []
+
+
+def test_lock_ceiling_validator_rejects_integration_with_no_declared_spec() -> None:
+    registry = build_default_registry()
+    forged = ToolkitLock(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        project_name="forged",
+        integration_ids=["work-tracker"],
+    )
+    with pytest.raises(ToolkitResolutionError, match="no declared IntegrationSpec"):
+        validate_toolkit_lock_against_ceiling(
+            forged,
+            registry,
+            ExternalEffectClass.PUBLICATION,
+            integrations=[],
+        )
+
+
+# --- SUE-338: registry-load guards --------------------------------------------------------
+
+
+def test_effect_keyed_policy_requirement_without_sibling_is_rejected() -> None:
+    registry = build_default_registry()
+    orphan = PolicyRule(
+        id="publication-only-requirement",
+        description="Requires a skill only for publication projects",
+        when=PolicyPredicate(external_effect=ExternalEffectClass.PUBLICATION),
+        require_skills=["deterministic-test"],
+    )
+    bad_registry = registry.model_copy(
+        update={"policy_rules": [*registry.policy_rules, orphan]}
+    )
+    with pytest.raises(
+        ToolkitResolutionError,
+        match="lacks read-only or effect-agnostic sibling",
+    ):
+        resolve_toolkit(_sample_manifest(), registry=bad_registry)
+
+
+def test_effect_keyed_policy_requirement_with_sibling_is_accepted() -> None:
+    registry = build_default_registry()
+    effect_rule = PolicyRule(
+        id="publication-only-requirement",
+        description="Requires a skill for publication projects",
+        when=PolicyPredicate(external_effect=ExternalEffectClass.PUBLICATION),
+        require_skills=["deterministic-test"],
+    )
+    sibling = PolicyRule(
+        id="read-only-sibling-requirement",
+        description="Same requirement for read-only projects",
+        when=PolicyPredicate(external_effect=ExternalEffectClass.READ_ONLY),
+        require_skills=["deterministic-test"],
+    )
+    good_registry = registry.model_copy(
+        update={"policy_rules": [*registry.policy_rules, effect_rule, sibling]}
+    )
+    _, lock = resolve_toolkit(_sample_manifest(), registry=good_registry)
+    assert "deterministic-test" in lock.skill_ids
+
+
+def test_registry_without_validators_fails_closed_instead_of_pinning_names() -> None:
+    registry = build_default_registry()
+    bad_registry = registry.model_copy(update={"validators": []})
+    with pytest.raises(ToolkitResolutionError, match="missing mandatory validator"):
+        resolve_toolkit(_sample_manifest(), registry=bad_registry)
+
+
+def test_registry_missing_only_evidence_validator_fails_closed() -> None:
+    registry = build_default_registry()
+    remaining = [item for item in registry.validators if item.id != "evidence-contract"]
+    bad_registry = registry.model_copy(update={"validators": remaining})
+    with pytest.raises(ToolkitResolutionError, match="evidence-contract"):
+        resolve_toolkit(_sample_manifest(), registry=bad_registry)
+
+
+def test_toolkit_lock_pins_validator_versions() -> None:
+    _, lock = resolve_toolkit(_sample_manifest())
+    assert lock.validator_ids
+    assert set(lock.validator_versions) == set(lock.validator_ids)
+    registry_versions = {item.id: item.version for item in build_default_registry().validators}
+    for validator_id, version in lock.validator_versions.items():
+        assert version == registry_versions[validator_id]
+
+
+# --- SUE-338: fail-closed unknown capability ids and helper defaults ----------------------
+
+
+def test_unknown_capability_id_fail_closed_against_read_only_ceiling() -> None:
+    from agent_foundry.models.registry import RoleContract
+
+    registry = build_default_registry()
+    ghost_role = RoleContract(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        id="ghost-role",
+        version="1.0.0",
+        description="Role allowing a capability that has no CapabilitySpec",
+        allowed_capabilities=["ghost.capability"],
+    )
+    assert all(item.id != "ghost.capability" for item in registry.capabilities)
+    registry = registry.model_copy(update={"roles": [*registry.roles, ghost_role]})
+    registry = registry.model_copy(
+        update={
+            "policy_rules": [
+                *registry.policy_rules,
+                PolicyRule(
+                    id="test-require-ghost-role",
+                    description="test",
+                    when=PolicyPredicate(),
+                    require_roles=["ghost-role"],
+                ),
+            ]
+        }
+    )
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "read-only",
+            "reversibility": "trivial",
+            "consequence": "low",
+        },
+        assurance={"required": []},
+    )
+    with pytest.raises(PolicyViolationError, match="policy-required roles unsatisfiable: ghost-role"):
+        resolve_toolkit(manifest, registry=registry)
+
+
+def test_capability_helper_defaults_to_publication_when_effect_omitted() -> None:
+    from agent_foundry.toolkit.builtin_registry import _cap
+
+    spec = _cap("unclassified.capability", "Capability added without stating its effect")
+    assert spec.min_external_effect == ExternalEffectClass.PUBLICATION
+    assert EFFECT_RANK[spec.min_external_effect] == max(EFFECT_RANK.values())
+
+
+def test_min_external_effect_documents_the_axis_it_measures() -> None:
+    description = CapabilitySpec.model_fields["min_external_effect"].description
+    assert description is not None
+    assert "read-only" in description
+
+
+# --- SUE-338: work.read is a read, not a write --------------------------------------------
+
+
+def test_work_read_is_read_only_and_work_write_is_shared_service_write() -> None:
+    by_id = {item.id: item for item in build_default_registry().capabilities}
+    assert by_id["work.read"].min_external_effect == ExternalEffectClass.READ_ONLY
+    assert by_id["work.write"].min_external_effect == ExternalEffectClass.SHARED_SERVICE_WRITE
+    assert (
+        by_id["work.read"].min_external_effect == by_id["runtime.verify"].min_external_effect
+    ), "reading an external system is classified the same way regardless of which system"
+
+
+# --- SUE-338 follow-up: absent health evidence is not a health observation ----------------
+
+
+def _integration_no_auth(required: IntegrationHealthState) -> IntegrationSpec:
+    """Integration declaring no auth — the shape that used to self-report as configured."""
+    return IntegrationSpec(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        id="repository",
+        kind=IntegrationKind.INTEGRATION,
+        transport=IntegrationTransport.LOCAL_SERVICE,
+        version="1",
+        capabilities=["repository.read", "repository.write"],
+        permissions=IntegrationPermissions(write_requires=AuthorityRequirement.BOUNDED_POLICY),
+        auth=None,
+        health=IntegrationHealthRequirement(required=required),
+    )
+
+
+def _repository_write_manifest() -> ProjectManifest:
+    return _sample_manifest(
+        impact={
+            "external_effect": "repository-write",
+            "reversibility": "versioned",
+            "consequence": "medium",
+        },
+        assurance={"required": ["deterministic-tests"]},
+    )
+
+
+def _repository_lock(spec: IntegrationSpec) -> ToolkitLock:
+    _, lock = resolve_toolkit(_repository_write_manifest(), integrations=[spec])
+    assert lock.integration_ids == ["repository"]
+    return lock
+
+
+def test_unobserved_integration_without_auth_is_not_reported_configured() -> None:
+    spec = _integration_no_auth(IntegrationHealthState.CONFIGURED)
+    health = check_integrations([spec], required_ids=["repository"], observed_health=[])
+    assert health[0].state != IntegrationHealthState.CONFIGURED
+    assert health[0].state == IntegrationHealthState.DESIRED
+    assert "not observed" in (health[0].message or "")
+
+
+def test_unobserved_integration_without_auth_does_not_reach_task_toolkit() -> None:
+    spec = _integration_no_auth(IntegrationHealthState.CONFIGURED)
+    lock = _repository_lock(spec)
+    work_item = _sample_work_item(authority_class="repository-write")
+    task = resolve_task_toolkit_for_work_item(
+        work_item,
+        lock,
+        integrations=[spec],
+        integration_health=[],
+    )
+    assert task.integration_ids == []
+    exclude = [
+        decision
+        for decision in task.decisions
+        if decision.action == ResolutionAction.EXCLUDE
+        and decision.component_kind == "integration"
+        and decision.component_id == "repository"
+    ]
+    assert exclude and "desired" in exclude[0].rationale
+
+
+def test_auth_shape_does_not_decide_unobserved_health_state() -> None:
+    """The declaration shape says nothing about the world; only the diagnostic differs."""
+    without_auth = _integration_no_auth(IntegrationHealthState.CONFIGURED)
+    with_auth = _integration_work_tracker()
+
+    no_auth_health = check_integrations(
+        [without_auth], required_ids=["repository"], observed_health=[]
+    )[0]
+    auth_health = check_integrations(
+        [with_auth], required_ids=["work-tracker"], observed_health=[]
+    )[0]
+
+    assert no_auth_health.state == auth_health.state == IntegrationHealthState.DESIRED
+    assert no_auth_health.message != auth_health.message
+
+
+def test_declared_no_health_bar_is_distinct_from_unobserved_health() -> None:
+    """Absent evidence and a declared "no verification needed" are different states.
+
+    Same absent evidence on the observation side; the outcome is decided by what the
+    IntegrationSpec actually declared, never by what was left unsaid.
+    """
+    work_item = _sample_work_item(authority_class="repository-write")
+
+    bar_declared = _integration_no_auth(IntegrationHealthState.CONFIGURED)
+    unobserved = resolve_task_toolkit_for_work_item(
+        work_item,
+        _repository_lock(bar_declared),
+        integrations=[bar_declared],
+        integration_health=[],
+    )
+    assert unobserved.integration_ids == [], "unobserved health must not clear a declared bar"
+
+    no_bar = _integration_no_auth(IntegrationHealthState.DESIRED)
+    waived = resolve_task_toolkit_for_work_item(
+        work_item,
+        _repository_lock(no_bar),
+        integrations=[no_bar],
+        integration_health=[],
+    )
+    assert waived.integration_ids == ["repository"], (
+        "health.required=desired is the explicit declared way to waive verification"
+    )
+
+    observed = resolve_task_toolkit_for_work_item(
+        work_item,
+        _repository_lock(bar_declared),
+        integrations=[bar_declared],
+        integration_health=[
+            IntegrationHealth(
+                integration_id="repository",
+                state=IntegrationHealthState.CONFIGURED,
+            )
+        ],
+    )
+    assert observed.integration_ids == ["repository"], "a real observation clears the bar"
+
+
+def test_project_lock_pins_declared_integration_independently_of_volatile_health() -> None:
+    """The lock is the approved universe and must stay reproducible.
+
+    Health is volatile, so gating the lock on it would make one manifest resolve
+    differently run to run. Subtraction of unusable integrations happens at task time
+    (docs/foundry/04 §4), which is what the preceding tests pin down.
+    """
+    spec = _integration_no_auth(IntegrationHealthState.CONFIGURED)
+    manifest = _repository_write_manifest()
+    _, unobserved_lock = resolve_toolkit(manifest, integrations=[spec])
+    _, observed_lock = resolve_toolkit(
+        manifest,
+        integrations=[spec],
+        integration_health=[
+            IntegrationHealth(
+                integration_id="repository",
+                state=IntegrationHealthState.HEALTHY,
+            )
+        ],
+    )
+    assert unobserved_lock.integration_ids == observed_lock.integration_ids == ["repository"]
+    assert dump_json(unobserved_lock) == dump_json(observed_lock)

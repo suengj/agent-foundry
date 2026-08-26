@@ -220,10 +220,12 @@ def build_default_registry() -> CapabilityRegistry:
             min_external_effect=ExternalEffectClass.READ_ONLY,
         ),
         _cap(
+            # Reading a tracker changes nothing outside the working tree, so it sits
+            # on the same rung as runtime.verify. See CapabilitySpec.min_external_effect.
             "work.read",
             "Read work tracker state",
             tags=["work"],
-            min_external_effect=ExternalEffectClass.SHARED_SERVICE_WRITE,
+            min_external_effect=ExternalEffectClass.READ_ONLY,
         ),
         _cap(
             "work.write",

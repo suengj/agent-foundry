@@ -19,7 +19,33 @@ class CapabilitySpec(VersionedContract):
     description: str
     tags: list[str] = Field(default_factory=list)
     provides: list[str] = Field(default_factory=list)
-    min_external_effect: ExternalEffectClass = ExternalEffectClass.PUBLICATION
+    min_external_effect: ExternalEffectClass = Field(
+        default=ExternalEffectClass.PUBLICATION,
+        description=(
+            "Axis: the class of state this capability can change outside the repository "
+            "working tree. Read-only access to an external system is read-only; the "
+            "non-read-only classes name where a change lands."
+        ),
+    )
+    """Lowest external-effect ceiling under which this capability may be exercised.
+
+    The axis is *effect on state outside this repository working tree*, not
+    "does it touch an external system" and not "how expensive is it". A
+    capability that only reads — however remote or privileged the thing it reads —
+    is ``read-only``; a capability is classified above ``read-only`` only when
+    exercising it can change state somewhere, and the class names where that
+    change lands (repository working tree, shared service, stored data, running
+    runtime, published artifact).
+
+    Reading a work tracker is therefore ``read-only`` and writing one is
+    ``shared-service-write``, exactly as verifying a runtime is ``read-only``
+    while mutating it is ``runtime-mutation``.
+
+    Resolution treats this as a fail-closed floor: a capability whose spec is
+    absent from the registry, or whose value is omitted, is treated as
+    ``publication`` (the maximum) so that missing metadata tightens rather than
+    widens. Declare the value explicitly.
+    """
 
 
 class SkillTriggers(FoundryModel):

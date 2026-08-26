@@ -22,6 +22,20 @@ def health_state_rank(state: IntegrationHealthState) -> int:
 
 
 def meets_required_health(actual: IntegrationHealthState, required: IntegrationHealthState) -> bool:
+    """Does an observed lifecycle state clear the bar an IntegrationSpec declared?
+
+    Two different things meet here and must not be confused:
+
+    - ``actual`` is what preflight could **establish about the world**. Only states from
+      ``available`` upward are positive establishments. ``desired`` means nothing has been
+      confirmed yet, and ``unavailable`` means confirmed unusable; neither clears any bar
+      above ``desired``.
+    - ``required`` is the bar the project **declared** in ``IntegrationSpec.health``.
+      Declaring ``required: desired`` is the one supported way to say "this integration
+      needs no health verification". It is a decision recorded in configuration, not an
+      inference drawn from missing data, and it is the only path on which an unobserved
+      integration resolves.
+    """
     if actual == IntegrationHealthState.UNAVAILABLE:
         return False
     if required == IntegrationHealthState.HEALTHY:
@@ -56,17 +70,28 @@ def preflight_integrations(
         if observed_item is not None:
             state = observed_item.state
             message = observed_item.message
-        elif spec.auth is None:
-            state = IntegrationHealthState.CONFIGURED
-            message = "no auth required; configured by declaration"
         else:
+            # Nothing observed this integration. docs/foundry/04 §12: presence in
+            # configuration is not equivalent to usability, so the declaration cannot
+            # supply a lifecycle state it never established. The shape of `auth` says
+            # something about the declaration and nothing about the world; deriving
+            # `configured` from `auth is None` let an unchecked integration clear a bar
+            # it was never measured against. Unobserved is `desired` either way, and the
+            # auth shape only changes the diagnostic.
             state = IntegrationHealthState.DESIRED
-            message = "credential reference present; authentication not verified"
+            message = (
+                "declared without auth; health not observed"
+                if spec.auth is None
+                else "credential reference present; health not observed"
+            )
 
         required = spec.health.required
         if not meets_required_health(state, required):
             if state == IntegrationHealthState.DESIRED:
-                message = f"required health {required.value}; currently desired only"
+                message = (
+                    f"required health {required.value}; nothing established beyond desired"
+                    f" ({message})"
+                )
             elif state == IntegrationHealthState.AUTHENTICATED and required == IntegrationHealthState.AUTHORIZED:
                 message = "authenticated but not authorized for required scope"
             else:

@@ -379,6 +379,8 @@ def compile_work_item(
         registry=reg,
         permission_profiles=profiles,
         budget_profiles=budgets,
+        integrations=integration_list,
+        integration_health=health_list,
     )
 
     if not _role_compatible_with_task(role_id, task_toolkit, project_lock, reg):

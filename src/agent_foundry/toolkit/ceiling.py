@@ -159,14 +159,20 @@ def validate_toolkit_lock_against_ceiling(
 
     for integration_id in lock.integration_ids:
         spec = integration_specs.get(integration_id)
-        if spec is not None:
-            for capability_id in spec.capabilities:
-                min_effect = capability_min_external_effect(capability_id, capabilities_by_id)
-                if exceeds_permission_ceiling(min_effect, ceiling):
-                    raise ToolkitResolutionError(
-                        f"lock integration {integration_id!r} capability {capability_id!r} "
-                        f"with min_external_effect {min_effect.value} above ceiling {ceiling.value}"
-                    )
+        if spec is None:
+            # Skipping the undeclared case would make the absent spec the widest input to
+            # this chokepoint. An id can only be pinned once its capabilities are declared.
+            raise ToolkitResolutionError(
+                f"lock integration {integration_id!r} has no declared IntegrationSpec; "
+                "capabilities cannot be checked against the ceiling"
+            )
+        for capability_id in spec.capabilities:
+            min_effect = capability_min_external_effect(capability_id, capabilities_by_id)
+            if exceeds_permission_ceiling(min_effect, ceiling):
+                raise ToolkitResolutionError(
+                    f"lock integration {integration_id!r} capability {capability_id!r} "
+                    f"with min_external_effect {min_effect.value} above ceiling {ceiling.value}"
+                )
 
     if lock.permission_external_effect is not None:
         if exceeds_permission_ceiling(lock.permission_external_effect, ceiling):
@@ -182,6 +188,8 @@ def validate_task_toolkit_against_ceiling(
     registry: CapabilityRegistry,
     work_item: WorkItemContract,
     permission_profiles: list[PermissionProfile],
+    *,
+    integrations: list[IntegrationSpec] = [],
 ) -> None:
     """Validate a finished task toolkit against pinned profile and work-item authority."""
     profile_by_id = {profile.id: profile for profile in permission_profiles}
@@ -227,6 +235,26 @@ def validate_task_toolkit_against_ceiling(
             if exceeds_permission_ceiling(ExternalEffectClass.REPOSITORY_WRITE, ceiling):
                 raise ToolkitResolutionError(
                     f"task skill {skill_id!r} external_write exceeds task ceiling {ceiling.value}"
+                )
+
+    integration_specs = {spec.id: spec for spec in integrations}
+    for integration_id in task.integration_ids:
+        if integration_id not in project_lock.integration_ids:
+            raise ToolkitResolutionError(
+                f"task integration {integration_id!r} not in project lock"
+            )
+        spec = integration_specs.get(integration_id)
+        if spec is None:
+            raise ToolkitResolutionError(
+                f"task integration {integration_id!r} has no declared IntegrationSpec"
+            )
+        for capability_id in spec.capabilities:
+            min_effect = capability_min_external_effect(capability_id, capabilities_by_id)
+            if exceeds_permission_ceiling(min_effect, ceiling):
+                raise ToolkitResolutionError(
+                    f"task integration {integration_id!r} capability {capability_id!r} "
+                    f"with min_external_effect {min_effect.value} above task ceiling "
+                    f"{ceiling.value}"
                 )
 
     if task.workflow_id is not None and task.workflow_id not in project_lock.workflow_ids:
