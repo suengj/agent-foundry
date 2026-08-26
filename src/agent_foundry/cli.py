@@ -108,23 +108,27 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
     print("== project check ==")
     explicit = getattr(args, "project_path", None)
+    project_failed = False
     if explicit is not None:
         project_root: Path | None = Path(explicit)
-        if not project_root.is_dir():
+        if project_root.is_dir():
+            project_failed = _report(_project_check(project_root))
+        else:
             print(f"[FAIL] project root: {project_root} is not a directory")
-            return DOCTOR_PROJECT_FAILED
+            project_failed = True
     else:
         project_root = find_project_root(Path.cwd())
+        if project_root is None:
+            # Not being inside a Foundry-managed project is a normal state for an
+            # installed package, not a broken one. Say so rather than failing.
+            print("[skip] no Foundry-managed project found from the current directory")
+            print("       pass a path (agent-foundry doctor PROJECT_PATH) to check one")
+        else:
+            project_failed = _report(_project_check(project_root))
 
-    if project_root is None:
-        # Not being inside a Foundry-managed project is a normal state for an
-        # installed package, not a broken one. Say so rather than failing.
-        print("[skip] no Foundry-managed project found from the current directory")
-        print("       pass a path (agent-foundry doctor PROJECT_PATH) to check one")
-        return DOCTOR_PACKAGE_FAILED if package_failed else DOCTOR_OK
-
-    project_failed = _report(_project_check(project_root))
-
+    # A broken installation outranks a project finding: whatever the project check
+    # reported was produced by code that cannot be trusted, so it must not be the
+    # code the caller sees. Every exit path honours this ordering.
     if package_failed:
         return DOCTOR_PACKAGE_FAILED
     return DOCTOR_PROJECT_FAILED if project_failed else DOCTOR_OK

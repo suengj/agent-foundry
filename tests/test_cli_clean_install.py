@@ -151,3 +151,65 @@ def test_non_editable_install_runs_from_an_unrelated_directory(tmp_path: Path):
     )
     assert scoped.returncode == 0, scoped.stdout + scoped.stderr
     assert "[FAIL]" not in scoped.stdout
+
+
+_BROKEN_PACKAGE_DRIVER = """
+import sys
+import agent_foundry.cli as cli
+
+# Simulate a broken installation without adding a test hook to shipping code:
+# the self-check reports a failure, everything downstream is the real thing.
+cli._package_self_check = lambda: [("package version", False, "simulated breakage")]
+sys.exit(cli.main(["doctor", *sys.argv[1:]]))
+"""
+
+
+@pytest.mark.parametrize(
+    ("argv_suffix", "cwd_kind"),
+    [
+        ([], "outside"),             # the [skip] path
+        ([], "repo"),                # a discovered project
+        (["<missing>"], "outside"),  # explicit path that is not a directory
+        (["<tmp>"], "outside"),      # explicit directory lacking artifacts
+    ],
+)
+def test_broken_installation_always_outranks_any_project_finding(
+    tmp_path: Path, argv_suffix: list[str], cwd_kind: str
+):
+    """Exit 1 must win on every path.
+
+    A project verdict produced by a broken installation was produced by code that
+    cannot be trusted, so it must never be the code the caller sees. The earlier
+    version returned 2 for an invalid explicit path before ever consulting the
+    package result.
+    """
+    driver = tmp_path / "broken_driver.py"
+    driver.write_text(_BROKEN_PACKAGE_DRIVER)
+
+    resolved = [
+        str(tmp_path / "definitely-not-here")
+        if arg == "<missing>"
+        else str(tmp_path)
+        if arg == "<tmp>"
+        else arg
+        for arg in argv_suffix
+    ]
+    cwd = REPO_ROOT if cwd_kind == "repo" else tmp_path
+
+    result = _run(
+        [sys.executable, str(driver), *resolved], cwd=cwd, env=_src_env()
+    )
+    assert result.returncode == 1, (
+        f"expected exit 1 for a broken package, got {result.returncode}\n"
+        f"{result.stdout}{result.stderr}"
+    )
+
+
+def test_healthy_package_still_reports_project_failures_distinctly(tmp_path: Path):
+    """The precedence rule must not swallow a real project finding."""
+    result = _run(
+        [sys.executable, "-m", "agent_foundry", "doctor", str(tmp_path)],
+        cwd=tmp_path,
+        env=_src_env(),
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
