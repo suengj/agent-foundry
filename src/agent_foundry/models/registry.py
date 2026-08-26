@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from pydantic import Field
 
 from agent_foundry.models.base import FoundryModel, VersionedContract
+from agent_foundry.models.common import ExternalEffectClass, PrimaryWorkMode, WorkClass
+from agent_foundry.models.policy import PolicyRule
 
 
 class CapabilitySpec(VersionedContract):
@@ -14,6 +18,24 @@ class CapabilitySpec(VersionedContract):
     version: str
     description: str
     tags: list[str] = Field(default_factory=list)
+    provides: list[str] = Field(default_factory=list)
+    min_external_effect: ExternalEffectClass = ExternalEffectClass.PUBLICATION
+
+
+class SkillTriggers(FoundryModel):
+    """Compact trigger metadata for skill discovery without loading full Skill text."""
+
+    artifact_types: list[str] = Field(default_factory=list)
+    work_modes: list[PrimaryWorkMode] = Field(default_factory=list)
+    work_classes: list[WorkClass] = Field(default_factory=list)
+
+
+class SkillPermissions(FoundryModel):
+    external_write: bool = False
+
+
+class SkillRoleConstraint(FoundryModel):
+    allowed: list[str] = Field(default_factory=list)
 
 
 class SkillSpec(VersionedContract):
@@ -22,7 +44,13 @@ class SkillSpec(VersionedContract):
     id: str
     version: str
     description: str
+    provides: list[str] = Field(default_factory=list)
     required_capabilities: list[str] = Field(default_factory=list)
+    triggers: SkillTriggers = Field(default_factory=SkillTriggers)
+    roles: SkillRoleConstraint = Field(default_factory=SkillRoleConstraint)
+    permissions: SkillPermissions = Field(default_factory=SkillPermissions)
+    inputs: list[str] = Field(default_factory=list)
+    outputs: list[str] = Field(default_factory=list)
 
 
 class WorkflowSpec(VersionedContract):
@@ -32,6 +60,8 @@ class WorkflowSpec(VersionedContract):
     version: str
     description: str
     node_ids: list[str] = Field(default_factory=list)
+    required_roles: list[str] = Field(default_factory=list)
+    required_skills: list[str] = Field(default_factory=list)
 
 
 class RoleContract(VersionedContract):
@@ -42,3 +72,66 @@ class RoleContract(VersionedContract):
     description: str
     allowed_capabilities: list[str] = Field(default_factory=list)
     write_scope: list[str] = Field(default_factory=list)
+
+
+class ToolConnectorKind(StrEnum):
+    TOOL = "tool"
+    CONNECTOR = "connector"
+
+
+class ToolConnectorSpec(VersionedContract):
+    """Tool or connector metadata — no live SDK binding."""
+
+    id: str
+    version: str
+    description: str
+    kind: ToolConnectorKind
+    capabilities: list[str] = Field(default_factory=list)
+    transport: str | None = None
+
+
+class ValidatorSpec(VersionedContract):
+    """Validator metadata for evidence and contract checks."""
+
+    id: str
+    version: str
+    description: str
+    validates: list[str] = Field(default_factory=list)
+
+
+class PermissionProfileRef(FoundryModel):
+    """Registry reference to a permission profile id."""
+
+    id: str
+    version: str
+
+
+class BudgetProfileRef(FoundryModel):
+    """Registry reference to a budget profile id."""
+
+    id: str
+    version: str
+
+
+class IntegrationRegistryEntry(FoundryModel):
+    """Integration id pinned in the registry — declaration lives in integrations config."""
+
+    id: str
+    adapter_version: str
+
+
+class CapabilityRegistry(VersionedContract):
+    """Inspectable global capability catalog — small and version-pinned."""
+
+    foundry_compat: str
+    capabilities: list[CapabilitySpec] = Field(default_factory=list)
+    skills: list[SkillSpec] = Field(default_factory=list)
+    workflows: list[WorkflowSpec] = Field(default_factory=list)
+    roles: list[RoleContract] = Field(default_factory=list)
+    tools: list[ToolConnectorSpec] = Field(default_factory=list)
+    connectors: list[ToolConnectorSpec] = Field(default_factory=list)
+    validators: list[ValidatorSpec] = Field(default_factory=list)
+    permission_profiles: list[PermissionProfileRef] = Field(default_factory=list)
+    budget_profiles: list[BudgetProfileRef] = Field(default_factory=list)
+    integrations: list[IntegrationRegistryEntry] = Field(default_factory=list)
+    policy_rules: list[PolicyRule] = Field(default_factory=list)
