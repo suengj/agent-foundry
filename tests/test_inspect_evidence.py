@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from agent_foundry.inspect import inspect_project
+from agent_foundry.inspect.conventions import strip_trailing_comment
 from agent_foundry.models.common import IntakeMode, ProvenanceKind
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -124,6 +125,183 @@ def test_every_convention_evidence_is_a_line_of_its_source_file() -> None:
             f"{convention.subject} evidence {convention.evidence!r} is not a line of "
             f"{convention.source_ref}"
         )
+
+
+# --- Item 1 (cont.): inert text cannot support a claim about effective behaviour ---
+
+
+def _makefile_repo(tmp_path: Path, name: str, body: str) -> Path:
+    repo = tmp_path / name
+    repo.mkdir()
+    (repo / "Makefile").write_text(body, encoding="utf-8")
+    return repo
+
+
+def _workflow_repo(tmp_path: Path, name: str, body: str) -> Path:
+    repo = tmp_path / name
+    workflows = repo / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(body, encoding="utf-8")
+    return repo
+
+
+def test_commented_out_pytest_recipe_line_invokes_nothing(tmp_path: Path) -> None:
+    """A shell comment executes nothing, so it cannot support an invocation claim."""
+    commented = _makefile_repo(
+        tmp_path, "commented", "test:\n\t# pytest -q --this-is-a-shell-comment\n\ttrue\n"
+    )
+    live = _makefile_repo(
+        tmp_path, "live", "test:\n\tpytest -q --this-is-a-shell-comment\n\ttrue\n"
+    )
+    assert _conventions(inspect_project(commented), "test-invocation") == []
+    assert [c.evidence for c in _conventions(inspect_project(live), "test-invocation")] == [
+        "pytest -q --this-is-a-shell-comment"
+    ]
+
+
+def test_make_silent_prefix_does_not_hide_a_comment(tmp_path: Path) -> None:
+    """make strips '@' before the shell sees the line, so '@# pytest' is still a comment."""
+    silent = _makefile_repo(tmp_path, "silent", "test:\n\t@# pytest -q\n")
+    real = _makefile_repo(tmp_path, "real", "test:\n\t@pytest -q\n")
+    assert _conventions(inspect_project(silent), "test-invocation") == []
+    assert [c.evidence for c in _conventions(inspect_project(real), "test-invocation")] == [
+        "@pytest -q"
+    ]
+
+
+def test_trailing_comment_does_not_suppress_a_real_invocation(tmp_path: Path) -> None:
+    repo = _makefile_repo(tmp_path, "trailing", "test:\n\tpytest -q  # fast path\n")
+    assert [c.evidence for c in _conventions(inspect_project(repo), "test-invocation")] == [
+        "pytest -q  # fast path"
+    ]
+
+
+def test_hash_inside_a_quoted_argument_is_not_a_comment(tmp_path: Path) -> None:
+    """Over-correcting the other way would drop a legitimate invocation."""
+    repo = _makefile_repo(tmp_path, "quoted", 'test:\n\techo "step # 1" && pytest -q\n')
+    assert [c.evidence for c in _conventions(inspect_project(repo), "test-invocation")] == [
+        'echo "step # 1" && pytest -q'
+    ]
+
+
+def test_commented_out_checkout_step_configures_nothing(tmp_path: Path) -> None:
+    commented = _workflow_repo(
+        tmp_path,
+        "commented",
+        "jobs:\n  build:\n    steps:\n      # - uses: actions/checkout@v4\n"
+        "      - run: echo no checkout\n",
+    )
+    live = _workflow_repo(
+        tmp_path,
+        "live",
+        "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n"
+        "      - run: echo checked out\n",
+    )
+    assert _conventions(inspect_project(commented), "ci-checkout") == []
+    assert [c.evidence for c in _conventions(inspect_project(live), "ci-checkout")] == [
+        "- uses: actions/checkout@v4"
+    ]
+
+
+def test_checkout_named_outside_a_step_configures_nothing(tmp_path: Path) -> None:
+    """Naming the action in a script or a header is not configuring a checkout."""
+    repo = _workflow_repo(
+        tmp_path,
+        "prose",
+        "# this workflow deliberately avoids actions/checkout\n"
+        "jobs:\n  build:\n    steps:\n      - run: echo actions/checkout\n",
+    )
+    assert _conventions(inspect_project(repo), "ci-checkout") == []
+
+
+def test_checkout_evidence_skips_a_commented_line_with_the_same_value(tmp_path: Path) -> None:
+    """The quoted line must be the live step, not an identical commented-out one."""
+    repo = _workflow_repo(
+        tmp_path,
+        "both",
+        "jobs:\n  build:\n    steps:\n      # - uses: actions/checkout@v4\n"
+        "      - uses: actions/checkout@v4\n",
+    )
+    checkout = _conventions(inspect_project(repo), "ci-checkout")
+    assert [c.evidence for c in checkout] == ["- uses: actions/checkout@v4"]
+    assert not checkout[0].evidence.startswith("#")
+
+
+def test_pinned_checkout_with_a_trailing_comment_still_counts(tmp_path: Path) -> None:
+    repo = _workflow_repo(
+        tmp_path,
+        "pinned",
+        "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4  # pinned\n",
+    )
+    assert [c.evidence for c in _conventions(inspect_project(repo), "ci-checkout")] == [
+        "- uses: actions/checkout@v4  # pinned"
+    ]
+
+
+def test_unparseable_workflow_establishes_no_checkout(tmp_path: Path) -> None:
+    repo = _workflow_repo(tmp_path, "broken", "jobs: [\n  - uses: actions/checkout@v4\n")
+    assert _conventions(inspect_project(repo), "ci-checkout") == []
+
+
+def test_execution_claims_never_rest_on_comment_text(tmp_path: Path) -> None:
+    """The general property: an effective-behaviour claim needs effective text."""
+    repo = tmp_path / "mixed"
+    workflows = repo / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (repo / "Makefile").write_text(
+        "test:\n\t# pytest -q\n\tpytest -q  # real\n", encoding="utf-8"
+    )
+    (workflows / "ci.yml").write_text(
+        "jobs:\n  build:\n    steps:\n      # - uses: actions/checkout@v3\n"
+        "      - uses: actions/checkout@v4\n",
+        encoding="utf-8",
+    )
+    intake = inspect_project(repo)
+    claims = _conventions(intake, "test-invocation") + _conventions(intake, "ci-checkout")
+    assert len(claims) == 2
+    for convention in claims:
+        effective = strip_trailing_comment(convention.evidence)
+        assert effective.strip(), f"{convention.subject} evidence is entirely a comment"
+        token = "pytest" if convention.subject == "test-invocation" else "actions/checkout"
+        assert token in effective
+
+
+def test_mention_claims_deliberately_still_record_commented_text(tmp_path: Path) -> None:
+    """Audit of the other two emitters: they claim a mention, not effective behaviour.
+
+    An agent reading AGENTS.md sees the text inside an HTML comment, so a mention
+    there is a real mention needing reconciliation. Suppressing it would lose
+    evidence; asserting it as configuration would be the failure fixed above.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "AGENTS.md").write_text(
+        "<!-- Run tests with pytest. Do not commit secrets. -->\n", encoding="utf-8"
+    )
+    intake = inspect_project(repo)
+    assert [c.pattern for c in _conventions(intake, "test-runner")] == [
+        "instruction surface mentions pytest"
+    ]
+    assert [c.pattern for c in _conventions(intake, "git-policy")] == [
+        "instruction surface line mentions a commit constraint"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("pytest -q", "pytest -q"),
+        ("# pytest -q", ""),
+        ("pytest -q # fast", "pytest -q "),
+        ("echo 'a # b'", "echo 'a # b'"),
+        ('echo "a # b" && pytest', 'echo "a # b" && pytest'),
+        ("echo a#b", "echo a#b"),
+        ("- uses: actions/checkout@v4  # pinned", "- uses: actions/checkout@v4  "),
+        ("      # - uses: actions/checkout@v4", "      "),
+    ],
+)
+def test_strip_trailing_comment_rules(line: str, expected: str) -> None:
+    assert strip_trailing_comment(line) == expected
 
 
 # --- Item 2: unobservability is reported, and skips are separated by cause ---
