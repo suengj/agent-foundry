@@ -109,7 +109,6 @@ class Statefulness(StrEnum):
     LOCAL = "local"
     PERSISTENT_INTERNAL = "persistent-internal"
     PERSISTENT_SHARED_EXTERNAL = "persistent-shared-external"
-    EXTERNAL_SHARED = "external-shared"
 
 
 class ExternalEffectClass(StrEnum):
@@ -146,7 +145,6 @@ class ConsequenceClass(StrEnum):
 
 
 class AssuranceMode(StrEnum):
-    DETERMINISTIC = "deterministic"
     DETERMINISTIC_TESTS = "deterministic-tests"
     STATISTICAL = "statistical"
     INDEPENDENT_REVIEW = "independent-review"
