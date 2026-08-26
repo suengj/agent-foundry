@@ -193,10 +193,11 @@ def _reconcile_with_permission_ceiling(
     capabilities: set[str],
     skills: set[str],
     roles: set[str],
+    workflows: set[str],
     index: dict[str, dict[str, object]],
     decisions: list[ResolutionDecision],
 ) -> None:
-    from agent_foundry.models.registry import RoleContract, SkillSpec
+    from agent_foundry.models.registry import RoleContract, SkillSpec, WorkflowSpec
 
     ceiling = _manifest_declared_external_effect(manifest)
     ceiling_fact = (
@@ -207,6 +208,7 @@ def _reconcile_with_permission_ceiling(
     skills_by_id = index["skills"]
     roles_by_id = index["roles"]
     capabilities_by_id = index["capabilities"]
+    workflows_by_id = index["workflows"]
 
     for capability_id in sorted(capabilities):
         if _capability_exceeds_ceiling(capability_id, ceiling, capabilities_by_id):
@@ -238,6 +240,26 @@ def _reconcile_with_permission_ceiling(
                 project_fact=ceiling_fact,
             )
 
+    for skill_id in sorted(skills):
+        skill = skills_by_id.get(skill_id)
+        if not isinstance(skill, SkillSpec):
+            continue
+        missing_capabilities = sorted(
+            capability_id
+            for capability_id in skill.required_capabilities
+            if capability_id not in capabilities
+        )
+        if missing_capabilities:
+            skills.discard(skill_id)
+            _record_exclude(
+                decisions,
+                "skill",
+                skill_id,
+                f"required capabilities absent after ceiling reconciliation: {', '.join(missing_capabilities)}",
+                ResolutionSource.PROJECT_FACT,
+                project_fact=ceiling_fact,
+            )
+
     for role_id in sorted(roles):
         role = roles_by_id.get(role_id)
         if not isinstance(role, RoleContract):
@@ -255,6 +277,113 @@ def _reconcile_with_permission_ceiling(
                 ResolutionSource.PROJECT_FACT,
                 project_fact=ceiling_fact,
             )
+
+    for workflow_id in sorted(workflows):
+        workflow = workflows_by_id.get(workflow_id)
+        if not isinstance(workflow, WorkflowSpec):
+            continue
+        missing_roles = sorted(set(workflow.required_roles) - roles)
+        missing_skills = sorted(set(workflow.required_skills) - skills)
+        if missing_roles or missing_skills:
+            workflows.discard(workflow_id)
+            detail_parts: list[str] = []
+            if missing_roles:
+                detail_parts.append(f"missing roles: {', '.join(missing_roles)}")
+            if missing_skills:
+                detail_parts.append(f"missing skills: {', '.join(missing_skills)}")
+            _record_exclude(
+                decisions,
+                "workflow",
+                workflow_id,
+                f"workflow requirements absent after ceiling reconciliation ({'; '.join(detail_parts)})",
+                ResolutionSource.PROJECT_FACT,
+                project_fact=ceiling_fact,
+            )
+
+    if not workflows:
+        if not any(
+            decision.action == ResolutionAction.EXCLUDE and decision.component_kind == "workflow"
+            for decision in decisions
+        ):
+            decisions.append(
+                _decision(
+                    ResolutionAction.EXCLUDE,
+                    "workflow",
+                    "(none)",
+                    "no workflow pinned after ceiling reconciliation",
+                    ResolutionSource.PROJECT_FACT,
+                    project_fact=ceiling_fact,
+                )
+            )
+
+
+def _reconcile_integrations_against_ceiling(
+    manifest: ProjectManifest,
+    integration_ids: list[str],
+    integrations: list[IntegrationSpec],
+    index: dict[str, dict[str, object]],
+    decisions: list[ResolutionDecision],
+) -> list[str]:
+    ceiling = _manifest_declared_external_effect(manifest)
+    ceiling_fact = (
+        f"impact.external_effect={ceiling.value}"
+        if manifest.impact.external_effect is not None
+        else "impact.external_effect unknown; read-only default"
+    )
+    capabilities_by_id = index["capabilities"]
+    specs_by_id = {spec.id: spec for spec in integrations}
+    retained: list[str] = []
+
+    for integration_id in integration_ids:
+        spec = specs_by_id.get(integration_id)
+        exceeded = False
+        if spec is not None:
+            exceeded = any(
+                _capability_exceeds_ceiling(capability_id, ceiling, capabilities_by_id)
+                for capability_id in spec.capabilities
+            )
+        if exceeded:
+            _record_exclude(
+                decisions,
+                "integration",
+                integration_id,
+                f"integration capabilities exceed declared external-effect ceiling {ceiling.value}",
+                ResolutionSource.PROJECT_FACT,
+                project_fact=ceiling_fact,
+            )
+            continue
+        retained.append(integration_id)
+
+    return retained
+
+
+def _scrub_include_decisions_not_in_lock(
+    decisions: list[ResolutionDecision],
+    capabilities: set[str],
+    skills: set[str],
+    roles: set[str],
+    workflows: set[str],
+    integration_ids: list[str],
+    validator_ids: set[str],
+    permission_profile_id: str,
+    budget_profile_id: str,
+) -> None:
+    in_lock = {
+        *(("capability", capability_id) for capability_id in capabilities),
+        *(("skill", skill_id) for skill_id in skills),
+        *(("role", role_id) for role_id in roles),
+        *(("workflow", workflow_id) for workflow_id in workflows),
+        *(("integration", integration_id) for integration_id in integration_ids),
+        *(("validator", validator_id) for validator_id in validator_ids),
+        ("permission-profile", permission_profile_id),
+        ("budget-profile", budget_profile_id),
+    }
+    decisions[:] = [
+        decision
+        for decision in decisions
+        if decision.action != ResolutionAction.INCLUDE
+        or (decision.component_kind, decision.component_id) in in_lock
+    ]
 
 
 def _sorted_ids(items: list[str]) -> list[str]:
@@ -788,6 +917,7 @@ def resolve_project_toolkit(
         capabilities,
         skills,
         roles,
+        workflows,
         index,
         decisions,
     )
@@ -855,6 +985,27 @@ def resolve_project_toolkit(
         if integration_id not in index["integrations"]:
             raise ToolkitResolutionError(f"integration {integration_id!r} not in registry")
 
+    integration_ids = _reconcile_integrations_against_ceiling(
+        manifest,
+        integration_ids,
+        integrations,
+        index,
+        decisions,
+    )
+    if integration_include_rationale is not None:
+        integration_ids = [
+            integration_id
+            for integration_id in integration_ids
+            if not any(
+                decision.action == ResolutionAction.EXCLUDE
+                and decision.component_kind == "integration"
+                and decision.component_id == integration_id
+                for decision in decisions
+            )
+        ]
+        if not integration_ids:
+            integration_include_rationale = None
+
     health_results = preflight_integrations(
         integrations,
         required_ids=integration_ids,
@@ -913,6 +1064,18 @@ def resolve_project_toolkit(
                 else "impact.consequence unknown; default budget"
             ),
         )
+    )
+
+    _scrub_include_decisions_not_in_lock(
+        decisions,
+        capabilities,
+        skills,
+        roles,
+        workflows,
+        integration_ids,
+        validator_ids,
+        permission_profile.id,
+        budget_profile.id,
     )
 
     project_name = manifest.project.name or "unknown-project"

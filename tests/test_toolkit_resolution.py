@@ -661,3 +661,80 @@ def test_task_stage_role_exclude_decisions_recorded() -> None:
     ]
     assert role_excludes
     assert any(d.component_id == "builder" for d in role_excludes)
+
+
+def _assert_lock_decisions_coherent(lock) -> None:
+    in_lock = {
+        *(("capability", item) for item in lock.capability_ids),
+        *(("skill", item) for item in lock.skill_ids),
+        *(("role", item) for item in lock.role_ids),
+        *(("workflow", item) for item in lock.workflow_ids),
+        *(("integration", item) for item in lock.integration_ids),
+        *(("validator", item) for item in lock.validator_ids),
+        ("permission-profile", lock.permission_profile_ids[0]),
+        ("budget-profile", lock.budget_profile_ids[0]),
+    }
+    by_component: dict[tuple[str, str], set[str]] = {}
+    for decision in lock.decisions:
+        key = (decision.component_kind, decision.component_id)
+        by_component.setdefault(key, set()).add(decision.action.value)
+        if decision.action == ResolutionAction.INCLUDE:
+            assert key in in_lock
+    contradictions = {
+        key: actions for key, actions in by_component.items() if len(actions) > 1
+    }
+    assert contradictions == {}
+
+
+def _assert_lock_component_coherence(lock, registry: CapabilityRegistry) -> None:
+    index = {
+        "capabilities": {item.id: item for item in registry.capabilities},
+        "skills": {item.id: item for item in registry.skills},
+        "workflows": {item.id: item for item in registry.workflows},
+    }
+    from agent_foundry.models.registry import SkillSpec, WorkflowSpec
+
+    for workflow_id in lock.workflow_ids:
+        workflow = index["workflows"][workflow_id]
+        assert isinstance(workflow, WorkflowSpec)
+        assert set(workflow.required_roles) <= set(lock.role_ids)
+        assert set(workflow.required_skills) <= set(lock.skill_ids)
+    for skill_id in lock.skill_ids:
+        skill = index["skills"][skill_id]
+        assert isinstance(skill, SkillSpec)
+        assert set(skill.required_capabilities) <= set(lock.capability_ids)
+
+
+def test_read_only_high_consequence_decisions_coherent_or_fail_closed() -> None:
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "read-only",
+            "reversibility": "trivial",
+            "consequence": "high",
+        },
+        assurance={"required": ["deterministic-tests", "independent-review"]},
+    )
+    with pytest.raises(PolicyViolationError, match="policy-required"):
+        resolve_toolkit(manifest)
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        _sample_manifest(),
+        _sample_manifest(
+            impact={
+                "external_effect": "read-only",
+                "reversibility": "trivial",
+                "consequence": "low",
+            },
+            assurance={"required": []},
+        ),
+        load_yaml(ProjectManifest, (FIXTURES / "project_manifest.yaml").read_bytes()),
+    ],
+)
+def test_lock_coherence_invariant_across_manifests(manifest: ProjectManifest) -> None:
+    registry = build_default_registry()
+    _, lock = resolve_toolkit(manifest, registry=registry)
+    _assert_lock_decisions_coherent(lock)
+    _assert_lock_component_coherence(lock, registry)
