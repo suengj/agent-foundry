@@ -571,6 +571,24 @@ def _manifest_fact_requirements(
             ResolutionSource.PROJECT_FACT,
             project_fact="project.primary_artifact=code or work_modes.primary=build",
         )
+        require["skills"].add("repository-inspection")
+        require["roles"].add("explorer")
+        _record_include(
+            decisions,
+            "skill",
+            "repository-inspection",
+            "code-centric project requires read-only inspection baseline",
+            ResolutionSource.PROJECT_FACT,
+            project_fact="project.primary_artifact=code or work_modes.primary=build",
+        )
+        _record_include(
+            decisions,
+            "role",
+            "explorer",
+            "code-centric project requires explorer for inspection baseline",
+            ResolutionSource.PROJECT_FACT,
+            project_fact="project.primary_artifact=code or work_modes.primary=build",
+        )
         if external_effect is None:
             _record_exclude(
                 decisions,
@@ -1202,6 +1220,49 @@ def _skill_allowed_for_work_item(
     return True
 
 
+def _role_allowed_for_work_item(
+    work_item: WorkItemContract,
+    role_id: str,
+    roles_by_id: dict[str, object],
+    capabilities_by_id: dict[str, object],
+) -> bool:
+    from agent_foundry.models.registry import RoleContract
+
+    role = roles_by_id.get(role_id)
+    if not isinstance(role, RoleContract):
+        return False
+    ceiling = work_item.authority_class
+    for capability_id in role.allowed_capabilities:
+        min_effect = capability_min_external_effect(capability_id, capabilities_by_id)
+        if exceeds_permission_ceiling(min_effect, ceiling):
+            return False
+    return True
+
+
+def _derive_roles_from_selected_skills(
+    work_item: WorkItemContract,
+    selected_skills: set[str],
+    project_lock: ToolkitLock,
+    skills_by_id: dict[str, object],
+    roles_by_id: dict[str, object],
+    capabilities_by_id: dict[str, object],
+) -> set[str]:
+    from agent_foundry.models.registry import SkillSpec
+
+    derived: set[str] = set()
+    for skill_id in sorted(selected_skills):
+        skill = skills_by_id.get(skill_id)
+        if not isinstance(skill, SkillSpec):
+            continue
+        candidates = skill.roles.allowed if skill.roles.allowed else list(project_lock.role_ids)
+        for role_id in sorted(candidates):
+            if role_id not in project_lock.role_ids:
+                continue
+            if _role_allowed_for_work_item(work_item, role_id, roles_by_id, capabilities_by_id):
+                derived.add(role_id)
+    return derived
+
+
 def _work_item_workflow_for_item(
     work_item: WorkItemContract,
     available_workflow_ids: list[str],
@@ -1238,6 +1299,8 @@ def resolve_task_toolkit(
     """Resolve minimum Task Toolkit — strict subset of project lock, may only tighten controls."""
     index = _index_registry(registry)
     skills = index["skills"]
+    roles_by_id = index["roles"]
+    capabilities_by_id = index["capabilities"]
 
     selected_skills: set[str] = set()
     selected_roles: set[str] = set()
@@ -1256,7 +1319,12 @@ def resolve_task_toolkit(
                 ):
                     selected_skills.add(skill_id)
             for role_id in workflow.required_roles:
-                if role_id in project_lock.role_ids:
+                if role_id in project_lock.role_ids and _role_allowed_for_work_item(
+                    work_item,
+                    role_id,
+                    roles_by_id,
+                    capabilities_by_id,
+                ):
                     selected_roles.add(role_id)
             decisions.append(
                 _decision(
@@ -1302,6 +1370,17 @@ def resolve_task_toolkit(
                     project_fact=f"work_item.work_class={work_item.work_class.value}",
                 )
             )
+
+    selected_roles.update(
+        _derive_roles_from_selected_skills(
+            work_item,
+            selected_skills,
+            project_lock,
+            skills,
+            roles_by_id,
+            capabilities_by_id,
+        )
+    )
 
     for skill_id in sorted(selected_skills):
         skill = skills.get(skill_id)

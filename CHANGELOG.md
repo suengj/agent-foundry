@@ -32,6 +32,8 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 
 ### Changed
 
+- Toolkit resolution pins read-only inspection baseline (`explorer`, `repository-inspection`) for code-centric projects and derives task roles from selected skills with work-item authority filtering.
+
 - Toolkit resolution reconciles capabilities against the manifest-declared external-effect ceiling (not the selected profile), pins that declaration in locks, and raises on unsatisfiable hard policy requirements.
 - Pre-release vocabulary correction: removed `external-shared` from `Statefulness` (use `persistent-shared-external`); removed `deterministic` from `AssuranceMode` (use `deterministic-tests`).
 

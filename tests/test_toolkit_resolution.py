@@ -340,6 +340,7 @@ def test_task_toolkit_is_strict_subset_with_tighter_controls() -> None:
 
     excluded_skills = set(project_lock.skill_ids) - set(task.skill_ids)
     assert "bounded-change" in excluded_skills
+    assert "builder" not in task.role_ids
 
 
 def test_include_and_exclude_rationale_present() -> None:
@@ -362,6 +363,10 @@ def test_include_and_exclude_rationale_present() -> None:
     task_excludes = [d for d in task.decisions if d.action == ResolutionAction.EXCLUDE]
     assert task_excludes
     assert all(d.rationale and d.source for d in task_excludes)
+    assert "explorer" in lock.role_ids
+    discovery_item = _sample_work_item(authority_class="read-only", work_class="DISCOVERY")
+    discovery_task = resolve_task_toolkit_for_work_item(discovery_item, lock)
+    assert "explorer" in discovery_task.role_ids
 
 
 def test_integration_health_distinct_without_credential_leak() -> None:

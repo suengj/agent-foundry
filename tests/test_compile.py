@@ -187,7 +187,6 @@ def test_validate_execution_bundle_authority_guard_is_exercised(monkeypatch: pyt
     manifest = _sample_manifest()
     work_item = _sample_work_item()
     _, lock = resolve_toolkit(manifest)
-    result = compile_work_item(work_item, manifest, lock, "builder", "RUN-GUARD")
 
     def _fail(*_args: object, **_kwargs: object) -> None:
         raise CompileAuthorityError("guard stub")
@@ -198,6 +197,79 @@ def test_validate_execution_bundle_authority_guard_is_exercised(monkeypatch: pyt
     )
     with pytest.raises(CompileAuthorityError, match="guard stub"):
         compile_work_item(work_item, manifest, lock, "builder", "RUN-GUARD-2")
+
+
+def _read_only_discovery_work_item() -> WorkItemContract:
+    return _sample_work_item(
+        work_class="DISCOVERY",
+        authority_class="read-only",
+        objective="Inspect project conventions read-only",
+    )
+
+
+def test_read_only_work_item_compiles_on_read_only_project():
+    manifest = ProjectManifest(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        project=ProjectInfo(
+            name="read-only-service",
+            work_modes=WorkModes(primary=PrimaryWorkMode.BUILD),
+            primary_artifact=PrimaryArtifactState.CODE,
+        ),
+        state=ProjectState(),
+        impact=ProjectImpact(
+            external_effect=ExternalEffectClass.READ_ONLY,
+            consequence=ConsequenceClass.LOW,
+        ),
+        execution=ProjectExecution(),
+        assurance=ProjectAssurance(),
+        access=ProjectAccess(),
+    )
+    work_item = _read_only_discovery_work_item()
+    _, lock = resolve_toolkit(manifest)
+    result = compile_work_item(work_item, manifest, lock, "explorer", "RUN-RO-PROJ")
+    assert result.bundle.authority is not None
+    assert result.bundle.authority.external_effect == ExternalEffectClass.READ_ONLY
+    assert "explorer" in result.task_toolkit.role_ids
+
+
+def test_read_only_work_item_compiles_on_repository_write_project():
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "repository-write",
+            "reversibility": "versioned",
+            "consequence": "medium",
+        }
+    )
+    work_item = _read_only_discovery_work_item()
+    _, lock = resolve_toolkit(manifest)
+    result = compile_work_item(work_item, manifest, lock, "explorer", "RUN-RO-REPO")
+    assert result.bundle.authority.external_effect == ExternalEffectClass.READ_ONLY
+    assert "explorer" in result.task_toolkit.role_ids
+    assert "builder" not in result.task_toolkit.role_ids
+
+
+def test_read_only_work_item_compiles_on_publication_project():
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "publication",
+            "reversibility": "versioned",
+            "consequence": "high",
+        }
+    )
+    work_item = _read_only_discovery_work_item()
+    _, lock = resolve_toolkit(manifest)
+    result = compile_work_item(work_item, manifest, lock, "reviewer", "RUN-RO-PUB")
+    assert result.bundle.authority.external_effect == ExternalEffectClass.READ_ONLY
+    assert "builder" not in result.task_toolkit.role_ids
+
+
+def test_repository_write_work_item_compiles_as_control():
+    manifest = _sample_manifest()
+    work_item = _sample_work_item()
+    _, lock = resolve_toolkit(manifest)
+    result = compile_work_item(work_item, manifest, lock, "builder", "RUN-CONTROL")
+    assert result.bundle.authority.external_effect == ExternalEffectClass.REPOSITORY_WRITE
+    assert "builder" in result.task_toolkit.role_ids
 
 
 def test_unknown_manifest_external_effect_tightens_compiled_authority():
@@ -304,59 +376,7 @@ def test_rendered_markdown_is_concise_against_large_project_context():
     assert len(result.bundle.selected_observations) <= 5
 
 
-_DETERMINISM_DIGESTS: tuple[str, str] | None = None
-
-
-@pytest.mark.parametrize("hash_seed", ["0", "1", "42"])
-@pytest.mark.parametrize("cwd", [".", ".."])
-def test_compile_determinism_across_hash_seeds_and_cwds(hash_seed: str, cwd: str):
-    global _DETERMINISM_DIGESTS
-    env = {**_subprocess_env(), "PYTHONHASHSEED": hash_seed}
-    _assert_imports_worktree(env)
-    script = """
-import json
-from pathlib import Path
-from agent_foundry.compile import compile_work_item
-from agent_foundry.models import ProjectManifest, WorkItemContract
-from agent_foundry.render import render_execution_bundle_markdown
-from agent_foundry.toolkit import resolve_toolkit
-
-manifest = ProjectManifest.model_validate(json.loads(Path("manifest.json").read_text()))
-work_item = json.loads(Path("work_item.json").read_text())
-work_item = WorkItemContract.model_validate(work_item)
-_, lock = resolve_toolkit(manifest)
-result = compile_work_item(work_item, manifest, lock, "builder", "RUN-DET")
-print(json.dumps(json.loads(result.bundle.model_dump_json()), sort_keys=True))
-print(render_execution_bundle_markdown(result.bundle), end="")
-"""
-    manifest = _sample_manifest()
-    work_item = _sample_work_item()
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        (root / "manifest.json").write_text(manifest.model_dump_json(), encoding="utf-8")
-        (root / "work_item.json").write_text(work_item.model_dump_json(), encoding="utf-8")
-        completed = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True,
-            text=True,
-            env=env,
-            cwd=root,
-            check=True,
-        )
-        bundle_line, markdown = completed.stdout.split("\n", 1)
-        digest_bundle = hashlib.sha256(bundle_line.encode()).hexdigest()
-        digest_markdown = hashlib.sha256(markdown.encode()).hexdigest()
-        if _DETERMINISM_DIGESTS is None:
-            _DETERMINISM_DIGESTS = (digest_bundle, digest_markdown)
-        else:
-            assert digest_bundle == _DETERMINISM_DIGESTS[0]
-            assert digest_markdown == _DETERMINISM_DIGESTS[1]
-
-
-def test_compile_determinism_across_working_directories():
-    env = _subprocess_env()
-    _assert_imports_worktree(env)
-    script = """
+_COMPILE_DETERMINISM_SCRIPT = """
 import json
 from pathlib import Path
 from agent_foundry.compile import compile_work_item
@@ -370,11 +390,42 @@ if not (root / "inputs").is_dir():
 manifest = ProjectManifest.model_validate(json.loads((root / "inputs/manifest.json").read_text()))
 work_item = WorkItemContract.model_validate(json.loads((root / "inputs/work_item.json").read_text()))
 _, lock = resolve_toolkit(manifest)
-result = compile_work_item(work_item, manifest, lock, "builder", "RUN-CWD")
+result = compile_work_item(work_item, manifest, lock, "builder", "RUN-DET")
+print(json.dumps(json.loads(result.bundle.model_dump_json()), sort_keys=True))
 print(render_execution_bundle_markdown(result.bundle), end="")
 """
+
+
+def _run_compile_determinism_subprocess(
+    *,
+    env: dict[str, str],
+    cwd: Path,
+) -> tuple[str, str]:
+    completed = subprocess.run(
+        [sys.executable, "-c", _COMPILE_DETERMINISM_SCRIPT],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=cwd,
+        check=True,
+    )
+    bundle_line, markdown = completed.stdout.split("\n", 1)
+    return (
+        hashlib.sha256(bundle_line.encode()).hexdigest(),
+        hashlib.sha256(markdown.encode()).hexdigest(),
+    )
+
+
+def test_compile_determinism_across_hash_seeds_and_cwds():
+    """Self-contained determinism guard across hash seeds and working directories."""
+    env_base = _subprocess_env()
+    _assert_imports_worktree(env_base)
     manifest = _sample_manifest()
     work_item = _sample_work_item()
+
+    reference_bundle: str | None = None
+    reference_markdown: str | None = None
+
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         inputs = root / "inputs"
@@ -384,23 +435,52 @@ print(render_execution_bundle_markdown(result.bundle), end="")
         (inputs / "manifest.json").write_text(manifest.model_dump_json(), encoding="utf-8")
         (inputs / "work_item.json").write_text(work_item.model_dump_json(), encoding="utf-8")
 
-        from_root = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True,
-            text=True,
-            env=env,
-            cwd=root,
-            check=True,
-        )
-        from_nested = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True,
-            text=True,
-            env=env,
-            cwd=nested,
-            check=True,
-        )
-        assert from_root.stdout == from_nested.stdout
+        for hash_seed in ("0", "1", "42"):
+            for cwd in (root, nested):
+                env = {**env_base, "PYTHONHASHSEED": hash_seed}
+                bundle_digest, markdown_digest = _run_compile_determinism_subprocess(
+                    env=env,
+                    cwd=cwd,
+                )
+                if reference_bundle is None:
+                    reference_bundle = bundle_digest
+                    reference_markdown = markdown_digest
+                    continue
+                assert bundle_digest == reference_bundle
+                assert markdown_digest == reference_markdown
+
+
+def test_compile_determinism_test_catches_injected_renderer_nondeterminism(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import random
+
+    original_render = render_execution_bundle_markdown
+
+    def _nondeterministic_render(bundle: object) -> str:
+        return original_render(bundle) + str(random.random())  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        "agent_foundry.render.markdown.render_execution_bundle_markdown",
+        _nondeterministic_render,
+    )
+
+    manifest = _sample_manifest()
+    work_item = _sample_work_item()
+    _, lock = resolve_toolkit(manifest)
+    bundle = compile_work_item(work_item, manifest, lock, "builder", "RUN-NONDET").bundle
+    first = _nondeterministic_render(bundle)
+    second = _nondeterministic_render(bundle)
+    assert first != second
+
+    reference: str | None = None
+    with pytest.raises(AssertionError):
+        for _attempt in range(2):
+            digest = hashlib.sha256(_nondeterministic_render(bundle).encode()).hexdigest()
+            if reference is None:
+                reference = digest
+            else:
+                assert digest == reference
 
 
 def test_compile_determinism_same_input_twice():
@@ -491,3 +571,33 @@ def test_render_contains_no_secret_material():
     rendered = render_execution_bundle_markdown(result.bundle)
     assert "sk-" not in rendered
     assert "AKIA" not in rendered
+
+
+def test_compile_test_module_has_no_unused_assignments():
+    import ast
+
+    source = Path(__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    class _FunctionUnusedAssignmentChecker(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self._stack: list[dict[str, set[str]]] = []
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            assigned: set[str] = set()
+            loaded: set[str] = set()
+            self._stack.append({"assigned": assigned, "loaded": loaded})
+            for child in ast.walk(node):
+                if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
+                    assigned.add(child.id)
+                elif isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
+                    loaded.add(child.id)
+            self._stack.pop()
+            unused = sorted(name for name in assigned if name not in loaded and not name.startswith("_"))
+            if unused:
+                raise AssertionError(
+                    f"unused assignment(s) in {node.name}: {', '.join(unused)}"
+                )
+            self.generic_visit(node)
+
+    _FunctionUnusedAssignmentChecker().visit(tree)
