@@ -1,105 +1,165 @@
-# Product boundary — Agent Foundry (SUE-294)
+# Product boundary — Agent Foundry
 
-**Status:** Frozen — canonical product and authority contract for M0 Personal MVP.  
-**Linear:** [SUE-294](https://linear.app/suengj/issue/SUE-294)  
-**Evidence:** this file + `PROJECT_AGENT_CONSTITUTION.md` + passing `tests/test_contract_freeze.py`
+**Status:** active product and authority contract.  
+**Evidence:** this file + `docs/ai/PROJECT_AGENT_CONSTITUTION.md` + passing contract tests.
 
 ## Purpose
 
-### Personal MVP first
+Agent Foundry helps turn new or existing projects into bounded AI-native execution environments.
 
-Primary user journey (M0):
+Primary system journey:
 
-1. Human states a project goal.
-2. Governor (ChatGPT) decomposes work into a finite Linear graph.
-3. Foundry (future) assists bootstrap, truth inventory, and work-order emission.
-4. Adapters (Cursor/Codex/Claude) execute bounded implementation.
-5. Evidence (tests, PR, runtime read-back) confirms completion before Linear Done.
+1. Inspect a project or project description.
+2. Classify operating characteristics and AI-native readiness.
+3. Bootstrap a new project or generate a bounded retrofit plan for an existing project.
+4. Express objectives as causal tracker-neutral Work Items.
+5. Resolve a version-pinned Project Toolkit and minimum Task Toolkit.
+6. Compile concise provider-neutral execution contracts.
+7. Validate/reconcile implementation and external evidence before work closure.
 
-**Terminal outputs (M0 contract):** frozen constitution, product boundary, runnable bootstrap CLI, validation tests — not a full compiler pipeline.
+## Product boundary
 
-### Business toolbox second
+Foundry owns:
 
-Multi-tenant SaaS, billing, marketplace, and org-wide control plane are **explicit non-goals** for M0.
+- project intake/classification models
+- AI-native readiness and adoption-plan semantics
+- tracker-neutral work hierarchy and decomposition validation
+- capability/toolkit metadata and resolution
+- integration declarations, credential references, and integration-health semantics
+- task-time execution compilation
+- agent interaction/evidence contracts
+- validation and state reconciliation logic
+- provider/tool/tracker/runtime adapters at the edges
 
-## Non-goals (M0)
+Foundry does not own:
 
-- SaaS, billing, authentication, multi-tenancy
-- Plugin marketplace
-- Playbook rewrite or wholesale copy
-- Production deployment automation
-- ProjectTruth engine, Linear auto-write, work-order compiler (SUE-295+)
-
-## Playbook adoption
-
-| Field | Value |
-|---|---|
-| Repository | `suengj/ai-agent-dev-playbook` |
-| Mechanism | Explicit `playbook.ref` tag/SHA in constitution |
-| Pinned SHA | `daa487c874822921ae07b968671e5852e41f728f` |
-| Rule | Reference and adopt — **do not** fork/copy entire playbook tree |
+- authoritative project-management data
+- repository implementation history
+- runtime/external-system truth
+- actual secret values or identity material
+- a general-purpose workflow engine
+- a monolithic agent runtime
+- SaaS billing/auth/multi-tenancy or a marketplace
 
 ## Authority ownership
 
-| Layer | Owner | Notes |
+| Layer | Canonical owner | Foundry relationship |
 |---|---|---|
-| Objective / priority | Human | Final authority |
-| Architecture / decomposition | ChatGPT | Governor; not implementation SSOT |
-| Work intent, status, blockers | Linear | Work SSOT |
-| Code, tests, PR, commits | GitHub | Implementation SSOT |
-| Deployed / live truth | Runtime | Production Truth where applicable |
-| Reusable constitution | AI Dev Playbook | External; pinned |
-| Project behavior / safety | Project Constitution | This repo |
-| Generated Foundry artifacts | Foundry (per rules below) | Single-owner emission |
+| Objective / reserved authority | Human / project owner | interpret and compile bounded contracts |
+| Work intent / priority / dependency / lifecycle | configured work tracker or Work Item source | adapt/reconcile |
+| Code / config / tests / revision history | repository | inspect/reference/validate |
+| Applied/live/external state | runtime or external system | read back/verify |
+| Secret values / identity material | credential provider / execution environment | reference only |
+| Project classification | Project Manifest | own schema/validation |
+| Capability resolution | Toolkit lock | own resolution/validation |
+| Execution delta | Work Item + Execution Bundle | compile/render |
+| Execution evidence | Evidence Bundle / Execution Receipt | own schema/reconciliation |
 
 ## Generated artifact ownership
 
-Current state must not be duplicated across Linear, docs, prompts, and adapters.
+Current external state must not be duplicated across docs, prompts, trackers, and adapters.
 
-| Artifact | Single owner | Update rule |
+| Artifact | Canonical source | Generated/derived surface |
 |---|---|---|
-| Current issue / priority | Linear | Update Linear only |
-| Technical context | `docs/ai/project-context.md` | PR when environment changes |
-| Agent behavior | Constitution + AGENTS.md | PR when P0 rules change |
-| Execution delta | Work Order / prompt | Per task; ephemeral |
-| Implementation | GitHub | PR + review |
-| Runtime result | Runtime evidence | Attestation / read-back |
+| Project characteristics | structured Project Manifest | project summary Markdown |
+| Approved capabilities | toolkit lock | toolkit summary |
+| Work intent | tracker / Work Item contract | execution brief |
+| Agent run contract | Execution Bundle | provider-specific prompt/Markdown |
+| Handoff/evidence | structured interaction/evidence object | readable report |
+| Implementation | repository | references/diffs only |
+| Runtime result | runtime/external read-back | evidence reference |
 
 ## External writes
 
-All future Foundry capabilities that mutate Linear, GitHub, or filesystem:
+Capabilities that mutate repositories, trackers, shared services, data stores, runtimes, or public surfaces must have explicit external-effect semantics.
+
+Default:
 
 | Phase | Default | Requirement |
 |---|---|---|
-| Preview | **dry-run** (default) | Show diff/intent |
-| Apply | **explicit apply** (authorized) | Logged + evidenced |
+| Preview | **dry-run** | expose intended effect/diff when practical |
+| Apply | **explicit apply** | authorized, logged, evidenced |
 
-Unauthorized or silent writes are forbidden.
+A project policy may grant narrower bounded automatic authority, but availability of a tool or credential never grants authority by itself.
 
 ## Provider independence
 
 - **Core:** provider-neutral Python package (`agent_foundry`)
-- **Adapters:** Cursor, Codex, Claude, others — thin execution boundaries only
-- Core modules must not depend on provider-specific SDKs for M0 bootstrap
+- **Adapters:** provider/model/tool-specific loading and execution boundaries
+- Role and capability definitions must not depend on one provider identity
+- Model/provider resolution occurs after Work Item, role, policy, toolkit, and health requirements
 
-## M0 success metrics (dogfood gates)
+## Greenfield and brownfield
 
-Targets to measure in future dogfood (AF0.8+); definitions frozen here:
+Both are first-class:
+
+```text
+Greenfield
+→ bootstrap minimum operating structure
+
+Brownfield
+→ inspect existing truth
+→ distinguish observed / declared / inferred / normative
+→ assess readiness
+→ KEEP / CONSOLIDATE / WRAP / HARDEN / MIGRATE / DEFER / BLOCK
+→ progressively increase agent autonomy
+```
+
+Foundry should not rewrite an existing system merely to make it look Foundry-native.
+
+## Work model
+
+Foundry defines causal work semantics above any tracker:
+
+```text
+Objective
+→ Outcome / Capability
+→ Work Package
+→ Work Item
+→ Execution Run
+```
+
+Work is split by independent acceptance, dependency, authority, rollback, ownership, and retry boundaries—not by arbitrary file counts or agent roles.
+
+## Integration and credential boundary
+
+Version-controlled project configuration may store:
+
+- desired integrations
+- capability scopes
+- adapter/version requirements
+- endpoints when safe/public
+- credential references
+- required integration-health state
+
+It must not store raw secrets.
+
+```text
+Execution Bundle
+→ scoped adapter
+→ SecretRef / delegated identity
+→ external service
+```
+
+## Success metrics
+
+Useful evaluation metrics include:
 
 | Metric | Intent |
 |---|---|
-| planning elapsed time | Time from goal to bounded Linear work graph |
-| manual correction rate | Human edits required per generated artifact |
-| generated-task acceptance rate | Share of agent tasks accepted without rework |
-| duplicate/stale-context detection | Findings where state was mirrored incorrectly |
-| authority-boundary miss rate | Violations of single-owner / SSOT rules |
-| evidence completeness | Required validation present before Done |
+| project classification correction rate | detect weak intake/classification |
+| readiness-gap escape rate | gaps discovered only after execution begins |
+| generated Work Item correction rate | measure decomposition quality |
+| toolkit over/under-selection | measure capability resolution quality |
+| manual prompt additions | measure missing compiled context |
+| duplicate/stale-context detection | detect authority/SSOT problems |
+| permission overreach / denied actions | measure control quality |
+| integration auth/health failures | measure operational integration quality |
+| review rework rate | measure execution quality |
+| evidence completeness | measure closure reliability |
+| human escalation rate | measure autonomy/authority balance |
+| verified closure elapsed time | measure end-to-end operational efficiency |
 
-## Acceptance mapping (SUE-294)
+## Public repository contract
 
-- [x] Canonical product/authority contract in repository (`this file` + constitution)
-- [x] Playbook referenced by pinned SHA, not copied wholesale
-- [x] Personal MVP inputs/outputs and non-goals explicit
-- [x] Generated artifacts have one owner and update rule
-- [x] External writes default to preview/dry-run unless explicitly authorized
-- [x] M0 gate metrics and dogfood targets recorded
+Public documentation, schemas, examples, and tests must be self-contained and generic. They must not depend on private repositories, private project names, personal filesystem layouts, real credentials, or unpublished operating documents.
