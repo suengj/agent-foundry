@@ -250,3 +250,120 @@ EVIDENCE_STATE_PROGRESSION: tuple[EvidenceState, ...] = (
 `NOT_REQUIRED` is absent on purpose: it is an exemption from the ladder, not a rung
 on it, and giving it a position would let "exempt" out-rank "proven".
 """
+
+
+# --- rules re-derived from the durable contract, not from the producer ---------
+#
+# The two rules below are enforced by pydantic model validators on `RunFinding` and
+# `ExecutionReceipt`. Those model validators are *producers*: they decide whether an
+# artifact may be constructed at all. Calling their helper from here would put a
+# wrong rule and its purported validator in agreement — the AF6 failure mode, one
+# layer down. So each is restated from the contract text and evaluated differently.
+
+
+def contract_digest(model: object) -> str:
+    """Content digest of a contract, recomputed for validation.
+
+    Deliberately not shared with `verify.receipt.artifact_digest`, which is what a
+    receipt producer uses to *stamp* a digest. Two separate call sites mean
+    neutralizing the stamping function leaves this recomputation intact, so a
+    receipt naming the wrong artifact is still caught.
+
+    Both wrap the same deterministic serializer, and that is the honest limit of the
+    check: it binds a receipt to the artifact handed in for review, and proves
+    nothing about whether the serializer is correct.
+    """
+    import hashlib
+
+    from agent_foundry.models.io import dump_json
+
+    return hashlib.sha256(dump_json(model)).hexdigest()
+
+
+# docs/foundry/06 §9 gives each disposition a different obligation:
+#
+#   BLOCKER        current contract is not satisfied  → repair in current scope
+#   RESIDUAL       bounded weakness after acceptance  → create finite follow-up work
+#   HYPOTHESIS     requires future/runtime evidence   → record falsifiable prediction
+#                                                       and evidence condition
+#   HUMAN_REQUIRED reserved authority / open choice   → minimal escalation
+#
+# Read as a table of "which fields must be present", the obligations become data.
+# Evaluating a table is a different construction from the producer's branch-per-
+# disposition chain: adding a disposition without an entry here is a visible gap
+# rather than a silently unchecked case.
+DISPOSITION_REQUIRED_FIELDS: dict[str, tuple[tuple[str, str], ...]] = {
+    "BLOCKER": (("evidence_refs", "at least one evidence_ref"),),
+    "RESIDUAL": (("follow_up_work_ref", "follow_up_work_ref"),),
+    "HYPOTHESIS": (
+        ("falsifiable_prediction", "falsifiable_prediction"),
+        ("evidence_condition", "evidence_condition"),
+    ),
+    "HUMAN_REQUIRED": (("escalation_reason", "escalation_reason"),),
+}
+
+
+def finding_obligation_violations(finding: dict[str, object], *, label: str) -> list[str]:
+    """Obligations a dispositioned finding owes, read off a serialized payload.
+
+    Takes the raw mapping rather than a constructed object, so a finding that never
+    passed through model validation — loaded from a file, hand-written, or built with
+    `model_construct` — is examined on the same terms.
+
+    An unrecognised disposition is a violation rather than a pass: a finding whose
+    disposition this layer cannot place has no obligations it can be shown to meet.
+    """
+    disposition = str(finding.get("disposition") or "").strip()
+    if not disposition:
+        return [f"finding {label!r}: records no disposition"]
+
+    required = DISPOSITION_REQUIRED_FIELDS.get(disposition)
+    if required is None:
+        return [
+            f"finding {label!r}: disposition {disposition!r} carries no known "
+            "obligation; it cannot be shown to meet one"
+        ]
+
+    return [
+        f"finding {label!r}: {disposition} requires {description}"
+        for field, description in required
+        if not finding.get(field)
+    ]
+
+
+def evidence_state_partition_conflicts(
+    *,
+    attained: list[str],
+    not_required: list[str],
+) -> list[str]:
+    """Partition rules for a receipt's two evidence-state lists.
+
+    Derived from `EVIDENCE_STATE_PROGRESSION` above rather than restated as a
+    special case: `NOT_REQUIRED` has no position on the ladder, so it cannot be a
+    thing that was attained, and anything outside the ladder is not an evidence
+    state at all. The producer instead names `NOT_REQUIRED` explicitly, which is why
+    a defect in one derivation does not hide in the other.
+
+    docs/foundry/06 §4: a Work Item declares which states are required and which are
+    NOT_REQUIRED. The two answers are exclusive, so the lists must be disjoint.
+    """
+    ladder = {state.value for state in EVIDENCE_STATE_PROGRESSION}
+    violations: list[str] = []
+
+    overlap = sorted(set(attained) & set(not_required))
+    if overlap:
+        violations.append(
+            f"evidence states {overlap} are declared both attained and not-required"
+        )
+
+    off_ladder = sorted(set(attained) - ladder)
+    for state in off_ladder:
+        if state == "NOT_REQUIRED":
+            violations.append("NOT_REQUIRED is an exemption, not an attained evidence state")
+        else:
+            violations.append(
+                f"{state!r} is not a position on the evidence progression and cannot "
+                "have been attained"
+            )
+
+    return violations

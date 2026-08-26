@@ -3,6 +3,16 @@
 This catalog is part of the contract, not documentation about it. A validator whose
 claim is absent — or a claim with no validator — fails a test, so the honest answer
 to "what does this check actually establish?" cannot drift away from the code.
+
+`independently_derived` means the validator restates the property from the durable
+contract and shares no implementation with anything that produces or gates the
+artifact — including the pydantic model validators, which are producers: they decide
+whether an artifact may exist at all. Two entries here were wrongly marked True in
+the first version of this change because their obligations were delegated to a
+model-validator helper; the dependency test in `tests/test_verify_independence.py`
+now reads the import graph of every module in `verify/` and discovers producer-owned
+rules from `models/` rather than from a list, so a claim of independence cannot be
+made in code that quietly calls the producer.
 """
 
 from __future__ import annotations
@@ -148,7 +158,9 @@ VALIDATOR_CLAIMS: tuple[ValidatorClaim, ...] = (
         proves=(
             "the bundle carries run and work identity, a revision identity block, no "
             "class both attained and exempt, and unresolved findings that each meet "
-            "the obligation their disposition owes"
+            "the obligation their disposition owes — the obligations being re-derived "
+            "from docs/foundry/06 §9 as a table in verify.independent, not taken from "
+            "the RunFinding model validator that gates construction"
         ),
         cannot_prove=(
             "that the bundle is the complete set of evidence produced; a run can "
@@ -191,8 +203,12 @@ VALIDATOR_CLAIMS: tuple[ValidatorClaim, ...] = (
         proves=(
             "work lifecycle, execution state and evidence state are recorded as three "
             "independent fields with disjoint vocabularies, that a receipt does not "
-            "collapse them into one status, and that a lifecycle claiming closure is "
-            "backed by the evidence states the work item requires"
+            "collapse them into one status, that no state is both attained and exempt, "
+            "and that a lifecycle claiming closure is backed by the evidence states the "
+            "work item requires. The attained/exempt partition is derived from the "
+            "evidence progression in verify.independent — NOT_REQUIRED has no rung, so "
+            "it cannot have been attained — rather than from the ExecutionReceipt model "
+            "validator that gates construction"
         ),
         cannot_prove=(
             "that the three recorded values were observed independently; it detects "
@@ -210,12 +226,17 @@ VALIDATOR_CLAIMS: tuple[ValidatorClaim, ...] = (
             "recorded rather than left implicit"
         ),
         cannot_prove=(
-            "that the digest algorithm or the serializer is correct: recomputing a "
-            "digest binds the receipt to the artifact it was handed, and nothing more. "
-            "If the deterministic serializer were wrong, both sides would be wrong "
-            "together. The check is worth exactly one thing — a receipt cannot name a "
-            "different artifact than the one under review — and that is the property "
-            "reconciliation depends on"
+            "that the digest algorithm or the serializer is correct. This is the one "
+            "entry marked not independently derived, and the digest is the reason: "
+            "recomputation runs through verify.independent.contract_digest, a call site "
+            "deliberately kept separate from the receipt.artifact_digest that stamps a "
+            "receipt — so neutralizing the stamp is caught — but both wrap the same "
+            "deterministic serializer, and if that serializer were wrong both sides "
+            "would be wrong together. The check is worth exactly one thing: a receipt "
+            "cannot name a different artifact than the one under review, which is the "
+            "property reconciliation depends on. The finding-disposition obligations "
+            "this validator also checks ARE independently derived, from the same table "
+            "in verify.independent that evidence-bundle completeness uses"
         ),
         independently_derived=False,
         checks_output_of="agent_foundry.verify.receipt.build_execution_receipt",

@@ -1,11 +1,23 @@
 """Structural guards on the independence of the validation layer.
 
-Two things have to stay true for the AF7 validators to be worth anything:
+Three things have to stay true for the AF7 validators to be worth anything:
 
 1. The re-derived primitives must not quietly start importing the implementations
    they exist to be independent of. That is checked by reading the import graph, so
    it survives a refactor that nobody re-reads this file for.
-2. Every validator must publish what it proves and what it cannot, and those claims
+2. No module anywhere in `verify/` may call a *producer-owned validation rule* — a
+   helper that a pydantic `model_validator` or `field_validator` in `models/` uses to
+   decide whether an artifact may exist. Those helpers are producers. A validator
+   that calls one agrees with it however wrong it is.
+
+   This second guard exists because the first one was not enough. It read only
+   `verify/independent.py`, so it could not see an import made from
+   `verify/validators.py` — and two validators went out coupled to the producer
+   rules they were supposed to check independently. The guard below discovers the
+   producer rules by walking `models/` for functions called inside a validator
+   decorator, rather than from a hand-maintained list, so a new producer rule is
+   protected the day it is written.
+3. Every validator must publish what it proves and what it cannot, and those claims
    must stay in one-to-one correspondence with the code.
 """
 
@@ -35,6 +47,10 @@ from agent_foundry.verify.independent import (
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "agent_foundry"
 INDEPENDENT = SRC / "verify" / "independent.py"
+VERIFY_MODULES = sorted((SRC / "verify").glob("*.py"))
+MODELS_MODULES = sorted((SRC / "models").glob("*.py"))
+
+VALIDATOR_DECORATORS = frozenset({"model_validator", "field_validator"})
 
 # Packages whose implementations the independent layer must never consult. Importing
 # any of them would make a "second derivation" a call back into the first.
@@ -48,6 +64,7 @@ FORBIDDEN_IMPORT_ROOTS = (
 
 
 def _imported_modules(path: Path) -> set[str]:
+    """Every module named by an import in this file, including deferred ones."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     modules: set[str] = set()
     for node in ast.walk(tree):
@@ -58,8 +75,68 @@ def _imported_modules(path: Path) -> set[str]:
     return modules
 
 
-def test_the_independent_layer_imports_none_of_the_producing_packages():
-    imported = _imported_modules(INDEPENDENT)
+def _decorator_name(node: ast.expr) -> str | None:
+    while isinstance(node, ast.Call):
+        node = node.func
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Name):
+        return node.id
+    return None
+
+
+def producer_validation_rules() -> dict[str, str]:
+    """Helpers that a model validator in `models/` calls to gate construction.
+
+    Discovered rather than listed: any module-level function called from inside a
+    `@model_validator` or `@field_validator` body is, by definition, part of the rule
+    that decides whether the producer will emit the artifact at all.
+    """
+    rules: dict[str, str] = {}
+    for path in MODELS_MODULES:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        module_level = {
+            node.name
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not any(
+                _decorator_name(decorator) in VALIDATOR_DECORATORS
+                for decorator in node.decorator_list
+            ):
+                continue
+            for called in ast.walk(node):
+                if isinstance(called, ast.Call) and isinstance(called.func, ast.Name):
+                    if called.func.id in module_level:
+                        rules[called.func.id] = f"agent_foundry.models.{path.stem}"
+    return rules
+
+
+def _referenced_names(path: Path) -> set[str]:
+    """Names this file imports or reaches for as an attribute.
+
+    Covers `from x import rule`, `import x` then `x.rule(...)`, and imports made
+    inside a function body, so there is no spelling of "call the producer's rule"
+    that slips past.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            names.update(alias.asname or alias.name for alias in node.names)
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+    return names
+
+
+@pytest.mark.parametrize("path", VERIFY_MODULES, ids=lambda p: p.name)
+def test_no_verify_module_imports_a_producing_package(path):
+    """Widened from `independent.py` alone: the narrow guard let a coupling through."""
+    imported = _imported_modules(path)
     offenders = sorted(
         module
         for module in imported
@@ -67,9 +144,64 @@ def test_the_independent_layer_imports_none_of_the_producing_packages():
         if module == root or module.startswith(f"{root}.")
     )
     assert offenders == [], (
-        f"{INDEPENDENT.name} imports {offenders}; a validator built on the code that "
+        f"verify/{path.name} imports {offenders}; a validator built on the code that "
         "produces the artifact agrees with it by construction"
     )
+
+
+def test_producer_validation_rules_are_discovered_not_assumed():
+    """The discovery has to actually find the rules, or the next guard is vacuous."""
+    rules = producer_validation_rules()
+    for expected in (
+        "disposition_obligation_violations",
+        "evidence_state_partition_violations",
+        "validate_schema_compatibility",
+        "lint_no_raw_secrets",
+    ):
+        assert expected in rules, f"{expected} was not discovered as a producer rule"
+
+
+@pytest.mark.parametrize("path", VERIFY_MODULES, ids=lambda p: p.name)
+def test_no_verify_module_calls_a_producer_owned_validation_rule(path):
+    """A model validator's helper decides whether the artifact may exist.
+
+    Reusing it here would mean a wrong rule and its purported validator agree —
+    the AF6 failure mode, one layer down. The obligations those helpers encode are
+    restated in `verify/independent.py` from the contract text instead.
+    """
+    rules = producer_validation_rules()
+    referenced = _referenced_names(path)
+    offenders = sorted(name for name in referenced if name in rules)
+    assert offenders == [], (
+        f"verify/{path.name} references producer validation rule(s) {offenders} "
+        f"(defined in {sorted({rules[name] for name in offenders})}); re-derive the "
+        "rule in verify/independent.py instead of calling the producer's copy"
+    )
+
+
+def test_the_producer_rule_guard_would_catch_a_reintroduced_coupling(tmp_path):
+    """Guard the guard: a file that does import the producer rule must be flagged."""
+    offending = tmp_path / "recoupled.py"
+    offending.write_text(
+        "from agent_foundry.models.interaction import "
+        "evidence_state_partition_violations\n",
+        encoding="utf-8",
+    )
+    rules = producer_validation_rules()
+    referenced = _referenced_names(offending)
+    assert sorted(name for name in referenced if name in rules) == [
+        "evidence_state_partition_violations"
+    ]
+
+    attribute_style = tmp_path / "recoupled_attr.py"
+    attribute_style.write_text(
+        "from agent_foundry.models import interaction\n"
+        "def check(x):\n"
+        "    return interaction.disposition_obligation_violations(**x)\n",
+        encoding="utf-8",
+    )
+    referenced_attr = _referenced_names(attribute_style)
+    assert "disposition_obligation_violations" in referenced_attr
 
 
 def test_the_independent_layer_only_depends_on_contracts():
@@ -205,6 +337,26 @@ def test_a_claim_that_is_not_independently_derived_explains_what_it_is_worth():
     assert dependent, "at least one honest dependency is expected to be declared"
     for claim in dependent:
         assert "worth" in claim.cannot_prove or "and nothing more" in claim.cannot_prove
+
+
+def test_independence_claims_rest_on_the_dependency_guard_not_on_assertion():
+    """`independently_derived=True` has to be backed by something mechanical.
+
+    Every validator lives in a module the guard above covers, and that guard fails on
+    any reference to a producer-owned validation rule. So a True in the catalog is
+    only sayable while no validator module calls a producer's rule — which is what
+    went wrong the first time this shipped, and what is now checked rather than
+    claimed.
+    """
+    hosting = {"validators.py", "explain.py", "independent.py"}
+    covered = {path.name for path in VERIFY_MODULES}
+    assert hosting <= covered, sorted(hosting - covered)
+
+    rules = producer_validation_rules()
+    assert rules, "producer-rule discovery found nothing; the guard would be vacuous"
+    for path in VERIFY_MODULES:
+        offenders = sorted(name for name in _referenced_names(path) if name in rules)
+        assert offenders == [], (path.name, offenders)
 
 
 def test_most_validators_are_independently_derived():

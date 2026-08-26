@@ -136,8 +136,11 @@ def disposition_obligation_violations(
 ) -> list[str]:
     """Obligations a disposition owes, expressed over plain values.
 
-    Kept as a free function over primitives so a validator can apply the same rule
-    to a deserialized payload that never passed through `RunFinding.__init__`.
+    This is the *producer* rule: it decides whether a `RunFinding` may be
+    constructed at all. The validation layer must not call it. A validator that
+    reuses this function agrees with it however wrong it is, which is the defect
+    AF6 was blocked for; `agent_foundry.verify.independent` restates the same
+    obligations from docs/foundry/06 §9 as a table so the two can disagree.
     """
     violations: list[str] = []
     value = disposition.value if isinstance(disposition, FindingDisposition) else str(disposition)
@@ -317,8 +320,12 @@ def evidence_state_partition_violations(
     """Partition rules for the two evidence-state lists, over plain values.
 
     A state cannot be both attained and exempt, and `NOT_REQUIRED` is the marker for
-    the exempt list rather than an attainment. Expressed over strings so a validator
-    can apply it to a payload that bypassed model construction.
+    the exempt list rather than an attainment.
+
+    This is the *producer* rule, enforced when an `ExecutionReceipt` is constructed.
+    The validation layer must not call it; `agent_foundry.verify.independent`
+    derives the same partition from the evidence progression instead, so a defect
+    here cannot be laundered through the check meant to catch it.
     """
     violations: list[str] = []
     overlap = sorted(set(attained) & set(not_required))

@@ -1,24 +1,33 @@
-"""Mutation tests: neutralize the producer, and the validator must still reject.
+"""Mutation tests: the producer accepts the artifact, and the validator rejects it.
 
 The rule these tests enforce is the one AF6 was blocked twice for missing:
 
     Do not validate an artifact by calling the function that produced it.
 
-Each test below disables the function that would normally compute or guard the
-property — replacing it with a no-op, an identity, or a stub that agrees with the
-forgery — and then feeds the validator an artifact that must be rejected. A
-validator that only agreed with its producer passes nothing here.
+Every test here follows the same two-step order, and the order is the point:
 
-Two of them go further and check that the *mutation itself* is load-bearing: with
-the guard neutralized, the producing path really does accept the forgery, so the
-rejection can only be coming from the independent layer.
+1. **Producer acceptance.** Neutralize the function that would normally compute or
+   guard the property — with a no-op, an identity, a stub that agrees with the
+   forgery, or a wrong stamp — and then show a *real production path* emitting or
+   accepting the defective artifact. Not a hand-built object handed straight to the
+   validator: `compile_work_item` returning a bundle, `build_execution_receipt`
+   stamping a receipt, `model_validate`/`load_yaml` ingesting a payload.
+2. **Independent rejection.** Feed that same artifact to the validator and require a
+   non-accepting outcome.
+
+Where a validator has no code producer — evidence bundles and required-evidence
+pairings arrive from outside Foundry — step 1 is the model ingestion path
+(`load_yaml` / `model_validate`), and the test says so rather than glossing it.
+Several tests also assert an unpatched control first, so "the producer would
+normally reject this" is established rather than assumed.
 """
 
 from __future__ import annotations
 
 
+import pytest
+
 from agent_foundry.models import (
-    EvidenceClass,
     EvidenceState,
     ExecutionState,
     ExternalEffectClass,
@@ -26,8 +35,8 @@ from agent_foundry.models import (
     ValidationOutcome,
     WorkLifecycleState,
 )
-from agent_foundry.models.base import FOUNDRY_SCHEMA_VERSION
 from agent_foundry.models.interaction import EvidenceBundle
+from agent_foundry.toolkit import default_registry
 from agent_foundry.verify import (
     validate_authority_ceiling,
     validate_decision_explainability,
@@ -44,6 +53,7 @@ from agent_foundry.verify import (
     validate_work_dependency_graph,
     validate_write_scope_containment,
 )
+from agent_foundry.verify.receipt import receipt_artifacts
 from verify_support import (
     compiled,
     complete_receipt,
@@ -182,24 +192,37 @@ def test_authority_ceiling_survives_a_compiler_that_agrees_with_the_forgery(monk
 
 
 def test_write_scope_containment_survives_an_identity_path_normalizer(monkeypatch):
-    """Producer: `compile.authority._normalize_scope_path`, replaced by the identity."""
+    """Producer: `compile.authority._normalize_scope_path`, replaced by the identity.
+
+    Step 1 runs the whole compiler. With resolution reduced to the identity, textual
+    prefix comparison accepts `src//../../etc` as living under the role bound `src/`,
+    so `compile_work_item` *returns a bundle granting write access above the
+    repository root* — and the AF6 bundle guard, which shares the normalizer, passes
+    it. Nothing is hand-forged here; the production path emits the defect.
+    """
     import agent_foundry.compile.authority as authority_module
+    from agent_foundry.compile import compile_work_item
+    from agent_foundry.toolkit import resolve_toolkit
+    from verify_support import sample_manifest
+
+    escaping = "src//../../etc"
+    assert authority_module._normalize_scope_path(escaping) is None  # unpatched control
 
     monkeypatch.setattr(authority_module, "_normalize_scope_path", lambda scope: scope)
-    monkeypatch.setattr(
-        authority_module, "validate_execution_bundle_authority", lambda *a, **k: None
-    )
-    # With the identity normalizer in place the compiler's own containment test now
-    # accepts a traversal, because "src/../../etc" textually starts with nothing it
-    # would have caught.
-    assert authority_module._normalize_scope_path("src/../../etc") == "src/../../etc"
 
-    artifacts = compiled()
-    forged = artifacts["bundle"].authority.model_copy(
-        update={"write_scope": ["src/../../etc"], "forbidden_scopes": []}
-    )
+    manifest = sample_manifest()
+    work_item = sample_work_item(scope=[escaping])
+    _, lock = resolve_toolkit(manifest)
+    produced = compile_work_item(work_item, manifest, lock, "builder", "RUN-ESCAPE")
+
+    # Producer acceptance: the compiler returned rather than raising, and the bundle
+    # it produced grants a path that climbs out of the repository.
+    assert produced.bundle.authority.write_scope == [escaping]
+    assert produced.bundle.write_scope == [escaping]
+
+    role = next(item for item in default_registry().roles if item.id == "builder")
     report = validate_write_scope_containment(
-        forged, work_item=artifacts["work_item"], role=artifacts["role"]
+        produced.bundle.authority, work_item=work_item, role=role
     )
     assert report.outcome() == ValidationOutcome.BLOCKED
     assert "does not resolve" in _messages(report)
@@ -261,22 +284,35 @@ def test_integration_preflight_survives_a_preflight_that_reports_everything_heal
 # --- 8. required-evidence -----------------------------------------------------------
 
 
-def test_required_evidence_survives_a_bundle_builder_that_fabricates_evidence(monkeypatch):
-    """Producer: any evidence assembler; here the bundle arrives empty but well-formed."""
-    import verify_support
+def test_required_evidence_survives_both_real_production_paths():
+    """Producers: `compile_work_item` and `load_yaml` — no code producer pairs them.
 
-    def _empty_bundle(**_overrides):
-        return EvidenceBundle(
-            schema_version=FOUNDRY_SCHEMA_VERSION,
-            work_item_id="WI-VERIFY-001",
-            run_id="RUN-VERIFY-001",
-        )
+    Foundry has no evidence assembler; an evidence bundle arrives from a run or a
+    file. So step 1 exercises the two production paths that actually exist. The
+    compiler emits a bundle asserting `deterministic-test` is required, and
+    `load_yaml` ingests an evidence bundle that proves none of it. Both accept. The
+    pairing is what nobody checks — until this validator does.
+    """
+    from agent_foundry.models import load_yaml
 
-    monkeypatch.setattr(verify_support, "full_evidence_bundle", _empty_bundle)
-    forged = verify_support.full_evidence_bundle()
-    assert forged.items == []
+    artifacts = compiled()
 
-    report = validate_required_evidence(sample_work_item(), forged)
+    # Producer acceptance (1/2): the compiler records the requirement and moves on.
+    required = [
+        record
+        for record in artifacts["bundle"].provenance
+        if record.component_kind == "required-evidence"
+    ]
+    assert {record.component_id for record in required} >= {"deterministic-test"}
+
+    # Producer acceptance (2/2): an evidence bundle proving nothing loads cleanly.
+    ingested = load_yaml(
+        EvidenceBundle,
+        b"schema_version: '0.1'\nwork_item_id: WI-VERIFY-001\nrun_id: RUN-VERIFY-001\n",
+    )
+    assert ingested.items == []
+
+    report = validate_required_evidence(artifacts["work_item"], ingested)
     assert report.outcome() == ValidationOutcome.MISSING
     assert "no passing evidence item declares class" in _messages(report)
 
@@ -284,24 +320,28 @@ def test_required_evidence_survives_a_bundle_builder_that_fabricates_evidence(mo
 # --- 9. evidence-bundle-completeness -------------------------------------------------
 
 
-def test_evidence_bundle_completeness_survives_a_bypassed_model_validator():
-    """Producer: the `EvidenceBundle` model itself, bypassed with `model_construct`.
+def test_evidence_bundle_completeness_survives_the_real_ingestion_path():
+    """Producer: `load_yaml`, the path by which every evidence bundle actually arrives.
 
-    `model_construct` skips every field and model validator, which is exactly what a
-    hand-written or externally supplied payload amounts to.
+    There is no evidence-bundle builder to neutralize — which is exactly why the
+    ingestion path is the producer worth testing. A bundle naming no revision, no
+    items, and no result is a valid `EvidenceBundle`: every one of those fields is
+    optional, so `load_yaml` accepts it without complaint. The validator is the only
+    thing standing between that and a run reported as evidenced.
     """
-    good = full_evidence_bundle()
-    forged = EvidenceBundle.model_construct(
-        **{
-            **good.__dict__,
-            "identity": None,
-            "items": [],
-            "not_required_classes": [EvidenceClass.DETERMINISTIC_TEST],
-        }
+    from agent_foundry.models import load_yaml
+
+    hollow = load_yaml(
+        EvidenceBundle,
+        b"schema_version: '0.1'\nwork_item_id: WI-VERIFY-001\nrun_id: RUN-VERIFY-001\n",
     )
-    report = validate_evidence_bundle_completeness(forged)
+    # Producer acceptance: it validated, and it proves nothing.
+    assert hollow.identity is None and hollow.items == []
+
+    report = validate_evidence_bundle_completeness(hollow)
     assert report.outcome() == ValidationOutcome.MISSING
     assert "names no revision identity" in _messages(report)
+    assert "carries no items" in _messages(report)
 
 
 # --- 10. provenance-completeness -------------------------------------------------------
@@ -380,11 +420,43 @@ def test_lifecycle_separation_survives_a_neutralized_receipt_builder(monkeypatch
 # --- 13. receipt-completeness ------------------------------------------------------------
 
 
-def test_receipt_completeness_survives_a_receipt_builder_that_names_the_wrong_artifact(monkeypatch):
-    """Producer: `verify.receipt.build_execution_receipt`, stubbed to stamp a stale digest."""
+def test_receipt_completeness_survives_a_neutralized_digest_stamp(monkeypatch):
+    """Producer: `verify.receipt.artifact_digest`, the function that stamps a receipt.
+
+    Step 1 neutralizes the stamping function and then runs the real
+    `build_execution_receipt`, which emits a receipt whose declared digests do not
+    correspond to any artifact it was given. Step 2 recomputes through
+    `verify.independent.contract_digest` — a deliberately separate call site — and
+    catches it. Sharing one helper between stamping and checking would have made
+    this mutation invisible.
+    """
     import agent_foundry.verify.receipt as receipt_module
 
-    receipt, artifacts = complete_receipt()
+    honest, artifacts = complete_receipt()
+    monkeypatch.setattr(receipt_module, "artifact_digest", lambda model: "0" * 64)
+
+    stamped, _ = complete_receipt()
+    # Producer acceptance: the builder returned a receipt carrying a bogus digest.
+    assert {identity.digest for identity in stamped.artifact_identities} == {"0" * 64}
+    assert stamped.artifact_identities != honest.artifact_identities
+
+    report = validate_receipt_completeness(
+        stamped,
+        artifacts=receipt_artifacts(
+            artifacts["bundle"],
+            project_lock=artifacts["lock"],
+            registry=artifacts["registry"],
+        ),
+    )
+    assert report.outcome() == ValidationOutcome.BLOCKED
+    assert "digests to" in _messages(report)
+
+
+def test_receipt_completeness_still_catches_a_receipt_naming_another_run(monkeypatch):
+    """The same property from the other side: a valid receipt, a different artifact."""
+    import agent_foundry.verify.receipt as receipt_module
+
+    receipt, _ = complete_receipt()
     other = compiled(run_id="RUN-OTHER")["bundle"]
     monkeypatch.setattr(receipt_module, "build_execution_receipt", lambda **k: receipt)
     assert receipt_module.build_execution_receipt() is receipt
@@ -414,6 +486,119 @@ def test_receipt_completeness_survives_a_disposition_rule_bypassed_at_constructi
     report = validate_receipt_completeness(forged)
     assert report.outcome() == ValidationOutcome.BLOCKED
     assert "RESIDUAL requires follow_up_work_ref" in _messages(report)
+
+
+# --- producer-owned model rules are re-derived, not reused ---------------------
+#
+# Both rules below are enforced by a pydantic model validator, which is a producer:
+# it decides whether the artifact may exist at all. The first version of this change
+# shipped validators that called the producer's own helper, so gutting the helper
+# made producer and validator agree that an invalid payload was fine. These tests
+# are the standing proof that the two derivations can now disagree.
+
+
+def test_lifecycle_separation_survives_a_neutralized_partition_rule(monkeypatch):
+    """Producer: `models.interaction.evidence_state_partition_violations`."""
+    from agent_foundry.models import ExecutionReceipt
+    from agent_foundry.models.interaction import ReceiptContractError
+    import agent_foundry.models.interaction as interaction
+
+    receipt, _ = complete_receipt()
+    overlapping = {
+        **receipt.model_dump(mode="json"),
+        "not_required_evidence_states": [
+            *[state.value for state in receipt.not_required_evidence_states],
+            EvidenceState.VALIDATED.value,
+        ],
+    }
+
+    # Control: unpatched, the producer refuses to build this receipt at all.
+    with pytest.raises(ReceiptContractError):
+        ExecutionReceipt.model_validate(overlapping)
+
+    monkeypatch.setattr(
+        interaction, "evidence_state_partition_violations", lambda **_kwargs: []
+    )
+
+    # Producer acceptance: with the rule gutted, ingestion now emits the receipt.
+    accepted = ExecutionReceipt.model_validate(overlapping)
+    assert EvidenceState.VALIDATED in accepted.attained_evidence_states
+    assert EvidenceState.VALIDATED in accepted.not_required_evidence_states
+
+    report = validate_lifecycle_separation(accepted)
+    assert report.outcome() == ValidationOutcome.BLOCKED
+    assert "both attained and not-required" in _messages(report)
+
+
+def test_completeness_validators_survive_a_neutralized_disposition_rule(monkeypatch):
+    """Producer: `models.interaction.disposition_obligation_violations`.
+
+    One gutted helper, two validators that must both still bite — a RESIDUAL with no
+    follow-up work is how a bounded weakness quietly becomes permanent.
+    """
+    from agent_foundry.models import RunFinding
+    from agent_foundry.models.interaction import ReceiptContractError
+    import agent_foundry.models.interaction as interaction
+
+    naked_residual = {
+        "id": "F-NAKED",
+        "disposition": "RESIDUAL",
+        "summary": "error paths left untested",
+    }
+
+    # Control: unpatched, the producer refuses to build the finding.
+    with pytest.raises(ReceiptContractError, match="RESIDUAL requires follow_up_work_ref"):
+        RunFinding.model_validate(naked_residual)
+
+    monkeypatch.setattr(
+        interaction, "disposition_obligation_violations", lambda **_kwargs: []
+    )
+
+    # Producer acceptance: the finding now constructs with nothing to follow up.
+    accepted = RunFinding.model_validate(naked_residual)
+    assert accepted.follow_up_work_ref is None
+
+    receipt, _ = complete_receipt()
+    receipt_report = validate_receipt_completeness(
+        receipt.model_copy(update={"findings": [accepted]})
+    )
+    assert receipt_report.outcome() == ValidationOutcome.BLOCKED
+    assert "RESIDUAL requires follow_up_work_ref" in _messages(receipt_report)
+
+    bundle_report = validate_evidence_bundle_completeness(
+        full_evidence_bundle().model_copy(update={"unresolved": [accepted]})
+    )
+    assert bundle_report.outcome() == ValidationOutcome.BLOCKED
+    assert "RESIDUAL requires follow_up_work_ref" in _messages(bundle_report)
+
+
+# Constructing an off-vocabulary disposition is the point of the test; pydantic
+# warns when serializing it back out, which is the expected consequence, not a defect.
+@pytest.mark.filterwarnings("ignore:Pydantic serializer warnings:UserWarning")
+def test_an_unrecognised_disposition_owes_an_obligation_it_cannot_meet():
+    """The re-derived table refuses to pass what it cannot place.
+
+    The producer's branch chain silently ignores a disposition it has no branch for.
+    The table-driven derivation treats an entry it does not hold as a violation, so
+    a new disposition added without an obligation is visible rather than exempt.
+    """
+    from agent_foundry.models import RunFinding
+
+    unknown = RunFinding.model_construct(
+        id="F-UNKNOWN",
+        disposition="SOMEDAY",
+        summary="a disposition nobody defined an obligation for",
+        evidence_refs=[],
+        follow_up_work_ref=None,
+        falsifiable_prediction=None,
+        evidence_condition=None,
+        escalation_reason=None,
+        failure_category=None,
+    )
+    receipt, _ = complete_receipt()
+    report = validate_receipt_completeness(receipt.model_copy(update={"findings": [unknown]}))
+    assert report.outcome() == ValidationOutcome.BLOCKED
+    assert "carries no known obligation" in _messages(report)
 
 
 # --- 14. decision-explainability -----------------------------------------------------------

@@ -6,6 +6,12 @@ wrong producer cannot launder a wrong result through the check that is supposed 
 catch it. `agent_foundry.verify.claims` records what each one proves and what it
 does not.
 
+This includes rules that a pydantic model validator also enforces. A model
+validator is a producer — it decides whether an artifact may exist — so its helper
+is off limits here, and the obligations it checks are restated in
+`agent_foundry.verify.independent` from the contract text instead. A dependency test
+reads the import graph of every module in this package to keep that route closed.
+
 Three rules the whole module obeys:
 
 * Absence resolves to `MISSING`, never `PASS`. An unobserved integration, an absent
@@ -39,8 +45,6 @@ from agent_foundry.models.interaction import (
     EvidenceBundle,
     ExecutionReceipt,
     ReviewDecision,
-    disposition_obligation_violations,
-    evidence_state_partition_violations,
 )
 from agent_foundry.models.policy import PermissionProfile
 from agent_foundry.models.project import ProjectManifest
@@ -53,9 +57,12 @@ from agent_foundry.verify.independent import (
     authentication_evidenced,
     compat_clause_satisfied,
     contained_in_any,
+    contract_digest,
     declared_ceiling,
     effect_rank,
+    evidence_state_partition_conflicts,
     exceeds,
+    finding_obligation_violations,
     health_satisfies,
     normalize_repository_path,
     parse_major_minor,
@@ -1415,14 +1422,9 @@ def validate_evidence_bundle_completeness(bundle: EvidenceBundle) -> ValidationR
             )
 
     for index, finding_data in enumerate(data.get("unresolved") or []):
-        for message in disposition_obligation_violations(
-            disposition=finding_data.get("disposition", ""),
-            finding_id=str(finding_data.get("id", f"#{index}")),
-            evidence_refs=list(finding_data.get("evidence_refs") or []),
-            follow_up_work_ref=finding_data.get("follow_up_work_ref"),
-            falsifiable_prediction=finding_data.get("falsifiable_prediction"),
-            evidence_condition=finding_data.get("evidence_condition"),
-            escalation_reason=finding_data.get("escalation_reason"),
+        for message in finding_obligation_violations(
+            finding_data,
+            label=str(finding_data.get("id", f"#{index}")),
         ):
             findings.append(
                 _finding(validator_id, ValidationOutcome.BLOCKED, subject, message)
@@ -1777,7 +1779,7 @@ def validate_lifecycle_separation(
             )
         )
 
-    for message in evidence_state_partition_violations(
+    for message in evidence_state_partition_conflicts(
         attained=[str(state) for state in attained],
         not_required=[str(state) for state in not_required],
     ):
@@ -1907,9 +1909,10 @@ def validate_receipt_completeness(
                 )
             )
             continue
-        from agent_foundry.verify.receipt import artifact_digest
-
-        actual = artifact_digest(artifact)
+        # Recomputed through the independent layer, not through the function a
+        # receipt producer uses to stamp the digest. Neutralizing the stamping
+        # function must not neutralize this comparison.
+        actual = contract_digest(artifact)
         if declared != actual:
             findings.append(
                 _finding(
@@ -1933,14 +1936,9 @@ def validate_receipt_completeness(
         )
 
     for index, finding_data in enumerate(data.get("findings") or []):
-        for message in disposition_obligation_violations(
-            disposition=finding_data.get("disposition", ""),
-            finding_id=str(finding_data.get("id", f"#{index}")),
-            evidence_refs=list(finding_data.get("evidence_refs") or []),
-            follow_up_work_ref=finding_data.get("follow_up_work_ref"),
-            falsifiable_prediction=finding_data.get("falsifiable_prediction"),
-            evidence_condition=finding_data.get("evidence_condition"),
-            escalation_reason=finding_data.get("escalation_reason"),
+        for message in finding_obligation_violations(
+            finding_data,
+            label=str(finding_data.get("id", f"#{index}")),
         ):
             findings.append(
                 _finding(validator_id, ValidationOutcome.BLOCKED, subject, message)
