@@ -73,6 +73,14 @@ def validate_schema_compatibility(contract_name: str, found_version: str) -> Non
         )
 
 
+def _redact_path_segment(segment: str) -> str:
+    """Never echo a credential-shaped mapping key inside a diagnostic path."""
+    from agent_foundry.secrets import _match_tier_a
+
+    rule = _match_tier_a(segment)
+    return f"[redacted:{rule}]" if rule is not None else segment
+
+
 def lint_no_raw_secrets(value: Any, path: str = "") -> None:
     """Reject mapping keys that resemble credential material unless value is SecretRef."""
     # SecretRef imported lazily to avoid circular import at module load.
@@ -90,7 +98,8 @@ def lint_no_raw_secrets(value: Any, path: str = "") -> None:
         return
     if isinstance(value, dict):
         for key, child in value.items():
-            key_path = f"{path}.{key}" if path else str(key)
+            safe_key = _redact_path_segment(str(key))
+            key_path = f"{path}.{safe_key}" if path else safe_key
             if _RAW_SECRET_KEY_PATTERN.match(str(key)):
                 if not isinstance(child, SecretRef):
                     if isinstance(child, dict) and {"provider", "name"} <= set(child.keys()):

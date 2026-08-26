@@ -1,7 +1,7 @@
 """Deterministic YAML/JSON load and dump helpers.
 
 Key ordering: sort_keys=True for both JSON and YAML to ensure byte-stable output.
-YAML: no anchors/aliases (default PyYAML safe_dump behaviour).
+YAML: no anchors/aliases (enforced by _NoAliasDumper).
 Encoding: UTF-8 with trailing newline on every dump.
 """
 
@@ -20,6 +20,40 @@ T = TypeVar("T", bound=FoundryModel)
 
 def _sort_key(value: Any) -> str:
     return json.dumps(value, sort_keys=True, default=str)
+
+
+class _NoAliasDumper(yaml.SafeDumper):
+    """Expand every occurrence of a shared node instead of emitting anchors/aliases.
+
+    Normalization memoizes by object identity, so a subtree reachable from several
+    positions is installed as the *same* object. PyYAML would render that as an
+    anchor plus aliases, changing the bytes and making a round-trip return shared
+    mutable objects rather than independent copies.
+    """
+
+    def ignore_aliases(self, data: Any) -> bool:
+        return True
+
+
+def _json_key(key: Any) -> str:
+    """Coerce a mapping key exactly as ``json.encoder`` does before quoting it."""
+    if isinstance(key, str):
+        return key
+    if isinstance(key, bool):
+        return "true" if key else "false"
+    if key is None:
+        return "null"
+    if isinstance(key, int):
+        return int.__repr__(key)
+    if isinstance(key, float):
+        if key != key:
+            return "NaN"
+        if key == float("inf"):
+            return "Infinity"
+        if key == float("-inf"):
+            return "-Infinity"
+        return float.__repr__(key)
+    raise TypeError(f"keys must be str, int, float, bool or None, not {type(key).__name__}")
 
 
 def _normalize_for_serialization(data: Any) -> Any:
@@ -54,18 +88,24 @@ def _normalize_for_serialization(data: Any) -> Any:
             for item in reversed(sorted(node, key=_sort_key)):
                 stack.append((item, False))
 
-    for node in post_order:
-        node_id = id(node)
-        if isinstance(node, dict):
-            memo[node_id] = {key: memo[id(node[key])] for key in sorted(node.keys())}
-        elif isinstance(node, list):
-            memo[node_id] = [memo[id(item)] for item in node]
-        elif isinstance(node, tuple):
-            memo[node_id] = [memo[id(item)] for item in node]
-        elif isinstance(node, (set, frozenset)):
-            sorted_items = sorted(node, key=_sort_key)
-            memo[node_id] = [memo[id(item)] for item in sorted_items]
+    # A child missing from memo means it was skipped as already-visiting, i.e. a cycle.
+    try:
+        for node in post_order:
+            node_id = id(node)
+            if isinstance(node, dict):
+                memo[node_id] = {key: memo[id(node[key])] for key in sorted(node.keys())}
+            elif isinstance(node, list):
+                memo[node_id] = [memo[id(item)] for item in node]
+            elif isinstance(node, tuple):
+                memo[node_id] = [memo[id(item)] for item in node]
+            elif isinstance(node, (set, frozenset)):
+                sorted_items = sorted(node, key=_sort_key)
+                memo[node_id] = [memo[id(item)] for item in sorted_items]
+    except KeyError as exc:
+        raise ValueError("Circular reference detected") from exc
 
+    if id(data) not in memo:
+        raise ValueError("Circular reference detected")
     return memo[id(data)]
 
 
@@ -99,18 +139,23 @@ def _json_dumps_deterministic(data: Any) -> str:
             for item in reversed(node):
                 stack.append((item, False))
 
-    for node in post_order:
-        node_id = id(node)
-        if isinstance(node, dict):
-            items = [
-                f"{json.dumps(key, ensure_ascii=False, separators=(',', ':'))}"
-                f":{memo[id(node[key])]}"
-                for key in sorted(node.keys())
-            ]
-            memo[node_id] = "{" + ",".join(items) + "}"
-        else:
-            memo[node_id] = "[" + ",".join(memo[id(item)] for item in node) + "]"
+    try:
+        for node in post_order:
+            node_id = id(node)
+            if isinstance(node, dict):
+                items = [
+                    f"{json.dumps(_json_key(key), ensure_ascii=False, separators=(',', ':'))}"
+                    f":{memo[id(node[key])]}"
+                    for key in sorted(node.keys())
+                ]
+                memo[node_id] = "{" + ",".join(items) + "}"
+            else:
+                memo[node_id] = "[" + ",".join(memo[id(item)] for item in node) + "]"
+    except KeyError as exc:
+        raise ValueError("Circular reference detected") from exc
 
+    if id(data) not in memo:
+        raise ValueError("Circular reference detected")
     return memo[id(data)]
 
 
@@ -136,8 +181,9 @@ def dump_yaml(model: FoundryModel, *, allow_paths: tuple[str, ...] = ()) -> byte
     """Serialize a model to deterministic UTF-8 YAML bytes with trailing newline."""
     payload = _normalize_for_serialization(model.model_dump(mode="json"))
     raise_on_embedded_secrets(payload, allow_paths=allow_paths)
-    text = yaml.safe_dump(
+    text = yaml.dump(
         payload,
+        Dumper=_NoAliasDumper,
         sort_keys=True,
         default_flow_style=False,
         allow_unicode=True,
@@ -183,8 +229,9 @@ def dump_yaml_raw(data: Any, *, allow_paths: tuple[str, ...] = ()) -> bytes:
     """Dump arbitrary YAML-serializable data deterministically."""
     normalized = _normalize_for_serialization(data)
     raise_on_embedded_secrets(normalized, allow_paths=allow_paths)
-    text = yaml.safe_dump(
+    text = yaml.dump(
         normalized,
+        Dumper=_NoAliasDumper,
         sort_keys=True,
         default_flow_style=False,
         allow_unicode=True,

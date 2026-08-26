@@ -13,6 +13,7 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 ### Added
 
 - Write/render boundary embedded-secret guard: Tier A (known vendor credential formats in values and keys) hard-fails serialization; Tier B (value entropy) is advisory only and does not block.
+- Embedded-secret guard covers hyphenated OpenAI project/service-account keys, JOSE headers with `alg` in any position, and PGP private-key armor; credential-shaped mapping keys are redacted out of diagnostic paths.
 - Clean public architecture baseline for Agent Foundry.
 - Greenfield and brownfield project-adoption model.
 - Tracker-neutral causal work model.
