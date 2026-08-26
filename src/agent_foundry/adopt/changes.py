@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from agent_foundry.adopt.authority import AuthorityAxis, authority_axis_for_target
 from agent_foundry.models.base import FOUNDRY_SCHEMA_VERSION
 from agent_foundry.models.common import (
     AdoptionAction,
@@ -26,7 +27,7 @@ def _evidence(
     summary: str,
     *,
     kind: ProvenanceKind,
-    source_ref: str = ".",
+    source_ref: str | None = None,
     confidence: float | None = None,
     evidence_refs: list[str] | None = None,
     verbatim: str | None = None,
@@ -47,7 +48,7 @@ def _change(
     kind: ProvenanceKind,
     authority_requirement: AuthorityRequirement,
     status: AdoptionChangeStatus,
-    source_ref: str = ".",
+    source_ref: str | None = None,
     confidence: float | None = None,
     evidence_refs: list[str] | None = None,
     verbatim: str | None = None,
@@ -76,15 +77,30 @@ def _observation_subjects(intake: ProjectIntake) -> set[str]:
     return {observation.subject for observation in intake.observations}
 
 
-def _agent_surface_refs(intake: ProjectIntake) -> list[str]:
+def _observation_refs(intake: ProjectIntake, subject: str) -> list[str]:
+    """Source refs actually observed for a subject — never fabricated."""
     return sorted(
         {
             observation.provenance.source_ref
             for observation in intake.observations
-            if observation.subject == "agent-instruction-surface"
-            and observation.provenance.source_ref
+            if observation.subject == subject and observation.provenance.source_ref
         }
     )
+
+
+def _primary_ref(refs: list[str]) -> str | None:
+    return refs[0] if refs else None
+
+
+def _specific_ref(source_ref: str | None, refs: list[str]) -> str | None:
+    """Prefer a located file over a bare project-root source_ref."""
+    if source_ref and source_ref not in {".", "./"}:
+        return source_ref
+    return _primary_ref(refs)
+
+
+def _agent_surface_refs(intake: ProjectIntake) -> list[str]:
+    return _observation_refs(intake, "agent-instruction-surface")
 
 
 def _bootstrap_changes(intake: ProjectIntake) -> list[AdoptionChangeItem]:
@@ -126,9 +142,12 @@ def _bootstrap_changes(intake: ProjectIntake) -> list[AdoptionChangeItem]:
                 action=AdoptionAction.HARDEN,
                 summary="Add deterministic test entrypoints before increasing autonomy",
                 kind=ProvenanceKind.INFERRED,
-                authority_requirement=AuthorityRequirement.NONE,
-                status=AdoptionChangeStatus.AUTO_APPLICABLE,
-                rationale="Testability is a prerequisite for safe agent execution",
+                authority_requirement=AuthorityRequirement.BOUNDED_POLICY,
+                status=AdoptionChangeStatus.PROPOSED,
+                rationale=(
+                    "Testability is a prerequisite for safe agent execution, but adding "
+                    "entrypoints writes new repository files and is not self-authorizing"
+                ),
                 priority=3,
             )
         )
@@ -160,6 +179,7 @@ def _foundry_retention_changes(intake: ProjectIntake) -> list[AdoptionChangeItem
                     kind=ProvenanceKind.DECLARED,
                     authority_requirement=AuthorityRequirement.NONE,
                     status=AdoptionChangeStatus.AUTO_APPLICABLE,
+                    source_ref=_primary_ref(refs),
                     evidence_refs=refs,
                     rationale="Existing declaration is authoritative and compatible",
                     priority=1,
@@ -193,6 +213,7 @@ def _foundry_retention_changes(intake: ProjectIntake) -> list[AdoptionChangeItem
             kind=ProvenanceKind.OBSERVED,
             authority_requirement=AuthorityRequirement.NONE,
             status=AdoptionChangeStatus.AUTO_APPLICABLE,
+            source_ref=_primary_ref(refs),
             evidence_refs=refs,
             rationale="Observed artifacts are retained during retrofit",
             priority=1,
@@ -208,13 +229,7 @@ def _brownfield_retrofit_changes(intake: ProjectIntake) -> list[AdoptionChangeIt
     changes.extend(_foundry_retention_changes(intake))
 
     if "package-metadata" in subjects:
-        refs = sorted(
-            {
-                observation.provenance.source_ref
-                for observation in intake.observations
-                if observation.subject == "package-metadata" and observation.provenance.source_ref
-            }
-        )
+        refs = _observation_refs(intake, "package-metadata")
         changes.append(
             _change(
                 target="package-metadata",
@@ -223,33 +238,34 @@ def _brownfield_retrofit_changes(intake: ProjectIntake) -> list[AdoptionChangeIt
                 kind=ProvenanceKind.OBSERVED,
                 authority_requirement=AuthorityRequirement.NONE,
                 status=AdoptionChangeStatus.AUTO_APPLICABLE,
+                source_ref=_primary_ref(refs),
                 evidence_refs=refs,
                 priority=2,
             )
         )
 
     if "test-entrypoint" in subjects:
+        test_refs = _observation_refs(intake, "test-entrypoint")
         changes.append(
             _change(
                 target="test-harness",
                 action=AdoptionAction.HARDEN,
                 summary="Strengthen deterministic checks using existing test entrypoints",
                 kind=ProvenanceKind.OBSERVED,
-                authority_requirement=AuthorityRequirement.NONE,
-                status=AdoptionChangeStatus.AUTO_APPLICABLE,
-                rationale="Tighten safety controls without expanding authority",
+                authority_requirement=AuthorityRequirement.BOUNDED_POLICY,
+                status=AdoptionChangeStatus.PROPOSED,
+                source_ref=_primary_ref(test_refs),
+                evidence_refs=test_refs,
+                rationale=(
+                    "Tightening controls does not expand authority, but editing the test "
+                    "harness writes repository files and needs bounded write policy"
+                ),
                 priority=3,
             )
         )
 
     if "runtime-deploy-hint" in subjects:
-        refs = sorted(
-            {
-                observation.provenance.source_ref
-                for observation in intake.observations
-                if observation.subject == "runtime-deploy-hint" and observation.provenance.source_ref
-            }
-        )
+        refs = _observation_refs(intake, "runtime-deploy-hint")
         changes.append(
             _change(
                 target="runtime-deploy",
@@ -258,6 +274,7 @@ def _brownfield_retrofit_changes(intake: ProjectIntake) -> list[AdoptionChangeIt
                 kind=ProvenanceKind.OBSERVED,
                 authority_requirement=AuthorityRequirement.NONE,
                 status=AdoptionChangeStatus.AUTO_APPLICABLE,
+                source_ref=_primary_ref(refs),
                 evidence_refs=refs,
                 priority=4,
             )
@@ -268,8 +285,7 @@ def _brownfield_retrofit_changes(intake: ProjectIntake) -> list[AdoptionChangeIt
         for finding in intake.classification_findings
         if finding.dimension == "agent-rule-fragmentation"
     ]
-    if fragmentation:
-        finding = fragmentation[0]
+    for finding in fragmentation:
         changes.append(
             _change(
                 target="agent-instruction-surfaces",
@@ -278,6 +294,7 @@ def _brownfield_retrofit_changes(intake: ProjectIntake) -> list[AdoptionChangeIt
                 kind=finding.provenance.kind,
                 authority_requirement=AuthorityRequirement.EXPLICIT_AUTHORITY,
                 status=AdoptionChangeStatus.PROPOSED,
+                source_ref=_specific_ref(finding.provenance.source_ref, finding.evidence_refs),
                 evidence_refs=finding.evidence_refs,
                 confidence=finding.provenance.confidence,
                 rationale="Consolidate deliberately; observed mentions are not normative",
@@ -299,6 +316,7 @@ def _brownfield_retrofit_changes(intake: ProjectIntake) -> list[AdoptionChangeIt
                 kind=finding.provenance.kind,
                 authority_requirement=AuthorityRequirement.EXPLICIT_AUTHORITY,
                 status=AdoptionChangeStatus.PROPOSED,
+                source_ref=finding.provenance.source_ref,
                 confidence=finding.provenance.confidence,
                 rationale="Adjudicate unreconciled mentions with owner authority; do not auto-prescribe",
                 priority=6,
@@ -316,6 +334,7 @@ def _brownfield_retrofit_changes(intake: ProjectIntake) -> list[AdoptionChangeIt
                 kind=finding.provenance.kind,
                 authority_requirement=AuthorityRequirement.EXPLICIT_AUTHORITY,
                 status=AdoptionChangeStatus.BLOCKED,
+                source_ref=finding.provenance.source_ref,
                 confidence=finding.provenance.confidence,
                 rationale="Blocker prevents requested autonomy until resolved",
                 priority=0,
@@ -335,6 +354,8 @@ def _authority_proposal_changes(
     if current_autonomy is None:
         return changes
 
+    test_refs = _observation_refs(intake, "test-entrypoint")
+    ci_refs = _observation_refs(intake, "ci-entrypoint")
     has_tests = any(observation.subject == "test-entrypoint" for observation in intake.observations)
     has_ci = any(observation.subject == "ci-entrypoint" for observation in intake.observations)
     if not (has_tests and has_ci):
@@ -353,6 +374,7 @@ def _authority_proposal_changes(
             kind=ProvenanceKind.INFERRED,
             authority_requirement=AuthorityRequirement.EXPLICIT_AUTHORITY,
             status=AdoptionChangeStatus.PROPOSED,
+            evidence_refs=[*test_refs, *ci_refs],
             confidence=0.6,
             rationale="Inference must not silently expand autonomy scope",
             priority=8,
@@ -404,12 +426,14 @@ def build_change_set(intake: ProjectIntake, manifest: ProjectManifest) -> Adopti
 
 
 def proposed_autonomy_for_change(change: AdoptionChangeItem) -> Autonomy | None:
-    if change.target != "execution.autonomy":
+    """Autonomy level an autonomy-bearing change would move the project to."""
+    if authority_axis_for_target(change.target) is not AuthorityAxis.AUTONOMY:
         return None
     return Autonomy.BOUNDED_EXTERNAL_WRITE
 
 
 def proposed_external_effect_for_change(change: AdoptionChangeItem) -> ExternalEffectClass | None:
-    if change.target != "impact.external-effect":
+    """External-effect class an effect-bearing change would move the project to."""
+    if authority_axis_for_target(change.target) is not AuthorityAxis.EXTERNAL_EFFECT:
         return None
     return ExternalEffectClass.REPOSITORY_WRITE

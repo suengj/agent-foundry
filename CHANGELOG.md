@@ -10,7 +10,18 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 
 - `agent-foundry doctor` separates a package self-check from a target-project check. The project check resolves artifacts by discovering a project root upward from the working directory (or from an explicit `agent-foundry doctor PROJECT_PATH`), never from the installed package's own location. Exit codes distinguish the two: `1` when the installation itself is broken, `2` when a named project is missing expected artifacts, `0` when no project is in scope.
 
+### Fixed
+
+- Adoption authority guard is enforceable. `assert_change_set_respects_authority` previously compared `change.target` against two literal strings, one of which (`impact.external-effect`) had no emit site and was spelled with a hyphen where the classifier uses `impact.external_effect`; the guard could not raise for any planner output. Authority-bearing targets are now recognised by the manifest field they move, under either spelling, and an unclassified target fails closed instead of passing unexamined.
+- Unknown current authority no longer reads as "not widening". `widens_autonomy` and `widens_external_effect` returned `False` whenever the current level was unknown — the ordinary case, since AF2 leaves manifest fields unknown by design. Unknown now ranks below every declared level, so a proposal against an unknown baseline is treated as widening.
+- `test-harness` HARDEN is labelled for what it does. Adding or strengthening test entrypoints writes repository files, so both the greenfield and brownfield changes are `bounded-policy` / `proposed` rather than `none` / `auto-applicable`, matching their file-creating siblings.
+- Adoption change evidence stops fabricating and discarding provenance: `source_ref` is the file the evidence came from (or `null` when none was located) instead of a hardcoded `"."`, every `agent-rule-fragmentation` finding produces a change rather than only the first, and the brownfield `test-harness` and `execution.autonomy` changes cite the entrypoints they rest on.
+
 ### Added
+
+- End-to-end adoption property tests over a planner-input corpus: no planned change is both authority-widening and `auto-applicable`/`none`; no change whose action requires writing repository files (MIGRATE/HARDEN/CONSOLIDATE/WRAP) is `auto-applicable`/`none`; and every planned target is classified by the authority guard, so a new `_change(...)` call site cannot silently escape review.
+- The adoption property tests assert their own coverage. Every on-disk fixture emits zero authority-widening changes, so a property that only inspects widening changes passes however they are labelled; the corpus now includes an input that reaches the planner's authority-proposal path, and a named guard test fails if the corpus ever stops producing one.
+- The adopt determinism test now compares output across PYTHONHASHSEED and working directory instead of running both subprocesses with the same environment and comparing a run to itself.
 
 - Work Item compiler (`agent_foundry.compile`) producing minimum Task Toolkit, role-specific `ExecutionBundle`, and provenance-bearing selections with authority intersection.
 - Concise Markdown renderer (`agent_foundry.render`) projecting agent-facing contracts from `ExecutionBundle` only.
