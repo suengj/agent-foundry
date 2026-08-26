@@ -9,8 +9,9 @@ Linear owns current issue priority and status. This repository does not duplicat
 
 ## What this is
 
-- Executable toolbox that turns Playbook principles into project bootstrap, work orders, and evidence-aware execution adapters
+- Executable toolbox that turns Playbook principles into project bootstrap, project/toolkit classification, work orders, and evidence-aware execution adapters
 - Provider-neutral core with Cursor / Codex / Claude as adapters
+- Long-term compiler path: `Project Manifest → Project Toolkit → Task Toolkit → Execution Bundle → Evidence`
 
 ## What this is not (M0)
 
@@ -30,7 +31,7 @@ python -m agent_foundry doctor
 pytest
 ```
 
-## Canonical contracts
+## Canonical contracts and design
 
 | Artifact | Path |
 |---|---|
@@ -38,6 +39,38 @@ pytest
 | Project Agent Constitution | `docs/ai/PROJECT_AGENT_CONSTITUTION.md` |
 | Technical environment | `docs/ai/project-context.md` |
 | Architecture overview | `docs/architecture/overview.md` |
+| Foundry operating model / ToC | `docs/foundry/00-overview.md` |
+| Governance + Harness | `docs/foundry/01-governance-and-harness.md` |
+| Roles + Agent interaction | `docs/foundry/02-roles-and-interaction.md` |
+| Domain-neutral project classification | `docs/foundry/03-project-classification.md` |
+| Toolkit composition / resolution | `docs/foundry/04-toolkit-composition.md` |
+| Workflow / task-time compilation | `docs/foundry/05-workflow-and-compilation.md` |
+| Evidence / learning | `docs/foundry/06-execution-evidence-learning.md` |
+| Next implementation direction | `docs/foundry/07-implementation-direction.md` |
+
+## Operating model
+
+```text
+AI Dev Playbook
+        ↓ pinned adoption
+Global governance / harness principles
+        ↓
+Project definition + classification
+        ↓
+Project Manifest
+        ↓
+Project Toolkit resolution
+        ↓
+Current Task + fresh truth
+        ↓
+Task Toolkit + Execution Bundle
+        ↓
+Agent / Agent Graph execution
+        ↓
+Verification / Evidence / Receipt
+```
+
+The Project Toolkit is the approved capability universe for a project. A Task Toolkit is the minimum subset actually exposed for one execution. Provider/model selection occurs after role and capability requirements are resolved.
 
 ## Playbook adoption
 
@@ -46,11 +79,11 @@ Playbook is referenced by pinned repository + commit SHA in the constitution. Co
 ## Authority model
 
 ```text
-Human          → objective / authority
-ChatGPT        → governor / architecture / Linear decomposition
-Linear         → Work SSOT
-GitHub         → Implementation SSOT
-Runtime        → Production Truth (where applicable)
+Human           → objective / authority
+ChatGPT         → governor / architecture / Linear decomposition
+Linear          → Work SSOT
+GitHub          → Implementation SSOT
+Runtime         → Production Truth (where applicable)
 AI Dev Playbook → reusable development constitution (external, pinned)
 Project Constitution → repository-specific behavior / safety
 Foundry outputs → generated artifacts (single-owner rules apply)
