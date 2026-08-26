@@ -17,6 +17,7 @@ from agent_foundry.inspect.collectors import (
     collect_runtime_deploy_observations,
     collect_structure_observations,
     collect_test_lint_ci_observations,
+    collect_unobservable_observations,
     collect_unread_file_observations,
 )
 from agent_foundry.inspect.conventions import discover_conventions
@@ -74,6 +75,7 @@ def inspect_project(
             max_file_bytes=max_file_bytes,
         )
     )
+    observations.extend(collect_unobservable_observations(traversal.unobservable))
 
     observations.sort(key=lambda o: (o.subject, o.content, o.provenance.source_ref or ""))
 
@@ -100,6 +102,10 @@ def inspect_project(
     stats = TraversalStats(
         entries_visited=traversal.entries_visited,
         entries_skipped=traversal.entries_skipped,
+        entries_skipped_ignored_dir=traversal.entries_skipped_ignored_dir,
+        entries_skipped_refused=traversal.entries_skipped_refused,
+        entries_skipped_unreadable=traversal.entries_skipped_unreadable,
+        entries_unobservable=len(traversal.unobservable),
         depth_limit_reached=traversal.depth_limit_reached,
         entry_limit_reached=traversal.entry_limit_reached,
         limits=limits,

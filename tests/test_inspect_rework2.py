@@ -37,16 +37,31 @@ def _subprocess_env() -> dict[str, str]:
     return {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
 
 
+def _path_metadata(path: Path) -> str:
+    """Metadata a read-only pass must leave untouched.
+
+    mtime is the point: content hashes and st_mode both survive a rewrite that
+    restores the same bytes, and a tool that touches files it only meant to read
+    would pass a content-only comparison. atime is deliberately excluded — reading
+    a file legitimately updates it, so including it would make the snapshot itself
+    the mutation.
+    """
+    stat = path.lstat()
+    return f"mode={stat.st_mode:o} size={stat.st_size} mtime_ns={stat.st_mtime_ns}"
+
+
 def _tree_snapshot(root: Path) -> dict[str, str]:
-    snapshot: dict[str, str] = {}
+    snapshot: dict[str, str] = {"dir:.": _path_metadata(root)}
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root).as_posix()
-        if path.is_file():
-            data = path.read_bytes()
-            snapshot[f"file:{rel}"] = hashlib.sha256(data).hexdigest()
+        metadata = _path_metadata(path)
+        if path.is_symlink():
+            snapshot[f"link:{rel}"] = f"{metadata} target={os.readlink(path)}"
+        elif path.is_file():
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            snapshot[f"file:{rel}"] = f"{metadata} sha256={digest}"
         elif path.is_dir():
-            mode = path.stat().st_mode
-            snapshot[f"dir:{rel}"] = f"{mode:o}"
+            snapshot[f"dir:{rel}"] = metadata
     return snapshot
 
 
@@ -163,6 +178,24 @@ def test_r6_classification_unknown_uses_reason_field(tmp_path: Path) -> None:
     assert unknown
     assert unknown[0].reason is not None
     assert not any(ref.startswith("reason:") for ref in unknown[0].evidence_refs)
+
+
+def test_read_only_snapshot_detects_an_mtime_only_mutation(tmp_path: Path) -> None:
+    """The read-only guarantee is only as strong as what the snapshot compares.
+
+    A snapshot over content and directory st_mode alone cannot see a tool that
+    touches a file it merely read, so the read-only test would pass a real
+    violation. This asserts the harness itself catches a mtime-only change.
+    """
+    target = tmp_path / "project"
+    shutil.copytree(BROWNFIELD, target)
+    before = _tree_snapshot(target)
+    touched = target / "AGENTS.md"
+    original = touched.stat()
+    os.utime(touched, ns=(original.st_atime_ns, original.st_mtime_ns + 1_000_000_000))
+    after = _tree_snapshot(target)
+    assert touched.read_bytes() == (BROWNFIELD / "AGENTS.md").read_bytes()
+    assert before != after
 
 
 def test_read_only_after_rework2_changes(tmp_path: Path) -> None:

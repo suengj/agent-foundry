@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import errno
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -76,13 +78,55 @@ class RepoEntry:
     size_bytes: int | None = None
 
 
+# Why a path could not be resolved or read. "containment-refused" means looking
+# would have left the repository — a deliberate decision, not a gap in evidence.
+# The other two mean the OS would not let us look, which does leave a gap.
+SKIP_REASON_REFUSED = "containment-refused"
+UNOBSERVABLE_PERMISSION_DENIED = "permission-denied"
+UNOBSERVABLE_UNREADABLE = "unreadable"
+
+
+@dataclass(frozen=True)
+class UnobservablePath:
+    """A path whose contents could not be observed — a hole, not an absence."""
+
+    relative_path: str
+    is_dir: bool
+    reason: str
+
+
 @dataclass
 class TraversalResult:
     entries: list[RepoEntry] = field(default_factory=list)
     entries_visited: int = 0
+    # A single skip total cannot be reasoned about: a skipped cache directory means
+    # "deliberately not looked at", a refusal means "looking would have left the
+    # repository", and unreadable means "the OS would not let us look". Only the last
+    # leaves a hole. entries_skipped stays the total of the three counters below.
     entries_skipped: int = 0
+    entries_skipped_ignored_dir: int = 0
+    entries_skipped_refused: int = 0
+    entries_skipped_unreadable: int = 0
+    unobservable: list[UnobservablePath] = field(default_factory=list)
     depth_limit_reached: bool = False
     entry_limit_reached: bool = False
+
+    def skip_ignored_dir(self) -> None:
+        self.entries_skipped += 1
+        self.entries_skipped_ignored_dir += 1
+
+    def skip_refused(self) -> None:
+        self.entries_skipped += 1
+        self.entries_skipped_refused += 1
+
+    def skip_unreadable(self) -> None:
+        self.entries_skipped += 1
+        self.entries_skipped_unreadable += 1
+
+    def record_unobservable(self, relative_path: str, *, is_dir: bool, reason: str) -> None:
+        self.unobservable.append(
+            UnobservablePath(relative_path=relative_path, is_dir=is_dir, reason=reason)
+        )
 
 
 def _should_skip_dir(name: str) -> bool:
@@ -91,14 +135,32 @@ def _should_skip_dir(name: str) -> bool:
     return name.endswith(".egg-info")
 
 
-def _resolve_inside_root(root: Path, candidate: Path) -> Path | None:
-    """Resolve candidate; return None if it escapes the repository root."""
+def _unobservable_reason(error: OSError) -> str:
+    """Classify an OS refusal without leaking host-specific text into evidence."""
+    if error.errno in {errno.EACCES, errno.EPERM}:
+        return UNOBSERVABLE_PERMISSION_DENIED
+    return UNOBSERVABLE_UNREADABLE
+
+
+def _resolve_with_reason(root: Path, candidate: Path) -> tuple[Path | None, str | None]:
+    """Resolve candidate inside *root*, reporting why resolution failed when it does."""
     try:
         resolved = candidate.resolve()
         root_resolved = root.resolve()
+    except OSError as error:
+        return None, _unobservable_reason(error)
+    except RuntimeError:
+        return None, UNOBSERVABLE_UNREADABLE
+    try:
         resolved.relative_to(root_resolved)
-    except (OSError, ValueError, RuntimeError):
-        return None
+    except ValueError:
+        return None, SKIP_REASON_REFUSED
+    return resolved, None
+
+
+def _resolve_inside_root(root: Path, candidate: Path) -> Path | None:
+    """Resolve candidate; return None if it escapes the repository root."""
+    resolved, _ = _resolve_with_reason(root, candidate)
     return resolved
 
 
@@ -121,8 +183,15 @@ def walk_repository(
 
         try:
             children = sorted(current.iterdir(), key=lambda p: p.name)
-        except OSError:
-            result.entries_skipped += 1
+        except OSError as error:
+            # The subtree exists but the OS would not list it. Recording only the
+            # skip would make it indistinguishable from an empty directory.
+            result.skip_unreadable()
+            result.record_unobservable(
+                current_rel or ".",
+                is_dir=True,
+                reason=_unobservable_reason(error),
+            )
             return
 
         for child in children:
@@ -131,29 +200,50 @@ def walk_repository(
 
             child_rel = f"{current_rel}/{child.name}" if current_rel else child.name
 
-            resolved = _resolve_inside_root(root, child)
+            resolved, failure = _resolve_with_reason(root, child)
             if resolved is None:
-                result.entries_skipped += 1
+                if failure == SKIP_REASON_REFUSED:
+                    result.skip_refused()
+                else:
+                    result.skip_unreadable()
+                    result.record_unobservable(
+                        child_rel,
+                        is_dir=False,
+                        reason=failure or UNOBSERVABLE_UNREADABLE,
+                    )
                 continue
 
             is_symlink = child.is_symlink()
             is_dir = resolved.is_dir()
 
             if is_symlink and not is_dir:
-                result.entries_skipped += 1
+                result.skip_refused()
                 continue
 
             if is_dir and _should_skip_dir(child.name):
-                result.entries_skipped += 1
+                result.skip_ignored_dir()
                 continue
 
             size_bytes: int | None = None
             if not is_dir:
                 try:
                     size_bytes = resolved.stat().st_size
-                except OSError:
-                    result.entries_skipped += 1
+                except OSError as error:
+                    result.skip_unreadable()
+                    result.record_unobservable(
+                        child_rel,
+                        is_dir=False,
+                        reason=_unobservable_reason(error),
+                    )
                     continue
+                if not os.access(resolved, os.R_OK):
+                    # The file's existence and size are observable; its content is not.
+                    # It is still a visited entry, but its contents are a hole.
+                    result.record_unobservable(
+                        child_rel,
+                        is_dir=False,
+                        reason=UNOBSERVABLE_PERMISSION_DENIED,
+                    )
 
             result.entries.append(
                 RepoEntry(
@@ -173,6 +263,7 @@ def walk_repository(
 
     _visit(root, "", depth=0)
     result.entries.sort(key=lambda e: e.relative_path)
+    result.unobservable.sort(key=lambda u: (u.relative_path, u.reason))
     return result
 
 

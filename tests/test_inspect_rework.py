@@ -27,11 +27,14 @@ def _subprocess_env() -> dict[str, str]:
 
 
 def _tree_digest(root: Path) -> dict[str, str]:
+    """Content plus the metadata a read-only pass must not disturb (notably mtime)."""
     digests: dict[str, str] = {}
     for path in sorted(root.rglob("*")):
         if path.is_file():
             rel = path.relative_to(root).as_posix()
-            digests[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+            stat = path.lstat()
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            digests[rel] = f"{digest} mode={stat.st_mode:o} mtime_ns={stat.st_mtime_ns}"
     return digests
 
 
