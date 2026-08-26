@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from agent_foundry.models.common import ExternalEffectClass
 from agent_foundry.models.execution import CompiledAuthority
 from agent_foundry.models.policy import PermissionProfile
@@ -16,6 +18,9 @@ from agent_foundry.toolkit.ceiling import (
     tighten_ceiling,
     unknown_external_effect,
 )
+
+
+_WINDOWS_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
 
 
 class CompileAuthorityError(ValueError):
@@ -48,6 +53,11 @@ def _normalize_scope_path(scope: str) -> str | None:
     """
     normalized = scope.strip().replace("\\", "/")
     if not normalized or normalized.startswith("/"):
+        return None
+    # A repository-relative scope has no drive letter and no UNC root. Backslashes were
+    # folded above, so "C:\\repo\\src" and "\\\\host\\share" both arrive here as
+    # slash-separated absolutes that must grant nothing rather than compare textually.
+    if _WINDOWS_DRIVE_PREFIX.match(normalized) or ":" in normalized.split("/", 1)[0]:
         return None
     parts: list[str] = []
     for segment in normalized.split("/"):
@@ -240,7 +250,7 @@ def validate_execution_bundle_authority(
                 f"bundle write_scope {compiled_scope!r} is not contained in work item scope "
                 f"{work_item.scope!r}"
             )
-        if role_write_scope and not _scope_contained_in_bounds(compiled_scope, role_write_scope):
+        if not _scope_contained_in_bounds(compiled_scope, role_write_scope):
             raise CompileAuthorityError(
                 f"bundle write_scope {compiled_scope!r} is not contained in role write_scope "
                 f"{role_write_scope!r}"

@@ -18,11 +18,44 @@ _MAX_REJECTED_PROVENANCE_ITEMS = 10
 _TOKEN_SPLIT = re.compile(r"[\s/._:-]+")
 
 
-def _scope_tokens(work_item: WorkItemContract) -> set[str]:
+def _tokenize(*texts: str) -> set[str]:
     tokens: set[str] = set()
-    for text in [*work_item.scope, work_item.objective, work_item.title]:
+    for text in texts:
         tokens.update(token for token in _TOKEN_SPLIT.split(text.lower()) if token)
     return tokens
+
+
+def _work_item_token_sources(work_item: WorkItemContract) -> dict[str, set[str]]:
+    """Tokens per originating Work Item field, so provenance can name the real cause.
+
+    Selection draws on scope, objective, and title alike. Reporting all three as
+    "scope overlap" would be a false rationale, so the field each matching token came
+    from is kept separate all the way through to the provenance record.
+    """
+    return {
+        "scope": _tokenize(*work_item.scope),
+        "objective": _tokenize(work_item.objective),
+        "title": _tokenize(work_item.title),
+    }
+
+
+def _scope_tokens(work_item: WorkItemContract) -> set[str]:
+    tokens: set[str] = set()
+    for source_tokens in _work_item_token_sources(work_item).values():
+        tokens |= source_tokens
+    return tokens
+
+
+def _matching_work_item_fields(
+    token_sources: dict[str, set[str]], *texts: str
+) -> list[str]:
+    """Which Work Item fields actually supplied a token this candidate matched."""
+    candidate_tokens = _tokenize(*texts)
+    return [
+        field
+        for field in ("scope", "objective", "title")
+        if token_sources.get(field, set()) & candidate_tokens
+    ]
 
 
 def _relevance_score(tokens: set[str], *texts: str) -> float:
@@ -66,15 +99,20 @@ def _selection_rationale(
     component_kind: str,
     selected: bool,
     matching_fields: list[str],
+    work_item_fields: list[str],
     selection_score: float,
 ) -> str:
     if selected:
         fields = ", ".join(matching_fields) if matching_fields else "none"
+        origin = ", ".join(work_item_fields) if work_item_fields else "none"
         return (
-            f"{component_kind} selected by work item scope overlap on {fields} "
-            f"(selection score={selection_score:.2f})"
+            f"{component_kind} selected because its {fields} shares tokens with the "
+            f"work item {origin} (selection score={selection_score:.2f})"
         )
-    return f"{component_kind} not relevant to work item scope (selection score={selection_score:.2f})"
+    return (
+        f"{component_kind} shares no token with the work item scope, objective, or "
+        f"title (selection score={selection_score:.2f})"
+    )
 
 
 def _rejected_summary_record(
@@ -132,6 +170,7 @@ def select_relevant_conventions(
     conventions: list[ConventionSpec],
 ) -> tuple[list[ConventionSpec], list[BundleProvenanceRecord]]:
     """Select conventions relevant to the work item — bounded, not full project tree."""
+    token_sources = _work_item_token_sources(work_item)
     tokens = _scope_tokens(work_item)
     scored: list[tuple[float, ConventionSpec]] = []
     for convention in conventions:
@@ -162,6 +201,9 @@ def select_relevant_conventions(
             pattern=convention.pattern,
             evidence=convention.evidence,
         )
+        work_item_fields = _matching_work_item_fields(
+            token_sources, convention.subject, convention.pattern, convention.evidence
+        )
         is_selected = convention.subject in selected_subjects
         provenance.append(
             BundleProvenanceRecord(
@@ -172,11 +214,13 @@ def select_relevant_conventions(
                     component_kind="convention",
                     selected=is_selected,
                     matching_fields=matching_fields,
+                    work_item_fields=work_item_fields,
                     selection_score=selection_score,
                 ),
                 source=ResolutionSource.PROJECT_FACT,
                 project_fact=(
                     f"matching_fields={matching_fields or ['none']}; "
+                    f"work_item_fields={work_item_fields or ['none']}; "
                     f"selection_score={selection_score:.2f}"
                 ),
                 evidence_refs=[convention.source_ref],
@@ -198,6 +242,7 @@ def select_relevant_observations(
     observations: list[ProjectObservation],
 ) -> tuple[list[ProjectObservation], list[BundleProvenanceRecord]]:
     """Select observations relevant to the work item."""
+    token_sources = _work_item_token_sources(work_item)
     tokens = _scope_tokens(work_item)
     scored: list[tuple[float, ProjectObservation]] = []
     for observation in observations:
@@ -226,6 +271,9 @@ def select_relevant_observations(
             subject=observation.subject,
             evidence=observation.content,
         )
+        work_item_fields = _matching_work_item_fields(
+            token_sources, observation.subject, observation.content
+        )
         is_selected = observation.subject in selected_subjects
         provenance.append(
             BundleProvenanceRecord(
@@ -236,11 +284,13 @@ def select_relevant_observations(
                     component_kind="observation",
                     selected=is_selected,
                     matching_fields=matching_fields,
+                    work_item_fields=work_item_fields,
                     selection_score=selection_score,
                 ),
                 source=ResolutionSource.PROJECT_FACT,
                 project_fact=(
                     f"matching_fields={matching_fields or ['none']}; "
+                    f"work_item_fields={work_item_fields or ['none']}; "
                     f"selection_score={selection_score:.2f}"
                 ),
                 evidence_refs=[observation.provenance.source_ref or observation.subject],

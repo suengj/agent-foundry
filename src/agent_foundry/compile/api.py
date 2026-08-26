@@ -251,6 +251,21 @@ def _execution_bundle_provenance(
             )
         )
 
+    # Escalation changes who may act and when execution must hand off, so it needs the
+    # same traceability as a stop condition rather than riding along unexplained.
+    for escalation_condition in sorted(work_item.escalation_conditions):
+        provenance.append(
+            _bundle_component_provenance(
+                component_kind="escalation-condition",
+                component_id=escalation_condition,
+                selected=True,
+                rationale="work item escalation condition carried into execution bundle",
+                project_fact=(
+                    f"work_item.escalation_conditions includes {escalation_condition!r}"
+                ),
+            )
+        )
+
     write_scope = getattr(compiled_authority, "write_scope", [])
     if write_scope:
         for scope_path in sorted(write_scope):

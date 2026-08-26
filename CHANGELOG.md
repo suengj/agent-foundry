@@ -12,7 +12,10 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 - Concise Markdown renderer (`agent_foundry.render`) projecting agent-facing contracts from `ExecutionBundle` only.
 - `agent-foundry compile` CLI subcommand with `--render` for Markdown projection.
 - Compiled write scope is a true path intersection of Work Item scope and Role Contract scope: `.`, `./`, redundant separators, and `..` traversal are resolved before comparison, and any bound that resolves to the repository root, an absolute path, or above the root grants nothing.
-- `validate_execution_bundle_authority` performs structural checks that do not call the compiler, so a forged or over-broad bundle is still rejected when compilation itself is wrong.
+- Drive-rooted and UNC paths (`C:\repo\src`, `\\host\share`) are rejected as write-scope bounds rather than compared textually as if repository-relative.
+- `validate_execution_bundle_authority` performs structural checks that do not call the compiler, so a forged or over-broad bundle is still rejected when compilation itself is wrong; an empty Role Contract write scope authorizes no write path rather than skipping the containment check.
+- Selection provenance names the Work Item field that actually supplied the matching token (scope, objective, or title) instead of always claiming scope overlap.
+- Work Item escalation conditions carried into an `ExecutionBundle` now have provenance, as stop conditions already did.
 - `ExecutionBundle` provenance is bounded: every selected component and the highest-scoring near-misses are itemized, and the remaining candidates are accounted for by count rather than enumerated, so bundle size no longer grows with project material.
 
 - Capability registry and deterministic two-stage toolkit resolver (`agent_foundry.toolkit`) with explainable include/exclude decisions.

@@ -1471,3 +1471,155 @@ def test_bounded_provenance_summary_still_reaches_the_secret_guard():
         dump_json(result.bundle)
     with pytest.raises(EmbeddedSecretError):
         render_execution_bundle_markdown(result.bundle)
+
+
+# --- Round-2 review repairs -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        r"C:\repo\src",
+        "C:/repo/src",
+        r"\\host\share\src",
+        "//host/share/src",
+        "z:/anything",
+    ],
+)
+def test_platform_absolute_scopes_grant_nothing(scope: str):
+    """Drive-rooted and UNC paths are not repository-relative bounds."""
+    from agent_foundry.compile.authority import _normalize_scope_path
+
+    assert _normalize_scope_path(scope) is None
+    assert _intersect_write_scopes([scope], [scope]) == []
+    assert _intersect_write_scopes([scope], ["src"]) == []
+    assert _intersect_write_scopes(["src"], [scope]) == []
+
+
+def test_validator_rejects_write_scope_when_role_grants_none(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """An empty role write scope authorizes nothing — not 'skip the check'."""
+    work_item = _sample_work_item(scope=["src"])
+    manifest = _sample_manifest()
+    _, lock = resolve_toolkit(manifest)
+    result = compile_work_item(work_item, manifest, lock, "builder", "RUN-EMPTY-ROLE")
+    reg = default_registry()
+    role = next(item for item in reg.roles if item.id == "builder").model_copy(
+        update={"write_scope": []}
+    )
+    profiles = build_default_registry_permission_profiles()
+    task_profile = next(
+        profile for profile in profiles if profile.id == lock.permission_profile_ids[0]
+    )
+    assert result.bundle.authority is not None
+    forged = result.bundle.authority.model_copy(
+        update={"write_scope": ["src"], "forbidden_scopes": []}
+    )
+
+    monkeypatch.setattr(
+        "agent_foundry.compile.authority.compute_compiled_authority",
+        lambda *_args, **_kwargs: forged,
+    )
+    with pytest.raises(CompileAuthorityError, match="not contained in role write_scope"):
+        validate_execution_bundle_authority(
+            forged, work_item, manifest, result.task_toolkit, role, task_profile, reg
+        )
+
+
+def test_rationale_names_the_work_item_field_that_actually_matched():
+    """Selection driven by the objective must not be reported as scope overlap."""
+    manifest = _sample_manifest()
+    work_item = _sample_work_item(
+        scope=["unrelated-area"],
+        objective="implement rareobjectiveonly token",
+        title="ordinary title",
+    )
+    _, lock = resolve_toolkit(manifest)
+    convention = ConventionSpec(
+        subject="rareobjectiveonly convention",
+        pattern="no-match",
+        evidence="no-match",
+        source_ref="docs/rare.md",
+        confidence=1.0,
+        provenance=Provenance(kind=ProvenanceKind.OBSERVED, source_ref="docs/rare.md"),
+    )
+    result = compile_work_item(
+        work_item, manifest, lock, "builder", "RUN-RATIONALE", conventions=[convention]
+    )
+    record = next(
+        item
+        for item in result.bundle.provenance
+        if item.component_id == convention.subject
+    )
+    assert record.selected is True
+    assert "objective" in record.rationale
+    assert "scope" not in record.rationale
+    assert "work_item_fields=['objective']" in (record.project_fact or "")
+
+
+def test_rationale_names_scope_when_scope_is_the_actual_cause():
+    """The honest-cause rule must still report scope when scope really matched."""
+    manifest = _sample_manifest()
+    work_item = _sample_work_item(
+        scope=["rarescopeonly"],
+        objective="do the thing",
+        title="ordinary title",
+    )
+    _, lock = resolve_toolkit(manifest)
+    convention = ConventionSpec(
+        subject="rarescopeonly convention",
+        pattern="no-match",
+        evidence="no-match",
+        source_ref="docs/rare.md",
+        confidence=1.0,
+        provenance=Provenance(kind=ProvenanceKind.OBSERVED, source_ref="docs/rare.md"),
+    )
+    result = compile_work_item(
+        work_item, manifest, lock, "builder", "RUN-RATIONALE-SCOPE", conventions=[convention]
+    )
+    record = next(
+        item
+        for item in result.bundle.provenance
+        if item.component_id == convention.subject
+    )
+    assert "work_item_fields=['scope']" in (record.project_fact or "")
+    assert "scope" in record.rationale
+
+
+def test_escalation_conditions_carry_provenance():
+    """Escalation changes who may act, so it cannot ride along unexplained."""
+    manifest = _sample_manifest()
+    work_item = _sample_work_item(
+        escalation_conditions=["human approval required", "budget exceeded"]
+    )
+    _, lock = resolve_toolkit(manifest)
+    result = compile_work_item(work_item, manifest, lock, "builder", "RUN-ESCALATION")
+
+    recorded = {
+        item.component_id
+        for item in result.bundle.provenance
+        if item.component_kind == "escalation-condition"
+    }
+    assert recorded == set(result.bundle.escalation_conditions)
+    assert recorded == {"human approval required", "budget exceeded"}
+
+
+def test_every_bundle_condition_field_has_provenance():
+    """Guards against a future condition field shipping without traceability."""
+    manifest = _sample_manifest()
+    work_item = _sample_work_item(
+        stop_conditions=["tests fail"],
+        escalation_conditions=["human approval required"],
+    )
+    _, lock = resolve_toolkit(manifest)
+    result = compile_work_item(work_item, manifest, lock, "builder", "RUN-COND-PROV")
+
+    by_kind: dict[str, set[str]] = {}
+    for record in result.bundle.provenance:
+        by_kind.setdefault(record.component_kind, set()).add(record.component_id)
+
+    assert set(result.bundle.stop_conditions) <= by_kind.get("stop-condition", set())
+    assert set(result.bundle.escalation_conditions) <= by_kind.get(
+        "escalation-condition", set()
+    )
