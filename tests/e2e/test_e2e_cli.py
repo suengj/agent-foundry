@@ -171,14 +171,33 @@ def _validate_args(name: str, kind: str) -> list[str]:
     return args
 
 
+# Committed example -> the `--kind` it validates as. Only artifacts `validate` has a
+# kind for appear; the mapping is checked for completeness below rather than trusted.
+VALIDATABLE_EXAMPLES: dict[str, str] = {
+    "work-item.yaml": "work-item",
+    "task-toolkit.yaml": "task-toolkit",
+    "execution-bundle.yaml": "execution-bundle",
+    "evidence-bundle.yaml": "evidence-bundle",
+    "execution-receipt.yaml": "execution-receipt",
+}
+
+
+def test_every_artifact_kind_validate_supports_has_a_committed_example() -> None:
+    """The parametrized test below says "every"; this is what makes that true.
+
+    Without it, a kind added to `validate` would simply not be exercised, and the
+    coverage claim in the name of the test below would quietly narrow.
+    """
+    from agent_foundry.verify.cli_api import ARTIFACT_KINDS
+
+    assert set(VALIDATABLE_EXAMPLES.values()) == set(ARTIFACT_KINDS)
+    for name in VALIDATABLE_EXAMPLES:
+        assert (EXAMPLES_DIR / name).is_file(), f"{name} is not committed"
+
+
 @pytest.mark.parametrize(
     ("name", "kind"),
-    [
-        ("execution-bundle.yaml", "execution-bundle"),
-        ("evidence-bundle.yaml", "evidence-bundle"),
-        ("execution-receipt.yaml", "execution-receipt"),
-        ("task-toolkit.yaml", "task-toolkit"),
-    ],
+    sorted(VALIDATABLE_EXAMPLES.items()),
 )
 def test_validate_accepts_every_committed_example(name: str, kind: str) -> None:
     completed = _run(*_validate_args(name, kind))

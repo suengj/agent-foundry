@@ -485,7 +485,15 @@ def test_an_authenticating_integration_without_an_auth_block_is_rejected() -> No
 
 
 def test_the_broken_integration_reaches_the_pipeline_as_a_rejection() -> None:
-    """The whole slice, run with a degraded integration, is not accepted."""
+    """The whole slice, run with a degraded integration, is not accepted.
+
+    This test is the reason `validate_compiled_slice` exists. It asserted the health
+    record was degraded and then called `validate_integration_preflight` directly,
+    never checking that the *pipeline* rejected anything — and it passed while
+    `run_pipeline(...).accepted()` returned True for this exact input. What a test's
+    name claims, its body has to assert; anything else reads as coverage in every
+    later audit.
+    """
     result = run_pipeline(
         support.SYNTHETIC,
         work_item_id=BUILDER_ITEM,
@@ -493,6 +501,14 @@ def test_the_broken_integration_reaches_the_pipeline_as_a_rejection() -> None:
         desired_integration_ids=[support.TRACKER_INTEGRATION_ID],
         observed_health=[support.tracker_health(IntegrationHealthState.UNAVAILABLE)],
     )
+
+    # The property the name claims, asserted first.
+    assert not result.accepted()
+    assert any(
+        message.startswith("integration-preflight/BLOCKED")
+        for message in result.rejecting()
+    ), result.rejecting()
+
     health = {item.integration_id: item.state for item in result.integration_health}
     assert health[support.TRACKER_INTEGRATION_ID] is IntegrationHealthState.UNAVAILABLE
     report = validate_integration_preflight(

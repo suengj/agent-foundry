@@ -26,12 +26,12 @@ from tests.e2e.friction_survey import (
     survey_repository,
 )
 
-FIXTURE_TARGETS = [
-    support.FIXTURES / "e2e-synthetic",
-    support.FIXTURES / "brownfield-sample",
-    support.FIXTURES / "greenfield-minimal",
-    support.FIXTURES / "brownfield-foundry-scratch-only",
-]
+# Every fixture project committed to this repository, enumerated from disk rather than
+# listed by hand: a fixture added tomorrow is surveyed the day it is added, and the
+# "every committed fixture" claim below cannot quietly narrow.
+FIXTURE_TARGETS = sorted(
+    path for path in support.FIXTURES.iterdir() if path.is_dir()
+)
 
 
 def test_no_survey_field_can_hold_a_path_a_name_or_content() -> None:
@@ -125,6 +125,13 @@ def test_discovery_skips_hidden_and_underscored_directories(tmp_path: Path) -> N
     (tmp_path / "not-a-repo").mkdir()
     found = discover_repositories([tmp_path])
     assert [item.name for item in found] == ["visible"]
+
+
+def test_the_fixture_list_is_every_fixture_project_on_disk() -> None:
+    """What "every committed fixture" means, stated so it cannot drift."""
+    assert FIXTURE_TARGETS
+    on_disk = {path.name for path in support.FIXTURES.iterdir() if path.is_dir()}
+    assert {path.name for path in FIXTURE_TARGETS} == on_disk
 
 
 @pytest.mark.parametrize("target", FIXTURE_TARGETS, ids=lambda item: item.name)

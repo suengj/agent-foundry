@@ -104,8 +104,17 @@ def test_the_slice_is_stable_across_working_directories(tmp_path: Path) -> None:
 
 
 def test_an_absolute_project_path_never_reaches_an_artifact(tmp_path: Path) -> None:
-    """A relative and an absolute invocation of the same project agree exactly."""
+    """Neither the path nor any part of it appears in what the run produces.
+
+    Two checks, because equal digests alone do not establish the claim in the name: a
+    run that embedded the *same* absolute path both times would produce equal digests
+    and still leak it. So the artifacts are also read and searched for the path.
+    """
     import shutil
+
+    from agent_foundry.models.io import dump_json
+
+    from tests.e2e.pipeline import run_pipeline
 
     copied = tmp_path / "copy-with-a-distinctive-name"
     shutil.copytree(support.SYNTHETIC, copied)
@@ -113,6 +122,25 @@ def test_an_absolute_project_path_never_reaches_an_artifact(tmp_path: Path) -> N
     absolute = _digest(project=copied.resolve(), cwd=support.REPO_ROOT, hash_seed="0")
     from_inside = _digest(project=Path("."), cwd=copied, hash_seed="0")
     assert absolute == from_inside
+
+    result = run_pipeline(copied.resolve(), work_item_id="wi-dcc714550913")
+    serialized = b"".join(
+        dump_json(model)
+        for model in (
+            result.intake,
+            result.manifest,
+            result.change_set,
+            result.work_plan,
+            result.project_lock,
+            result.task_toolkit,
+            result.bundle,
+            result.receipt,
+        )
+    ).decode("utf-8") + result.markdown
+
+    assert str(copied.resolve()) not in serialized
+    assert "copy-with-a-distinctive-name" not in serialized
+    assert str(tmp_path) not in serialized
 
 
 def test_repeating_the_run_in_one_process_is_stable() -> None:

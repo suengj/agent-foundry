@@ -116,7 +116,9 @@ def test_this_repository_is_fully_visible_within_traversal_bounds(
     assert "foundry-declaration" in subjects
 
 
-def test_readiness_reflects_what_is_actually_here(result: PipelineResult) -> None:
+def test_testability_is_observed_and_no_finding_blocks_adoption(
+    result: PipelineResult,
+) -> None:
     by_dimension = {
         finding.dimension: finding for finding in result.intake.readiness_findings
     }
@@ -257,14 +259,18 @@ def test_the_declared_manifest_is_this_repository_s_own(result: PipelineResult) 
     assert manifest.access.sensitivity is not None
 
 
-def test_the_brownfield_run_produces_keep_harden_and_wrap(
+def test_the_brownfield_run_produces_only_the_changes_this_repository_needs(
     result: PipelineResult,
 ) -> None:
-    """Three of the four brownfield actions AF8 was asked to demonstrate, here.
+    """KEEP and HARDEN, and nothing this repository does not actually warrant.
 
-    MIGRATE is the fourth, and it appears on the undeclared copy below: this repository
-    now carries the declaration that proposal asks for, so proposing it again would be
-    wrong.
+    The absences are the interesting half. There is no WRAP, because Agent Foundry
+    declares no integration or credential surface of its own — the seven `env.example`
+    files under `tests/fixtures/projects/` belong to nested fixture projects, and
+    before the boundary fix they produced one here. There is no MIGRATE, because the
+    declaration that proposal asks for is now present. Both are checked, so a
+    regression that re-attributes nested material fails here rather than passing as a
+    richer plan.
     """
     by_action: dict[AdoptionAction, list[str]] = {}
     for change in result.change_set.changes:
@@ -272,7 +278,69 @@ def test_the_brownfield_run_produces_keep_harden_and_wrap(
 
     assert "foundry-project-declaration" in by_action[AdoptionAction.KEEP]
     assert "test-harness" in by_action[AdoptionAction.HARDEN]
-    assert by_action[AdoptionAction.WRAP] == ["integration-surfaces"]
+    assert AdoptionAction.WRAP not in by_action
+    assert AdoptionAction.MIGRATE not in by_action
+
+    for change in result.change_set.changes:
+        for ref in change.evidence.evidence_refs:
+            assert not ref.startswith("tests/fixtures/projects/"), (
+                f"{change.target} is evidenced by {ref!r}, which belongs to a nested "
+                "fixture project and is not evidence about this repository"
+            )
+
+
+def test_nested_fixture_projects_are_recorded_and_not_attributed(
+    result: PipelineResult,
+) -> None:
+    """Every fixture repository under `tests/` is named as a boundary, not read as ours.
+
+    Agent Foundry ships eight fixture repositories, each with its own `pyproject.toml`,
+    and several with a `Dockerfile` and an `env.example`. Attributing those to the
+    target produced two wrong readiness findings, 22 of 25 adoption evidence
+    references, and a compiled write scope over seven files nobody wanted changed.
+    """
+    boundaries = {
+        item.provenance.source_ref
+        for item in result.intake.observations
+        if item.subject == "nested-project"
+    }
+    assert boundaries, "the fixture projects must be recorded, not silently skipped"
+    assert all(
+        boundary.startswith("tests/fixtures/projects/") for boundary in boundaries
+    ), sorted(boundaries)
+
+    for item in result.intake.observations:
+        if item.subject == "nested-project":
+            continue
+        ref = item.provenance.source_ref or ""
+        assert not any(
+            ref.startswith(boundary + "/") for boundary in boundaries
+        ), f"{item.subject} cites {ref!r}, which lies inside a nested project"
+
+    for convention in result.intake.conventions:
+        assert not any(
+            convention.source_ref.startswith(boundary + "/") for boundary in boundaries
+        ), f"convention {convention.subject} cites {convention.source_ref!r}"
+
+
+def test_readiness_no_longer_reports_surfaces_this_repository_does_not_have(
+    result: PipelineResult,
+) -> None:
+    """The two findings that were wrong, now right, asserted by their messages.
+
+    `runtime-isolation` said "Deploy/runtime surfaces observed" and
+    `credential-permission-isolation` said "Integration or credential declaration
+    surfaces present". This repository has neither: both came entirely from nested
+    fixture `Dockerfile`s and `env.example`s.
+    """
+    by_dimension = {
+        finding.dimension: finding for finding in result.intake.readiness_findings
+    }
+    assert "No deploy/runtime surfaces observed" in by_dimension["runtime-isolation"].message
+    assert (
+        "No integration declaration surfaces observed"
+        in by_dimension["credential-permission-isolation"].message
+    )
 
 
 def test_the_retrofit_is_additive_and_the_declaration_is_kept(

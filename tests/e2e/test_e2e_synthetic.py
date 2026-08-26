@@ -91,12 +91,29 @@ def test_every_observation_and_finding_carries_provenance(result: PipelineResult
 def test_conventions_are_evidenced_by_the_line_that_produced_them(
     result: PipelineResult,
 ) -> None:
+    """Every convention quotes a line that is actually in the file it cites.
+
+    The name claims the evidence *is* the producing line, so the evidence text is read
+    back out of the cited source rather than merely checked for being non-empty. The
+    defect this guards against is real and already happened once: a `git-policy`
+    convention matched "commit … not" and quoted the first line containing "commit",
+    so an instruction surface was cited by its opposite.
+    """
     conventions = {convention.subject for convention in result.intake.conventions}
     assert {"test-runner", "test-invocation", "ci-checkout", "git-policy"} <= conventions
     for convention in result.intake.conventions:
         assert convention.evidence.strip()
         assert 0.0 < convention.confidence <= 1.0
         assert convention.provenance.kind is not ProvenanceKind.NORMATIVE
+
+        source = (support.SYNTHETIC / convention.source_ref).read_text(encoding="utf-8")
+        assert convention.evidence in source, (
+            f"{convention.subject} quotes {convention.evidence!r}, which does not "
+            f"appear in {convention.source_ref}"
+        )
+        assert any(
+            line.strip() == convention.evidence.strip() for line in source.splitlines()
+        ), f"{convention.subject} evidence is not a whole line of {convention.source_ref}"
 
 
 # --- stage 2: manifest and adoption change set --------------------------------
@@ -164,25 +181,29 @@ def test_adoption_never_widens_authority_by_inference(result: PipelineResult) ->
         assert change.status is AdoptionChangeStatus.PROPOSED
 
 
-def test_every_brownfield_action_the_contract_names_can_be_produced(
+def test_this_fixture_produces_five_of_the_seven_brownfield_actions(
     result: PipelineResult,
 ) -> None:
-    """`docs/foundry/02` §7 lists seven brownfield categories. Six have emit sites.
+    """`docs/foundry/02` §7 lists seven categories; this fixture exercises five.
 
-    KEEP, CONSOLIDATE, WRAP, HARDEN and DEFER are all produced for this one fixture.
-    MIGRATE is produced for a project with no owner declaration (see the brownfield
-    tests). BLOCK is the one category with no observable trigger: `assess_readiness`
-    never sets `blocker=True`, so it is reachable only through a hand-built intake, and
-    that is reported as an unverified residual rather than claimed as coverage.
+    The name says five rather than "every action the contract names", because the
+    other two are not produced here and one is not produced anywhere. MIGRATE needs a
+    project with no owner declaration — covered in the brownfield tests. BLOCK has no
+    observable trigger at all: `assess_readiness` never sets `blocker=True`, so it is
+    reachable only through a hand-built intake, and gap §5.12 reports it as unverified
+    rather than as coverage. Both absences are asserted so this test fails if either
+    starts appearing without the report being updated.
     """
     emitted = {change.action for change in result.change_set.changes}
-    assert {
+    assert emitted == {
         AdoptionAction.KEEP,
         AdoptionAction.CONSOLIDATE,
         AdoptionAction.WRAP,
         AdoptionAction.HARDEN,
         AdoptionAction.DEFER,
-    } <= emitted
+    }
+    assert AdoptionAction.MIGRATE not in emitted
+    assert AdoptionAction.BLOCK not in emitted
 
 
 def test_wrap_retains_the_surface_and_changes_only_how_it_is_reached(
@@ -290,7 +311,16 @@ def test_task_toolkit_is_a_subset_that_can_staff_the_workflow_it_pins(
         )
 
 
-def test_integration_preflight_reports_positive_health_only(result: PipelineResult) -> None:
+def test_a_positively_observed_integration_is_pinned_and_carries_its_state(
+    result: PipelineResult,
+) -> None:
+    """The positive case only.
+
+    That a *non*-positive observation is refused is proved in
+    `test_e2e_broken_fixtures.py`, whole-path and per-validator. The previous name here
+    ("reports positive health only") claimed that negative half, which this body has
+    never checked.
+    """
     assert result.project_lock.integration_ids == [support.TRACKER_INTEGRATION_ID]
     assert [health.integration_id for health in result.integration_health] == [
         support.TRACKER_INTEGRATION_ID
@@ -337,10 +367,28 @@ def test_bundle_provenance_names_the_fact_behind_every_selection(
 def test_selected_context_is_a_relevant_subset_not_the_whole_repository(
     result: PipelineResult,
 ) -> None:
-    """Progressive disclosure: refs, not contents, and fewer than everything observed."""
+    """Progressive disclosure: refs not contents, fewer than observed, and *why*.
+
+    "Relevant" is the load-bearing word in the name, so it is asserted: every selection
+    carries a provenance record naming the Work Item fields that caused it. A subset
+    chosen for no stated reason is a smaller context, not a relevant one.
+    """
     selected = set(result.bundle.selected_observations)
     observed = {observation.subject for observation in result.intake.observations}
     assert selected < observed, "context selection must narrow, not pass everything through"
+
+    selection_causes = {
+        record.component_id: record
+        for record in result.bundle.provenance
+        if record.component_kind in {"observation", "convention"} and record.selected
+    }
+    assert selection_causes, "context selection recorded no reason for anything"
+    for component_id, record in selection_causes.items():
+        assert record.project_fact, f"{component_id} was selected with no stated cause"
+        assert "work_item_fields=" in record.project_fact, (
+            f"{component_id} names no work item field as the cause of its relevance"
+        )
+
     for summary in result.bundle.skill_summaries:
         assert summary.skill_id in result.task_toolkit.skill_ids
         assert summary.description and summary.relevance
