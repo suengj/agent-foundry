@@ -55,7 +55,11 @@ def _cmd_doctor(_: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agent-foundry",
-        description="Agent Foundry\nPersonal-first AI-native project toolbox",
+        description=(
+            "Agent Foundry\n"
+            "Provider-neutral tooling for turning new or existing projects "
+            "into bounded AI-native execution environments"
+        ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
