@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from agent_foundry.models.base import FOUNDRY_SCHEMA_VERSION
-from agent_foundry.models.common import DependencyRelation
+from agent_foundry.models.base import WorkDecompositionError
+from agent_foundry.models.common import DependencyRelation, Reversibility
 from agent_foundry.models.work import (
     AdoptionGap,
     CapabilityUnit,
@@ -19,36 +19,44 @@ from agent_foundry.models.work import (
     WorkObjective,
     WorkPackage,
     WorkPlan,
+    default_schema_version,
 )
-from agent_foundry.work.quality import check_capability_units, check_work_items
+from agent_foundry.work.grouping import (
+    GroupKey,
+    capability_group_key,
+    work_item_id_for_group_key,
+)
+from agent_foundry.work.quality import check_grouped_units, check_work_items
 from agent_foundry.work.validate import validate_dependency_graph
 
 
-def _group_key(unit: CapabilityUnit) -> tuple[str, str, str, str]:
-    return (
-        unit.acceptance_boundary_id,
-        unit.authority_class.value,
-        unit.rollback_boundary_id,
-        unit.write_scope_id,
-    )
+def _assert_unique_work_item_ids(work_items: list[WorkItemContract]) -> None:
+    ids = [item.id for item in work_items]
+    if len(set(ids)) != len(ids):
+        duplicates = sorted({item_id for item_id in ids if ids.count(item_id) > 1})
+        raise WorkDecompositionError(
+            f"duplicate work item id after decomposition: {', '.join(duplicates)}"
+        )
 
 
 def _merge_units(
     units: list[CapabilityUnit],
     *,
+    group_key: GroupKey,
     objective: WorkObjective,
     schema_version: str,
     unit_id_to_work_item: dict[str, str],
 ) -> WorkItemContract:
     primary = sorted(units, key=lambda u: u.id)[0]
     unit_ids = {u.id for u in units}
-    work_item_id = f"wi-{primary.acceptance_boundary_id}"
+    work_item_id = work_item_id_for_group_key(group_key)
 
     scope: list[str] = []
     out_of_scope: list[str] = []
     acceptance: list[str] = []
     evidence: list[str] = []
     stop_conditions: list[str] = []
+    escalation_conditions: list[str] = []
     facts: list[str] = []
     mechanical: list[str] = []
     external_deps: set[str] = set()
@@ -59,6 +67,7 @@ def _merge_units(
         acceptance.extend(unit.acceptance_criteria)
         evidence.extend(unit.required_evidence)
         stop_conditions.extend(unit.stop_conditions)
+        escalation_conditions.extend(unit.escalation_conditions)
         facts.extend(unit.current_facts)
         mechanical.extend(unit.mechanical_steps)
         for dep_id in unit.depends_on:
@@ -98,6 +107,7 @@ def _merge_units(
         consequence_class=primary.consequence_class,
         required_evidence=sorted(set(evidence)),
         stop_conditions=sorted(set(stop_conditions)),
+        escalation_conditions=sorted(set(escalation_conditions)),
         rollback_boundary_id=primary.rollback_boundary_id,
         write_scope_id=primary.write_scope_id,
         runtime_external_validation_requirement="required evidence must be produced before closure",
@@ -107,6 +117,14 @@ def _merge_units(
 
 def _gap_to_unit(gap: AdoptionGap, outcome_id: str) -> CapabilityUnit:
     boundary = f"adopt-{gap.id}"
+    stop_conditions = ["blocked adoption path cannot be resolved within scope"]
+    escalation_conditions: list[str] = []
+    if gap.blocker:
+        stop_conditions.append("blocker gap must be resolved before dependent work proceeds")
+        escalation_conditions.append("blocker adoption gap requires human escalation")
+    if gap.reversibility == Reversibility.EFFECTIVELY_IRREVERSIBLE:
+        stop_conditions.append("adoption change is effectively irreversible; explicit approval required")
+
     return CapabilityUnit(
         id=f"unit-{gap.id}",
         outcome_id=outcome_id,
@@ -124,36 +142,36 @@ def _gap_to_unit(gap: AdoptionGap, outcome_id: str) -> CapabilityUnit:
             "regression evidence passes",
         ],
         required_evidence=["implementation diff", "validation output"],
-        stop_conditions=["blocked adoption path cannot be resolved within scope"],
+        stop_conditions=stop_conditions,
+        escalation_conditions=escalation_conditions,
         current_facts=[gap.rationale],
     )
 
 
 def _packages_for_outcomes(
     outcomes: list[OutcomeCapability],
-    work_items: list[WorkItemContract],
     units: list[CapabilityUnit],
+    unit_id_to_work_item: dict[str, str],
 ) -> list[WorkPackage]:
-    boundary_to_outcome: dict[str, str] = {}
+    items_by_outcome: dict[str, set[str]] = defaultdict(set)
     for unit in sorted(units, key=lambda u: u.id):
-        boundary_to_outcome[unit.acceptance_boundary_id] = unit.outcome_id
-
-    items_by_outcome: dict[str, list[str]] = defaultdict(list)
-    for item in sorted(work_items, key=lambda wi: wi.id):
-        boundary = item.id.removeprefix("wi-")
-        outcome_id = boundary_to_outcome.get(boundary)
-        if outcome_id:
-            items_by_outcome[outcome_id].append(item.id)
+        items_by_outcome[unit.outcome_id].add(unit_id_to_work_item[unit.id])
 
     packages: list[WorkPackage] = []
     for outcome in sorted(outcomes, key=lambda o: o.id):
+        outcome_units = [unit for unit in units if unit.outcome_id == outcome.id]
+        item_ids = sorted(items_by_outcome.get(outcome.id, set()))
+        if outcome_units and not item_ids:
+            raise WorkDecompositionError(
+                f"outcome {outcome.id} has capability units but no work items in package"
+            )
         packages.append(
             WorkPackage(
                 id=f"pkg-{outcome.id}",
                 outcome_id=outcome.id,
                 title=outcome.title,
                 description=outcome.description,
-                work_item_ids=sorted(items_by_outcome.get(outcome.id, [])),
+                work_item_ids=item_ids,
             )
         )
     return packages
@@ -161,23 +179,26 @@ def _packages_for_outcomes(
 
 def decompose_work(input_data: DecompositionInput) -> WorkPlan:
     """Produce a deterministic WorkPlan from objective and capability inputs."""
-    schema_version = FOUNDRY_SCHEMA_VERSION
+    schema_version = default_schema_version()
     units = list(input_data.capability_units)
     gaps = sorted(input_data.adoption_gaps, key=lambda g: g.id)
+
+    if gaps and not input_data.outcomes:
+        raise WorkDecompositionError("adoption gaps require at least one outcome")
 
     if gaps:
         default_outcome = sorted(input_data.outcomes, key=lambda o: o.id)[0].id
         for gap in gaps:
             units.append(_gap_to_unit(gap, default_outcome))
 
-    grouped: dict[tuple[str, str, str, str], list[CapabilityUnit]] = defaultdict(list)
+    grouped: dict[GroupKey, list[CapabilityUnit]] = defaultdict(list)
     for unit in sorted(units, key=lambda u: u.id):
-        grouped[_group_key(unit)].append(unit)
+        grouped[capability_group_key(unit)].append(unit)
 
     unit_id_to_work_item: dict[str, str] = {}
     for key in sorted(grouped):
         group_units = sorted(grouped[key], key=lambda u: u.id)
-        work_item_id = f"wi-{group_units[0].acceptance_boundary_id}"
+        work_item_id = work_item_id_for_group_key(key)
         for unit in group_units:
             unit_id_to_work_item[unit.id] = work_item_id
 
@@ -187,6 +208,7 @@ def decompose_work(input_data: DecompositionInput) -> WorkPlan:
         work_items.append(
             _merge_units(
                 group_units,
+                group_key=key,
                 objective=input_data.objective,
                 schema_version=schema_version,
                 unit_id_to_work_item=unit_id_to_work_item,
@@ -194,16 +216,17 @@ def decompose_work(input_data: DecompositionInput) -> WorkPlan:
         )
 
     work_items = sorted(work_items, key=lambda wi: wi.id)
+    _assert_unique_work_item_ids(work_items)
     validate_dependency_graph(work_items)
 
     quality_issues: list[DecompositionQualityIssue] = []
-    quality_issues.extend(check_capability_units(units))
+    quality_issues.extend(check_grouped_units(units, unit_id_to_work_item))
     quality_issues.extend(check_work_items(work_items))
 
     packages = _packages_for_outcomes(
         sorted(input_data.outcomes, key=lambda o: o.id),
-        work_items,
         units,
+        unit_id_to_work_item,
     )
 
     return WorkPlan(
@@ -224,11 +247,12 @@ def attach_execution_run(
     *,
     run_id: str,
 ) -> WorkItemExecutionContext:
-    """Attach a new execution run without mutating the Work Item contract."""
+    """Attach a new execution run; the Work Item contract payload is not modified."""
+    contract = context.contract.model_copy(deep=True)
     runs = list(context.runs) + [
-        ExecutionRunRef(id=run_id, work_item_id=context.contract.id)
+        ExecutionRunRef(id=run_id, work_item_id=contract.id)
     ]
     return WorkItemExecutionContext(
-        contract=context.contract,
+        contract=contract,
         runs=sorted(runs, key=lambda r: r.id),
     )

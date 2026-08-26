@@ -22,6 +22,7 @@ FORBIDDEN_IDENTIFIERS = [
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODELS_DIR = REPO_ROOT / "src" / "agent_foundry" / "models"
+WORK_DIR = REPO_ROOT / "src" / "agent_foundry" / "work"
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures"
 
 # Match whole words only to avoid false positives like "wrap" matching nothing bad.
@@ -42,6 +43,12 @@ def _scan_paths(paths: list[Path]) -> list[str]:
 
 def test_models_sources_are_provider_neutral() -> None:
     paths = sorted(MODELS_DIR.glob("**/*.py"))
+    violations = _scan_paths(paths)
+    assert violations == [], f"forbidden identifiers found: {violations}"
+
+
+def test_work_sources_are_provider_neutral() -> None:
+    paths = sorted(WORK_DIR.glob("**/*.py"))
     violations = _scan_paths(paths)
     assert violations == [], f"forbidden identifiers found: {violations}"
 

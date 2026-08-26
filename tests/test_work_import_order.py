@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -17,11 +18,28 @@ _IMPORT_ORDER_CASES = [
 ]
 
 
+def _subprocess_env() -> dict[str, str]:
+    return {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
+
+
+def _import_script(statement: str) -> str:
+    return f"""
+import agent_foundry
+from pathlib import Path
+
+repo_root = Path({str(REPO_ROOT)!r})
+module_path = Path(agent_foundry.__file__).resolve()
+assert str(repo_root) in str(module_path), module_path
+{statement}
+"""
+
+
 @pytest.mark.parametrize("statement", _IMPORT_ORDER_CASES)
 def test_package_import_order_in_subprocess(statement: str) -> None:
     result = subprocess.run(
-        [sys.executable, "-c", statement],
+        [sys.executable, "-c", _import_script(statement)],
         cwd=REPO_ROOT,
+        env=_subprocess_env(),
         capture_output=True,
         text=True,
         check=False,

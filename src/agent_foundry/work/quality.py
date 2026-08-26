@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 
 from agent_foundry.models.work import (
     CapabilityUnit,
     DecompositionQualityFlag,
     DecompositionQualityIssue,
     WorkItemContract,
+)
+from agent_foundry.work.grouping import (
+    partial_key_without_acceptance_boundary,
+    partial_key_without_discovery_mutation,
+    partial_key_without_outcome,
 )
 
 _FILE_STEP_PATTERN = re.compile(
@@ -36,71 +42,94 @@ def _sorted_issues(issues: list[DecompositionQualityIssue]) -> list[Decompositio
     )
 
 
-def check_capability_units(units: list[CapabilityUnit]) -> list[DecompositionQualityIssue]:
-    """Flag file-shaped or role-shaped decomposition at the unit level."""
+def _looks_step_shaped(unit: CapabilityUnit) -> bool:
+    blob = f"{unit.id} {unit.title} {' '.join(unit.mechanical_steps)}"
+    return bool(_FILE_STEP_PATTERN.search(blob))
+
+
+def check_grouped_units(
+    units: list[CapabilityUnit],
+    unit_id_to_work_item: dict[str, str],
+) -> list[DecompositionQualityIssue]:
+    """Flag file-shaped splits and cross-outcome mega-merges at group level."""
     issues: list[DecompositionQualityIssue] = []
+
+    by_partial_boundary: dict[tuple[str, ...], list[CapabilityUnit]] = defaultdict(list)
+    by_partial_outcome: dict[tuple[str, ...], list[CapabilityUnit]] = defaultdict(list)
+    by_partial_discovery: dict[tuple[str, ...], list[CapabilityUnit]] = defaultdict(list)
+
     for unit in sorted(units, key=lambda u: u.id):
-        steps = sorted(unit.mechanical_steps)
-        if len(steps) >= 2:
-            file_hits = sum(1 for step in steps if _FILE_STEP_PATTERN.search(step))
-            if file_hits >= 2 and len({unit.acceptance_boundary_id}) == 1:
-                issues.append(
-                    DecompositionQualityIssue(
-                        flag=DecompositionQualityFlag.FILE_SHAPED_DECOMPOSITION,
-                        work_item_id=None,
-                        message=(
-                            f"capability unit {unit.id} splits mechanical steps "
-                            "that share one acceptance boundary"
-                        ),
-                        related_ids=[unit.id],
-                    )
+        by_partial_boundary[partial_key_without_acceptance_boundary(unit)].append(unit)
+        by_partial_outcome[partial_key_without_outcome(unit)].append(unit)
+        by_partial_discovery[partial_key_without_discovery_mutation(unit)].append(unit)
+
+    for group_units in by_partial_boundary.values():
+        if len(group_units) < 2:
+            continue
+        work_item_ids = {unit_id_to_work_item[unit.id] for unit in group_units}
+        step_shaped = [unit for unit in group_units if _looks_step_shaped(unit)]
+        if len(work_item_ids) > 1 and len(step_shaped) >= 2:
+            issues.append(
+                DecompositionQualityIssue(
+                    flag=DecompositionQualityFlag.FILE_SHAPED_DECOMPOSITION,
+                    work_item_id=None,
+                    message="mechanical step-shaped units split across work items",
+                    related_ids=sorted(unit.id for unit in step_shaped),
                 )
-            role_hits = sum(1 for step in steps if _ROLE_STEP_PATTERN.search(step))
-            if role_hits >= 2:
-                issues.append(
-                    DecompositionQualityIssue(
-                        flag=DecompositionQualityFlag.ROLE_SHAPED_DECOMPOSITION,
-                        work_item_id=None,
-                        message=f"capability unit {unit.id} is shaped by agent roles",
-                        related_ids=[unit.id],
-                    )
+            )
+
+    for group_units in by_partial_outcome.values():
+        outcomes = {unit.outcome_id for unit in group_units}
+        work_item_ids = {unit_id_to_work_item[unit.id] for unit in group_units}
+        if len(outcomes) > 1 and len(work_item_ids) == 1:
+            issues.append(
+                DecompositionQualityIssue(
+                    flag=DecompositionQualityFlag.MEGA_ITEM,
+                    work_item_id=sorted(work_item_ids)[0],
+                    message="work item merges units from multiple outcomes",
+                    related_ids=sorted(outcomes),
                 )
-        if unit.discovery_only and unit.mutates_external:
+            )
+
+    for group_units in by_partial_discovery.values():
+        work_item_ids = {unit_id_to_work_item[unit.id] for unit in group_units}
+        has_discovery = any(unit.discovery_only for unit in group_units)
+        has_mutation = any(unit.mutates_external for unit in group_units)
+        if has_discovery and has_mutation and len(work_item_ids) == 1:
             issues.append(
                 DecompositionQualityIssue(
                     flag=DecompositionQualityFlag.MIXED_DISCOVERY_AND_MUTATION,
-                    work_item_id=None,
-                    message=f"capability unit {unit.id} mixes discovery and mutation",
+                    work_item_id=sorted(work_item_ids)[0],
+                    message="work item merges discovery and irreversible mutation",
+                    related_ids=sorted(unit.id for unit in group_units),
+                )
+            )
+
+    for unit in sorted(units, key=lambda u: u.id):
+        role_hits = sum(
+            1
+            for step in unit.mechanical_steps
+            if _ROLE_STEP_PATTERN.search(step) or _ROLE_STEP_PATTERN.search(unit.title)
+        )
+        if role_hits >= 2:
+            issues.append(
+                DecompositionQualityIssue(
+                    flag=DecompositionQualityFlag.ROLE_SHAPED_DECOMPOSITION,
+                    work_item_id=unit_id_to_work_item[unit.id],
+                    message=f"capability unit {unit.id} is shaped by agent roles",
                     related_ids=[unit.id],
                 )
             )
+
     return _sorted_issues(issues)
 
 
 def check_work_items(work_items: list[WorkItemContract]) -> list[DecompositionQualityIssue]:
-    """Flag mega-items, unverifiable acceptance, and write-scope collisions."""
+    """Flag unverifiable acceptance and write-scope collisions."""
     issues: list[DecompositionQualityIssue] = []
     scope_map: dict[str, list[str]] = {}
 
     for item in sorted(work_items, key=lambda wi: wi.id):
-        objective_markers = sorted(
-            {
-                marker
-                for criterion in item.acceptance_criteria
-                for marker in criterion.split(":")
-                if marker.startswith("objective-")
-            }
-        )
-        if len(objective_markers) > 1:
-            issues.append(
-                DecompositionQualityIssue(
-                    flag=DecompositionQualityFlag.MEGA_ITEM,
-                    work_item_id=item.id,
-                    message="work item carries multiple independent objectives",
-                    related_ids=objective_markers,
-                )
-            )
-
         for criterion in sorted(item.acceptance_criteria):
             if _UNVERIFIABLE_PATTERN.search(criterion):
                 issues.append(

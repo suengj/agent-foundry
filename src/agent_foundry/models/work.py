@@ -121,7 +121,11 @@ class EvidenceStateSnapshot(FoundryModel):
 
 
 class WorkItemExecutionContext(FoundryModel):
-    """Immutable Work Item contract with attachable execution runs."""
+    """Work Item contract with attachable execution runs.
+
+    The contract object is not replaced when runs are attached, but list fields
+    remain ordinarily mutable in Python unless callers treat them as read-only.
+    """
 
     contract: WorkItemContract
     runs: list[ExecutionRunRef] = Field(default_factory=list)
@@ -161,6 +165,7 @@ class CapabilityUnit(FoundryModel):
     acceptance_criteria: list[str] = Field(default_factory=list)
     required_evidence: list[str] = Field(default_factory=list)
     stop_conditions: list[str] = Field(default_factory=list)
+    escalation_conditions: list[str] = Field(default_factory=list)
     depends_on: list[str] = Field(default_factory=list)
     mechanical_steps: list[str] = Field(default_factory=list)
     current_facts: list[str] = Field(default_factory=list)
@@ -174,8 +179,6 @@ class DecompositionQualityFlag(StrEnum):
     ROLE_SHAPED_DECOMPOSITION = "role-shaped-decomposition"
     MIXED_DISCOVERY_AND_MUTATION = "mixed-discovery-and-mutation"
     UNVERIFIABLE_ACCEPTANCE = "unverifiable-acceptance"
-    CIRCULAR_DEPENDENCY = "circular-dependency"
-    DANGLING_DEPENDENCY = "dangling-dependency"
     WRITE_SCOPE_COLLISION = "write-scope-collision"
 
 

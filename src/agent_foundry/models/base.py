@@ -54,10 +54,20 @@ class WorkDecompositionError(FoundryModelError):
 class DependencyGraphError(WorkDecompositionError):
     """Raised when the work-item dependency graph is invalid."""
 
-    def __init__(self, message: str, *, node_ids: list[str] | None = None) -> None:
-        self.node_ids = sorted(node_ids or [])
+    def __init__(
+        self,
+        message: str,
+        *,
+        node_ids: list[str] | None = None,
+        cycle_path: list[str] | None = None,
+    ) -> None:
+        ordered = cycle_path if cycle_path is not None else (node_ids or [])
+        self.cycle_path = list(ordered)
+        self.node_ids = sorted(node_ids if node_ids is not None else self.cycle_path)
         detail = message
-        if self.node_ids:
+        if self.cycle_path:
+            detail = f"{message}: {' -> '.join(self.cycle_path)}"
+        elif self.node_ids:
             detail = f"{message}: {', '.join(self.node_ids)}"
         super().__init__(detail)
 
