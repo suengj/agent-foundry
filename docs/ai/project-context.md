@@ -1,26 +1,28 @@
 # Project context — Agent Foundry
 
-Technical environment and canonical paths. **Not** a substitute for Linear work state.
+Technical environment and canonical repository paths. This document is not a live work-status board.
 
 ## Repository
 
 | Field | Value |
 |---|---|
-| Local root | `~/Developer/PJT/p01_agent_foundry` |
-| GitHub | `suengj/agent-foundry` (private) |
+| Repository root | current checkout |
 | Default branch | `main` |
 | Package import | `agent_foundry` |
+| Source | `src/agent_foundry/` |
+| Tests | `tests/` |
+| Durable docs | `docs/` |
 
 ## Tooling
 
-- Python ≥ 3.11
+- Python >= 3.11
 - Packaging: `hatchling` via `pyproject.toml`
 - Tests: `pytest`
 
 ## Commands
 
 ```bash
-# from repo root with dev extras installed
+# from repository root with dev extras installed
 pip install -e ".[dev]"
 python -m agent_foundry --help
 python -m agent_foundry version
@@ -28,28 +30,62 @@ python -m agent_foundry doctor
 pytest
 ```
 
-## Playbook reference (read-only)
+## Canonical document paths
 
-- Repository: `suengj/ai-agent-dev-playbook`
-- Pinned ref: `daa487c874822921ae07b968671e5852e41f728f`
-- Adoption mechanism: `playbook.ref` in constitution — bump explicitly; never wholesale copy
+```text
+AGENTS.md
+= thin agent navigation entrypoint
 
-## Linear
+docs/ai/PROJECT_AGENT_CONSTITUTION.md
+= repository-local P0 agent authority / behavior
 
-- Project: **Agent Foundry · M0 Personal MVP**
-- Work SSOT: Linear issues (e.g. SUE-294 foundation, SUE-295+ backlog)
-- Do not mirror issue titles/status here
+docs/contracts/product-boundary.md
+= product scope and authority ownership
 
-## Related systems
+docs/architecture/overview.md
+= architecture summary
 
-| System | Relationship |
-|---|---|
-| AI Dev Playbook | Upstream constitution (pinned) |
-| Trading Lab | Future dogfood target (AF0.8) |
-| Cursor / Codex / Claude | Execution adapters |
+docs/foundry/
+= detailed operating model and implementation contracts
+```
+
+## Work-state boundary
+
+Current work state belongs to the configured work tracker or explicit current Work Item source. This repository's durable docs should not mirror volatile priority, issue status, or next-work lists.
+
+Foundry's core work model is tracker-neutral:
+
+```text
+Objective
+→ Outcome / Capability
+→ Work Package
+→ Work Item
+→ Execution Run
+```
+
+## Implementation state
+
+The current package is intentionally small. The operating model documents describe target capabilities including project inspection, brownfield adoption, work decomposition, toolkit/integration resolution, compilation, rendering, validation, and reconciliation. Documentation does not imply those components are already implemented.
+
+## Provider and integration boundary
+
+The core package remains provider-neutral. Provider CLIs, work trackers, repositories, MCP/API services, credential providers, and runtime systems are integration/adaptation surfaces.
+
+Public examples and tests should use synthetic identifiers and must not include real secret values.
 
 ## Evidence expectations
 
-- Contract changes: updated `docs/contracts/*` + passing `pytest`
-- CLI/bootstrap changes: `python -m agent_foundry doctor` clean
-- Issue completion: GitHub SHA linked in Linear before Done
+- Contract changes: relevant durable docs updated and `pytest` remains green
+- CLI/bootstrap changes: `python -m agent_foundry doctor` remains clean
+- Future compiler changes: structured outputs validate deterministically and generated Markdown is derived from canonical configuration
+- External integration changes: preview-first semantics, credential references rather than raw secrets, and integration-health validation where applicable
+
+## Public repository hygiene
+
+Do not add:
+
+- private repository dependencies to public contracts
+- personal filesystem paths
+- private project/tracker identifiers
+- raw credentials or tokens
+- project-specific operating history as reusable architecture
