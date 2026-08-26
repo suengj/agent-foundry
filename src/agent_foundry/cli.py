@@ -15,9 +15,34 @@ from agent_foundry.compile import compile_work_item
 from agent_foundry.render import render_execution_bundle_markdown
 from agent_foundry.toolkit import check_integrations, resolve_task_toolkit_for_work_item, resolve_toolkit
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-CONTRACT_PATH = REPO_ROOT / "docs" / "contracts" / "product-boundary.md"
-CONSTITUTION_PATH = REPO_ROOT / "docs" / "ai" / "PROJECT_AGENT_CONSTITUTION.md"
+# Project artifacts live in a *target project*, never at a path derived from where
+# this package happens to be installed. Resolving them relative to __file__ works only
+# from a source checkout; from site-packages it points into the interpreter's lib
+# directory, so every check fails on a clean install.
+CONTRACT_RELPATH = Path("docs") / "contracts" / "product-boundary.md"
+CONSTITUTION_RELPATH = Path("docs") / "ai" / "PROJECT_AGENT_CONSTITUTION.md"
+
+# Exit codes are distinct so a caller can tell "this install is broken" from
+# "this directory is not a Foundry-managed project".
+DOCTOR_OK = 0
+DOCTOR_PACKAGE_FAILED = 1
+DOCTOR_PROJECT_FAILED = 2
+
+
+def find_project_root(start: Path) -> Path | None:
+    """Walk upward from `start` looking for a Foundry-managed project.
+
+    Discovery is anchored on the project's own contract artifacts, so it works for a
+    consumer project and for this repository alike, and it never consults the
+    installed package's location.
+    """
+    current = start.resolve()
+    for candidate in (current, *current.parents):
+        if (candidate / CONTRACT_RELPATH).is_file() or (
+            candidate / CONSTITUTION_RELPATH
+        ).is_file():
+            return candidate
+    return None
 
 
 def _cmd_version(_: argparse.Namespace) -> int:
@@ -25,38 +50,88 @@ def _cmd_version(_: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_doctor(_: argparse.Namespace) -> int:
+def _package_self_check() -> list[tuple[str, bool, str]]:
+    """Is the installed distribution intact and usable? Must hold anywhere."""
     checks: list[tuple[str, bool, str]] = []
 
-    checks.append(
-        (
-            "repository identity",
-            (REPO_ROOT / "pyproject.toml").is_file(),
-            str(REPO_ROOT),
-        )
-    )
-    checks.append(
-        (
-            "product contract",
-            CONTRACT_PATH.is_file(),
-            str(CONTRACT_PATH),
-        )
-    )
-    checks.append(
-        (
-            "project constitution",
-            CONSTITUTION_PATH.is_file(),
-            str(CONSTITUTION_PATH),
-        )
-    )
+    checks.append(("package version", bool(__version__), __version__ or "(unset)"))
 
+    try:
+        from agent_foundry.models.base import FOUNDRY_SCHEMA_VERSION
+
+        checks.append(
+            ("schema version", bool(FOUNDRY_SCHEMA_VERSION), str(FOUNDRY_SCHEMA_VERSION))
+        )
+    except Exception as exc:  # pragma: no cover - only on a broken install
+        checks.append(("schema version", False, f"unavailable: {exc}"))
+
+    try:
+        from agent_foundry.toolkit import default_registry
+
+        registry = default_registry()
+        capability_count = len(registry.capabilities)
+        checks.append(
+            (
+                "capability registry",
+                capability_count > 0,
+                f"{capability_count} builtin capabilities",
+            )
+        )
+    except Exception as exc:  # pragma: no cover - only on a broken install
+        checks.append(("capability registry", False, f"unavailable: {exc}"))
+
+    return checks
+
+
+def _project_check(project_root: Path) -> list[tuple[str, bool, str]]:
+    """Does this target project carry the artifacts Foundry expects?"""
+    contract = project_root / CONTRACT_RELPATH
+    constitution = project_root / CONSTITUTION_RELPATH
+    return [
+        ("project root", project_root.is_dir(), str(project_root)),
+        ("product contract", contract.is_file(), str(contract)),
+        ("project constitution", constitution.is_file(), str(constitution)),
+    ]
+
+
+def _report(checks: list[tuple[str, bool, str]]) -> bool:
     failed = False
     for name, ok, detail in checks:
-        status = "ok" if ok else "FAIL"
-        print(f"[{status}] {name}: {detail}")
+        print(f"[{'ok' if ok else 'FAIL'}] {name}: {detail}")
         failed = failed or not ok
+    return failed
 
-    return 1 if failed else 0
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    print("== package self-check ==")
+    package_failed = _report(_package_self_check())
+
+    print("== project check ==")
+    explicit = getattr(args, "project_path", None)
+    project_failed = False
+    if explicit is not None:
+        project_root: Path | None = Path(explicit)
+        if project_root.is_dir():
+            project_failed = _report(_project_check(project_root))
+        else:
+            print(f"[FAIL] project root: {project_root} is not a directory")
+            project_failed = True
+    else:
+        project_root = find_project_root(Path.cwd())
+        if project_root is None:
+            # Not being inside a Foundry-managed project is a normal state for an
+            # installed package, not a broken one. Say so rather than failing.
+            print("[skip] no Foundry-managed project found from the current directory")
+            print("       pass a path (agent-foundry doctor PROJECT_PATH) to check one")
+        else:
+            project_failed = _report(_project_check(project_root))
+
+    # A broken installation outranks a project finding: whatever the project check
+    # reported was produced by code that cannot be trusted, so it must not be the
+    # code the caller sees. Every exit path honours this ordering.
+    if package_failed:
+        return DOCTOR_PACKAGE_FAILED
+    return DOCTOR_PROJECT_FAILED if project_failed else DOCTOR_OK
 
 
 def _cmd_inspect(args: argparse.Namespace) -> int:
@@ -239,7 +314,21 @@ def build_parser() -> argparse.ArgumentParser:
     version_cmd = sub.add_parser("version", help="Show package version")
     version_cmd.set_defaults(func=_cmd_version)
 
-    doctor_cmd = sub.add_parser("doctor", help="Validate bootstrap contract artifacts")
+    doctor_cmd = sub.add_parser(
+        "doctor",
+        help="Check this installation, and a target project if one is found",
+        description=(
+            "Exit 0 when both checks pass or when no project is in scope; "
+            "1 when the installed package itself is broken; "
+            "2 when a target project is missing expected artifacts."
+        ),
+    )
+    doctor_cmd.add_argument(
+        "project_path",
+        nargs="?",
+        default=None,
+        help="Project to check. Defaults to searching upward from the current directory.",
+    )
     doctor_cmd.set_defaults(func=_cmd_doctor)
 
     inspect_cmd = sub.add_parser("inspect", help="Read-only project inventory and readiness assessment")
