@@ -21,12 +21,17 @@ from __future__ import annotations
 
 import ntpath
 import posixpath
+from typing import TYPE_CHECKING
 
 from agent_foundry.models.common import (
+    ValidationOutcome,
     EvidenceState,
     ExternalEffectClass,
     IntegrationHealthState,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance only
+    from agent_foundry.models.verification import ValidationFinding, ValidationReport
 
 # Ascending authority. Ordered from the contract's own progression (read, then
 # repository, then shared services, then data, then live runtime, then publication),
@@ -509,3 +514,131 @@ def vocabulary_violations(model: object, *, path: str = "") -> list[str]:
                 f"{position} carries {raw!r}, which names no {names} value"
             )
     return violations
+
+
+def enum_value_violations(
+    values: object,
+    enum_type: type,
+    *,
+    label: str,
+) -> list[str]:
+    """Caller-supplied values that name nothing in the vocabulary they must come from.
+
+    The parameter analogue of `vocabulary_violations`, which walks a model. A
+    vocabulary value can reach a validator two ways — carried on the artifact under
+    examination, or handed in as an argument — and both need the same check before
+    the value is ranked, compared, or dereferenced. Covering only the artifact is how
+    `required_evidence_states=['SOMEDAY']` came to raise instead of returning a
+    verdict.
+
+    Accepts a bare value or a sequence, since a caller may pass either, and reads
+    through `getattr(..., "value", ...)` because an argument arriving from a config
+    file or another process is a plain string.
+    """
+    if values is None:
+        return []
+    items = list(values) if isinstance(values, (list, tuple, set, frozenset)) else [values]
+    vocabulary = {member.value for member in enum_type}
+    raw = [str(getattr(item, "value", item)) for item in items]
+    return [
+        f"{label} carries {value!r}, which names no {enum_type.__name__} value"
+        for value in unrecognised_members(raw, vocabulary)
+    ]
+
+
+# --- the shared vocabulary gate --------------------------------------------------
+#
+# Lives here rather than in `validators.py` so that every module doing validation
+# work — validators, explainability, reconciliation — reaches the same gate. One
+# shared call is what keeps "check the vocabulary first" from being a rule each new
+# entry point has to remember separately.
+
+
+def _gate_finding(
+    validator_id: str,
+    outcome: ValidationOutcome,
+    subject: str,
+    message: str,
+) -> ValidationFinding:
+    from agent_foundry.models.verification import ValidationFinding
+
+    return ValidationFinding(
+        validator_id=validator_id, outcome=outcome, subject=subject, message=message
+    )
+
+
+def vocabulary_findings(
+    validator_id: str,
+    subject: str,
+    inputs: dict[str, object],
+) -> list[ValidationFinding]:
+    """BLOCKED findings for every enum position holding an unrecognised value."""
+    findings: list[ValidationFinding] = []
+    for label, model in inputs.items():
+        if model is None:
+            continue
+        for violation in vocabulary_violations(model):
+            findings.append(
+                _gate_finding(
+                    validator_id,
+                    ValidationOutcome.BLOCKED,
+                    subject,
+                    f"{label}.{violation}",
+                )
+            )
+    return findings
+
+
+def malformed_vocabulary_report(
+    validator_id: str,
+    subject_kind: str,
+    subject: str,
+    inputs: dict[str, object],
+    parameters: dict[str, tuple[object, type]] | None = None,
+) -> ValidationReport | None:
+    """Reject an artifact whose vocabulary is malformed, before examining anything else.
+
+    Every validator calls this first, and returns its result unchanged when it is not
+    None. Two reasons it short-circuits rather than merely adding a finding:
+
+    * **Nothing downstream is safe.** Membership tests silently fall through every
+      branch for an unrecognised value, rank lookups and `.value` dereferences raise.
+      An exception is not a fail-closed verdict — it returns no report at all, so the
+      caller cannot record why the artifact was rejected.
+    * **Nothing downstream is meaningful.** Properties evaluated over a state nobody
+      recognises produce findings that read as authoritative and are not.
+
+    BLOCKED rather than MISSING: an absent field is unrecorded, and MISSING is right
+    for that. A *supplied* value naming nothing in its vocabulary is a positive claim
+    that is wrong, and it can never establish the state it purports to.
+    """
+    findings = vocabulary_findings(validator_id, subject, inputs)
+    # A vocabulary value reaches a validator two ways: carried on the artifact, or
+    # handed in as an argument. Both are checked here, because both are ranked,
+    # compared, and dereferenced by the same downstream code.
+    for label, (values, enum_type) in (parameters or {}).items():
+        findings.extend(
+            _gate_finding(validator_id, ValidationOutcome.BLOCKED, subject, message)
+            for message in enum_value_violations(values, enum_type, label=label)
+        )
+    if not findings:
+        return None
+    from agent_foundry.models.verification import ValidationReport
+
+    return ValidationReport(
+        subject_kind=subject_kind, subject_id=subject, findings=findings
+    )
+
+
+def is_contract_like(value: object) -> bool:
+    """True when a value can be read as a contract payload.
+
+    `Iterable[tuple[str, Any]]` and a bare `FoundryModel` annotation both admit
+    objects that are neither a model nor a mapping. Reading one raises, and an
+    exception is not a fail-closed verdict — it returns no report at all. Callers
+    test this first and emit BLOCKED, so "you handed me something that is not a
+    contract" is a finding rather than a traceback.
+    """
+    from collections.abc import Mapping
+
+    return isinstance(value, Mapping) or getattr(type(value), "model_fields", None) is not None

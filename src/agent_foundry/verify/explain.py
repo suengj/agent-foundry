@@ -34,7 +34,10 @@ from agent_foundry.models.verification import (
     ValidationReport,
 )
 from agent_foundry.verify import claims
-from agent_foundry.verify.independent import EXTERNAL_EFFECT_ASCENDING, vocabulary_violations
+from agent_foundry.verify.independent import (
+    EXTERNAL_EFFECT_ASCENDING,
+    malformed_vocabulary_report,
+)
 
 _AUTONOMY_ASCENDING: tuple[Autonomy, ...] = (
     Autonomy.SUGGEST,
@@ -222,34 +225,26 @@ def validate_decision_explainability(
     validator_id = claims.DECISION_EXPLAINABILITY
     subject_id = f"{bundle.work_item_id}/{bundle.run_id}"
 
-    # Vocabulary first, as everywhere else in verify/: a manifest or bundle carrying a
-    # value from no known vocabulary cannot support any statement about why a
-    # decision was made, and ranking or dereferencing it below would raise.
-    malformed: list[ValidationFinding] = []
-    for label, model in (
-        ("bundle", bundle),
-        ("manifest", manifest),
-        ("receipt", receipt),
-        *(
-            (f"classification[{index}]", item)
-            for index, item in enumerate(classification_findings or [])
-        ),
-    ):
-        if model is None:
-            continue
-        malformed.extend(
-            ValidationFinding(
-                validator_id=validator_id,
-                outcome=ValidationOutcome.BLOCKED,
-                subject=subject_id,
-                message=f"{label}.{violation}",
-            )
-            for violation in vocabulary_violations(model)
-        )
-    if malformed:
-        return ValidationReport(
-            subject_kind="execution-bundle", subject_id=subject_id, findings=malformed
-        )
+    # Vocabulary first, through the same shared gate every other validator uses: a
+    # manifest or bundle carrying a value from no known vocabulary cannot support any
+    # statement about why a decision was made, and ranking or dereferencing it below
+    # would raise.
+    malformed = malformed_vocabulary_report(
+        validator_id,
+        "execution-bundle",
+        subject_id,
+        {
+            "bundle": bundle,
+            "manifest": manifest,
+            "receipt": receipt,
+            **{
+                f"classification_findings[{index}]": item
+                for index, item in enumerate(classification_findings or [])
+            },
+        },
+    )
+    if malformed is not None:
+        return malformed
 
     findings: list[ValidationFinding] = []
     trace = build_decision_trace(

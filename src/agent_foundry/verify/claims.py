@@ -37,6 +37,26 @@ object handed to another module all keep the original callable. The import bound
 is what actually closes that route for the two rules behind it, and the guards
 together are strong evidence rather than a proof.
 
+**Vocabulary coverage, stated as scope rather than as a boast.** Two audit claims on
+this Work Item did not hold, so what is covered is now enumerated by tests rather
+than asserted here:
+
+* *artifact fields* — every enum-typed position on every model argument of every
+  validator, nested models and lists included, enumerated from field annotations
+  (`tests/test_verify_vocabulary_sweep.py`);
+* *enum-typed parameters* — every public entry point's signature is read, and each
+  enum-typed parameter is either swept or carries a recorded reason
+  (`tests/test_verify_parameter_vocabulary.py`);
+* *model-typed parameters* — every model argument a validator takes must appear in
+  that validator's own vocabulary gate, checked against the gate text rather than the
+  signature.
+
+Not vocabularies, and deliberately not swept: free-form identifier parameters
+(`required_ids`, `review_only_role_ids`), version strings (already parsed
+defensively into MISSING/BLOCKED), and datetimes. `build_execution_receipt` takes
+four enum parameters and is a producer, not a validator: it has no report to return,
+so it fails with a typed `ValidationError` at construction.
+
 The residue, stated plainly: a verifier that assembles the module path from pieces at
 runtime, or reaches a rule through some future third module that legitimately imports
 it, would still escape all three. The complete answer is a

@@ -59,17 +59,19 @@ from agent_foundry.verify.independent import (
     contained_in_any,
     contract_digest,
     declared_ceiling,
+    malformed_vocabulary_report,
+    vocabulary_findings,
     effect_rank,
     evidence_state_partition_conflicts,
     exceeds,
     finding_obligation_violations,
     health_satisfies,
+    is_contract_like,
     normalize_repository_path,
     parse_major_minor,
     parse_release_version,
     path_within,
     unrecognised_members,
-    vocabulary_violations,
 )
 
 # Relations that mean "the target must be closed first". Restated from
@@ -146,59 +148,6 @@ def _report(
     )
 
 
-def _vocabulary_findings(
-    validator_id: str,
-    subject: str,
-    inputs: dict[str, object],
-) -> list[ValidationFinding]:
-    """BLOCKED findings for every enum position holding an unrecognised value."""
-    findings: list[ValidationFinding] = []
-    for label, model in inputs.items():
-        if model is None:
-            continue
-        for violation in vocabulary_violations(model):
-            findings.append(
-                _finding(
-                    validator_id,
-                    ValidationOutcome.BLOCKED,
-                    subject,
-                    f"{label}.{violation}",
-                )
-            )
-    return findings
-
-
-def _malformed_vocabulary_report(
-    validator_id: str,
-    subject_kind: str,
-    subject: str,
-    inputs: dict[str, object],
-) -> ValidationReport | None:
-    """Reject an artifact whose vocabulary is malformed, before examining anything else.
-
-    Every validator calls this first, and returns its result unchanged when it is not
-    None. Two reasons it short-circuits rather than merely adding a finding:
-
-    * **Nothing downstream is safe.** Membership tests silently fall through every
-      branch for an unrecognised value, rank lookups and `.value` dereferences raise.
-      An exception is not a fail-closed verdict — it returns no report at all, so the
-      caller cannot record why the artifact was rejected.
-    * **Nothing downstream is meaningful.** Properties evaluated over a state nobody
-      recognises produce findings that read as authoritative and are not.
-
-    BLOCKED rather than MISSING: an absent field is unrecorded, and MISSING is right
-    for that. A *supplied* value naming nothing in its vocabulary is a positive claim
-    that is wrong, and it can never establish the state it purports to.
-    """
-    findings = _vocabulary_findings(validator_id, subject, inputs)
-    if not findings:
-        return None
-    return ValidationReport(
-        subject_kind=subject_kind, subject_id=subject, findings=findings
-    )
-
-
-
 def _payload(model: FoundryModel | Mapping[str, Any]) -> dict[str, Any]:
     """View a model as plain data.
 
@@ -250,7 +199,18 @@ def validate_contract_schema_compatibility(
 
     for name, contract in contracts:
         seen += 1
-        malformed = _vocabulary_findings(validator_id, name, {name: contract})
+        if not is_contract_like(contract):
+            findings.append(
+                _finding(
+                    validator_id,
+                    ValidationOutcome.BLOCKED,
+                    name,
+                    f"{type(contract).__name__} is not a contract payload; its schema "
+                    "compatibility cannot be read, let alone established",
+                )
+            )
+            continue
+        malformed = vocabulary_findings(validator_id, name, {name: contract})
         if malformed:
             findings.extend(malformed)
             continue
@@ -380,7 +340,7 @@ def validate_work_dependency_graph(work_items: list[WorkItemContract]) -> Valida
     through, and this walk still finds the cycle.
     """
     validator_id = claims.WORK_DEPENDENCY_GRAPH
-    malformed = _malformed_vocabulary_report(
+    malformed = malformed_vocabulary_report(
         validator_id,
         "work-plan",
         "dependency-graph",
@@ -540,11 +500,11 @@ def validate_toolkit_coherence(
     and these relations still catch it.
     """
     validator_id = claims.TOOLKIT_COHERENCE
-    malformed = _malformed_vocabulary_report(
+    malformed = malformed_vocabulary_report(
         validator_id,
         "task-toolkit",
         task_toolkit.work_item_id,
-        {"task_toolkit": task_toolkit, "project_lock": project_lock},
+        {"task_toolkit": task_toolkit, "project_lock": project_lock, "registry": registry},
     )
     if malformed is not None:
         return malformed
@@ -774,7 +734,7 @@ def validate_authority_ceiling(
     it, both still fail these comparisons.
     """
     validator_id = claims.AUTHORITY_CEILING
-    malformed = _malformed_vocabulary_report(
+    malformed = malformed_vocabulary_report(
         validator_id,
         "compiled-authority",
         work_item.id,
@@ -785,6 +745,7 @@ def validate_authority_ceiling(
             "task_toolkit": task_toolkit,
             "role": role,
             "permission_profile": permission_profile,
+            "registry": registry,
         },
     )
     if malformed is not None:
@@ -948,7 +909,7 @@ def validate_write_scope_containment(
     function lets a traversal escape into a compiled bundle; this still rejects it.
     """
     validator_id = claims.WRITE_SCOPE_CONTAINMENT
-    malformed = _malformed_vocabulary_report(
+    malformed = malformed_vocabulary_report(
         validator_id,
         "compiled-authority",
         work_item.id,
@@ -1068,7 +1029,7 @@ def validate_role_separation(
 ) -> ValidationReport:
     """Check that concurrently authorized roles do not overlap or self-review."""
     validator_id = claims.ROLE_SEPARATION
-    malformed = _malformed_vocabulary_report(
+    malformed = malformed_vocabulary_report(
         validator_id,
         "execution-bundle-set",
         "role-separation",
@@ -1204,7 +1165,7 @@ def validate_integration_preflight(
     plus an observation that positively evidences it.
     """
     validator_id = claims.INTEGRATION_PREFLIGHT
-    malformed = _malformed_vocabulary_report(
+    malformed = malformed_vocabulary_report(
         validator_id,
         "integration-set",
         "preflight",
@@ -1344,7 +1305,7 @@ def validate_required_evidence(
 ) -> ValidationReport:
     """Check each required evidence class against a typed, passing evidence item."""
     validator_id = claims.REQUIRED_EVIDENCE
-    malformed = _malformed_vocabulary_report(
+    malformed = malformed_vocabulary_report(
         validator_id,
         "evidence-bundle",
         work_item.id,
@@ -1512,7 +1473,7 @@ def validate_evidence_bundle_completeness(bundle: EvidenceBundle) -> ValidationR
     """Check the bundle's own structure, reading it as data."""
     validator_id = claims.EVIDENCE_BUNDLE_COMPLETENESS
     subject = str(getattr(bundle, "work_item_id", None) or "unknown")
-    malformed = _malformed_vocabulary_report(
+    malformed = malformed_vocabulary_report(
         validator_id, "evidence-bundle", subject, {"bundle": bundle}
     )
     if malformed is not None:
@@ -1665,9 +1626,23 @@ def validate_provenance_completeness(subject: FoundryModel) -> ValidationReport:
     passed a model validator.
     """
     validator_id = claims.PROVENANCE_COMPLETENESS
+    if not is_contract_like(subject):
+        return ValidationReport(
+            subject_kind=type(subject).__name__,
+            subject_id=type(subject).__name__,
+            findings=[
+                _finding(
+                    validator_id,
+                    ValidationOutcome.BLOCKED,
+                    type(subject).__name__,
+                    f"{type(subject).__name__} is not a contract payload; it carries no "
+                    "provenance that could be checked",
+                )
+            ],
+        )
     data = _payload(subject)
     subject_id = str(data.get("work_item_id") or data.get("id") or type(subject).__name__)
-    malformed = _malformed_vocabulary_report(
+    malformed = malformed_vocabulary_report(
         validator_id, type(subject).__name__, subject_id, {"subject": subject}
     )
     if malformed is not None:
@@ -1809,7 +1784,7 @@ def validate_execution_bundle_completeness(bundle: ExecutionBundle) -> Validatio
     """Check that the compiled bundle carries everything a run is entitled to."""
     validator_id = claims.EXECUTION_BUNDLE_COMPLETENESS
     subject = str(getattr(bundle, "work_item_id", None) or "unknown")
-    malformed = _malformed_vocabulary_report(
+    malformed = malformed_vocabulary_report(
         validator_id, "execution-bundle", subject, {"bundle": bundle}
     )
     if malformed is not None:
@@ -1981,8 +1956,12 @@ def validate_lifecycle_separation(
     subject = (
         f"{getattr(receipt, 'work_item_id', None)}/{getattr(receipt, 'run_id', None)}"
     )
-    malformed = _malformed_vocabulary_report(
-        validator_id, "execution-receipt", subject, {"receipt": receipt}
+    malformed = malformed_vocabulary_report(
+        validator_id,
+        "execution-receipt",
+        subject,
+        {"receipt": receipt},
+        {"required_evidence_states": (required_evidence_states, EvidenceState)},
     )
     if malformed is not None:
         return malformed
@@ -2081,8 +2060,11 @@ def validate_receipt_completeness(
     subject = (
         f"{getattr(receipt, 'work_item_id', None)}/{getattr(receipt, 'run_id', None)}"
     )
-    malformed = _malformed_vocabulary_report(
-        validator_id, "execution-receipt", subject, {"receipt": receipt}
+    malformed = malformed_vocabulary_report(
+        validator_id,
+        "execution-receipt",
+        subject,
+        {"receipt": receipt, **{f"artifacts[{k}]": v for k, v in (artifacts or {}).items()}},
     )
     if malformed is not None:
         return malformed
