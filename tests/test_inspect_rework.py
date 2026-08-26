@@ -94,24 +94,22 @@ def test_b4_makefile_target_not_substring_matched(tmp_path: Path) -> None:
     assert any("declares 'lint' target" in o.content for o in lint_obs)
 
 
-def test_b5_brownfield_test_runner_conflict_reported() -> None:
+def test_b5_multi_surface_mentions_recorded_without_stance() -> None:
     intake = inspect_project(BROWNFIELD)
-    claude_prescribes = [
-        c
-        for c in intake.conventions
-        if c.source_ref == "CLAUDE.md" and c.subject == "test-runner"
+    mentions = [c for c in intake.conventions if c.subject == "test-runner"]
+    assert len(mentions) >= 2
+    for mention in mentions:
+        assert mention.provenance.kind == ProvenanceKind.INFERRED
+        assert mention.confidence <= 0.5
+        assert "prescribe" not in mention.pattern.lower()
+        assert "reject" not in mention.pattern.lower()
+    disagreement = [c for c in intake.conventions if c.subject == "test-runner-disagreement"]
+    assert disagreement == []
+    unreconciled = [
+        f for f in intake.readiness_findings if f.dimension == "unreconciled-subject-mentions"
     ]
-    assert claude_prescribes == []
-    conflicts = [
-        c for c in intake.conventions if c.subject == "test-runner-disagreement"
-    ]
-    assert conflicts
-    readiness = [
-        f
-        for f in intake.readiness_findings
-        if "disagree" in f.message.lower() or "conflict" in f.message.lower()
-    ]
-    assert readiness
+    assert unreconciled
+    assert "not been reconciled" in unreconciled[0].message.lower()
 
 
 # --- RESIDUALS ---

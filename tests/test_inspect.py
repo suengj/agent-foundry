@@ -71,11 +71,14 @@ def test_inspect_brownfield_detects_conflicting_agent_surfaces() -> None:
     fragmentation = [
         f for f in intake.readiness_findings if f.dimension == "fragmented-agent-rule-surfaces"
     ]
-    assert fragmentation
-    assert any(
-        "must not be treated as normative" in f.message or "disagree" in f.message.lower()
-        for f in fragmentation
-    )
+    unreconciled = [
+        f for f in intake.readiness_findings if f.dimension == "unreconciled-subject-mentions"
+    ]
+    assert fragmentation or unreconciled
+    if fragmentation:
+        assert any("must not be treated as normative" in f.message for f in fragmentation)
+    if unreconciled:
+        assert any("not been reconciled" in f.message.lower() for f in unreconciled)
 
     classification = [f for f in intake.classification_findings if f.dimension == "agent-rule-fragmentation"]
     assert classification
@@ -98,10 +101,11 @@ def test_brownfield_observed_rules_are_not_promoted_to_normative() -> None:
 
 def test_unknown_classification_dimensions_remain_explicit() -> None:
     intake = inspect_project(GREENFIELD)
-    autonomy = [f for f in intake.classification_findings if f.dimension == "execution.autonomy"]
-    assert autonomy
-    assert autonomy[0].value is None
-    assert autonomy[0].provenance.kind == ProvenanceKind.INFERRED
+    unknown = [f for f in intake.classification_findings if f.dimension == "execution.autonomy"]
+    assert unknown
+    assert unknown[0].value is None
+    assert unknown[0].reason is not None
+    assert unknown[0].provenance.kind == ProvenanceKind.INFERRED
 
 
 def test_greenfield_intake_mode_inferred() -> None:

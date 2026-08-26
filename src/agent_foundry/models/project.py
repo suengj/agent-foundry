@@ -37,6 +37,7 @@ class ClassificationFinding(FoundryModel):
 
     dimension: str
     value: str | None = None
+    reason: str | None = None
     provenance: Provenance
     evidence_refs: list[str] = Field(default_factory=list)
 

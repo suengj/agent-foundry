@@ -7,13 +7,41 @@ from pathlib import Path
 
 from agent_foundry.models.common import Provenance, ProvenanceKind
 from agent_foundry.models.project import ConventionSpec, ProjectObservation
-from agent_foundry.inspect.collectors import _makefile_declared_targets
+from agent_foundry.inspect.collectors import makefile_declared_targets
 from agent_foundry.inspect.traversal import (
     CI_WORKFLOW_PREFIX,
     RepoEntry,
     file_entries,
     read_entry_text,
 )
+
+TEST_RUNNER_SUBJECT = "test-runner"
+MENTION_CONFIDENCE = 0.5
+_MENTION_PATTERN = "instruction surface mentions pytest"
+
+
+def lines_mentioning_subject(content: str, subject: str) -> list[str]:
+    pattern = re.compile(rf"\b{re.escape(subject)}\b", re.IGNORECASE)
+    quoted: list[str] = []
+    for line in content.splitlines():
+        if pattern.search(line):
+            quoted.append(line.strip())
+    return quoted
+
+
+def _mention_convention(source_ref: str, quoted_line: str) -> ConventionSpec:
+    return ConventionSpec(
+        subject=TEST_RUNNER_SUBJECT,
+        pattern=_MENTION_PATTERN,
+        source_ref=source_ref,
+        evidence=quoted_line,
+        confidence=MENTION_CONFIDENCE,
+        provenance=Provenance(
+            kind=ProvenanceKind.INFERRED,
+            confidence=MENTION_CONFIDENCE,
+            source_ref=source_ref,
+        ),
+    )
 
 
 def _convention(
@@ -23,7 +51,7 @@ def _convention(
     evidence: str,
     *,
     confidence: float,
-    kind: ProvenanceKind = ProvenanceKind.OBSERVED,
+    kind: ProvenanceKind = ProvenanceKind.INFERRED,
 ) -> ConventionSpec:
     return ConventionSpec(
         subject=subject,
@@ -33,27 +61,6 @@ def _convention(
         confidence=confidence,
         provenance=Provenance(kind=kind, confidence=confidence, source_ref=source_ref),
     )
-
-
-def _pytest_line_stance(line: str) -> str | None:
-    if not re.search(r"\bpytest\b", line, re.IGNORECASE):
-        return None
-    if re.search(r"\bnot\s+pytest\b|,\s*not\s+pytest\b", line, re.IGNORECASE):
-        return "reject"
-    return "prescribe"
-
-
-def _pytest_stance(content: str) -> str | None:
-    stances: set[str] = set()
-    for line in content.splitlines():
-        stance = _pytest_line_stance(line)
-        if stance is not None:
-            stances.add(stance)
-    if not stances:
-        return None
-    if "reject" in stances:
-        return "reject"
-    return "prescribe"
 
 
 def discover_conventions(
@@ -73,8 +80,6 @@ def discover_conventions(
             if obs.subject == "agent-instruction-surface" and obs.provenance.source_ref
         }
     )
-    prescribe_refs: list[str] = []
-    reject_refs: list[str] = []
     for rel in agent_paths:
         entry = entry_by_path.get(rel)
         if entry is None:
@@ -82,59 +87,38 @@ def discover_conventions(
         content = read_entry_text(root, entry, max_bytes=max_file_bytes)
         if not content:
             continue
-        stance = _pytest_stance(content)
-        if stance == "prescribe":
-            prescribe_refs.append(rel)
-            conventions.append(
-                _convention(
-                    "test-runner",
-                    "agent instructions reference pytest",
-                    rel,
-                    "pytest mentioned without negation in instruction surface",
-                    confidence=0.85,
-                )
-            )
-        elif stance == "reject":
-            reject_refs.append(rel)
+        for quoted_line in lines_mentioning_subject(content, "pytest"):
+            conventions.append(_mention_convention(rel, quoted_line))
 
         if re.search(r"\bcommit\b.*\bnot\b|\bdo not commit\b", content, re.IGNORECASE):
             conventions.append(
                 _convention(
                     "git-policy",
-                    "agent instructions constrain commit behavior",
+                    "instruction surface mentions commit constraints",
                     rel,
-                    "commit guard language present in instruction surface",
-                    confidence=0.8,
+                    next(
+                        (
+                            line.strip()
+                            for line in content.splitlines()
+                            if re.search(r"\bcommit\b", line, re.IGNORECASE)
+                        ),
+                        "commit guard language present",
+                    ),
+                    confidence=0.5,
                 )
             )
-
-    if prescribe_refs and reject_refs:
-        conventions.append(
-            _convention(
-                "test-runner-disagreement",
-                "agent instruction surfaces disagree on pytest vs alternatives",
-                prescribe_refs[0],
-                (
-                    "pytest prescribed in "
-                    + ", ".join(prescribe_refs)
-                    + "; rejected in "
-                    + ", ".join(reject_refs)
-                ),
-                confidence=0.9,
-            )
-        )
 
     makefile_entry = entry_by_path.get("Makefile")
     if makefile_entry is not None:
         content = read_entry_text(root, makefile_entry, max_bytes=max_file_bytes)
-        if content and "pytest" in content and "test" in _makefile_declared_targets(content):
+        if content and "pytest" in content and "test" in makefile_declared_targets(content):
             conventions.append(
                 _convention(
                     "test-invocation",
-                    "Makefile invokes pytest",
+                    "Makefile mentions pytest near a test target",
                     "Makefile",
-                    "pytest referenced in Makefile test target",
-                    confidence=0.9,
+                    "pytest referenced in Makefile",
+                    confidence=0.5,
                 )
             )
 
@@ -149,10 +133,10 @@ def discover_conventions(
             conventions.append(
                 _convention(
                     "ci-checkout",
-                    "CI workflow uses checkout action pattern",
+                    "CI workflow mentions checkout action pattern",
                     rel,
-                    "actions/checkout step observed",
-                    confidence=0.95,
+                    "actions/checkout step present",
+                    confidence=0.5,
                 )
             )
 

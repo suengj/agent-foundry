@@ -181,22 +181,22 @@ def assess_readiness(
     agent_surfaces = sorted(
         ref for ref in source_refs if ref and ("AGENTS" in ref or "CLAUDE" in ref or ".cursor" in ref)
     )
-    test_runner_conflicts = [c for c in conventions if c.subject == "test-runner-disagreement"]
-    if test_runner_conflicts:
+    mention_surfaces = sorted({conv.source_ref for conv in conventions if conv.subject == "test-runner"})
+    if len(mention_surfaces) >= 2:
         findings.append(
             _finding(
-                "fragmented-agent-rule-surfaces",
+                "unreconciled-subject-mentions",
                 ConsequenceClass.HIGH,
                 (
-                    "Agent instruction surfaces disagree on test-runner conventions; "
-                    "observed conflict must not be treated as normative without consolidation"
+                    "Multiple agent instruction surfaces reference test-runner "
+                    "and have not been reconciled"
                 ),
-                kind=ProvenanceKind.OBSERVED,
-                confidence=1.0,
-                source_ref=test_runner_conflicts[0].source_ref,
+                kind=ProvenanceKind.INFERRED,
+                confidence=0.5,
+                source_ref=mention_surfaces[0],
             )
         )
-    elif len(agent_surfaces) >= 2:
+    if len(agent_surfaces) >= 2:
         findings.append(
             _finding(
                 "fragmented-agent-rule-surfaces",

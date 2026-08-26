@@ -112,7 +112,7 @@ def walk_repository(
     root = root.resolve()
     result = TraversalResult()
 
-    def _visit(current: Path, depth: int) -> None:
+    def _visit(current: Path, current_rel: str, depth: int) -> None:
         if result.entry_limit_reached:
             return
         if depth > max_depth:
@@ -129,14 +129,12 @@ def walk_repository(
             if result.entry_limit_reached:
                 return
 
+            child_rel = f"{current_rel}/{child.name}" if current_rel else child.name
+
             resolved = _resolve_inside_root(root, child)
             if resolved is None:
                 result.entries_skipped += 1
                 continue
-
-            rel = resolved.relative_to(root).as_posix()
-            if rel == ".":
-                rel = ""
 
             is_symlink = child.is_symlink()
             is_dir = resolved.is_dir()
@@ -159,7 +157,7 @@ def walk_repository(
 
             result.entries.append(
                 RepoEntry(
-                    relative_path=rel,
+                    relative_path=child_rel,
                     is_dir=is_dir,
                     size_bytes=size_bytes,
                 )
@@ -171,9 +169,9 @@ def walk_repository(
                 return
 
             if is_dir and not is_symlink:
-                _visit(resolved, depth + 1)
+                _visit(resolved, child_rel, depth + 1)
 
-    _visit(root, depth=0)
+    _visit(root, "", depth=0)
     result.entries.sort(key=lambda e: e.relative_path)
     return result
 
@@ -224,23 +222,32 @@ def read_entry_text(
 
 
 def git_head_revision(root: Path) -> str | None:
-    """Return current git HEAD when readable; never mutates the repository."""
-    git_dir = root / ".git"
-    if not git_dir.exists():
+    """Return current git HEAD SHA when readable inside *root*; never mutates the repository."""
+    root = root.resolve()
+    git_resolved = _resolve_inside_root(root, root / ".git")
+    if git_resolved is None or not git_resolved.exists():
         return None
-    head_file = git_dir / "HEAD"
-    if not head_file.is_file():
+    head_resolved = _resolve_inside_root(root, git_resolved / "HEAD")
+    if head_resolved is None or not head_resolved.is_file():
         return None
     try:
-        head_ref = head_file.read_text(encoding="utf-8").strip()
+        head_ref = head_resolved.read_text(encoding="utf-8").strip()
     except OSError:
         return None
     if head_ref.startswith("ref: "):
-        ref_path = git_dir / head_ref[5:].strip()
+        ref_name = head_ref[5:].strip()
+        if ".." in Path(ref_name).parts:
+            return None
+        ref_resolved = _resolve_inside_root(root, git_resolved / ref_name)
+        if ref_resolved is None or not ref_resolved.is_file():
+            return None
         try:
-            return ref_path.read_text(encoding="utf-8").strip()
+            value = ref_resolved.read_text(encoding="utf-8").strip()
         except OSError:
             return None
-    if len(head_ref) == 40 and all(c in "0123456789abcdef" for c in head_ref.lower()):
-        return head_ref
-    return None
+        return value if _is_git_sha(value) else None
+    return head_ref if _is_git_sha(head_ref) else None
+
+
+def _is_git_sha(value: str) -> bool:
+    return len(value) == 40 and all(char in "0123456789abcdef" for char in value.lower())

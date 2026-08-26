@@ -58,14 +58,15 @@ def _matching_paths(rel_paths: set[str], marker: str) -> list[str]:
     return sorted(path for path in rel_paths if path.endswith(suffix))
 
 
-def _makefile_declared_targets(content: str) -> set[str]:
+def makefile_declared_targets(content: str) -> set[str]:
     declared: set[str] = set()
     for line in content.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        if line.startswith("\t"):
+            continue
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
         for target in _MAKEFILE_TARGET_SUBJECTS:
-            if re.match(rf"^{re.escape(target)}\s*:", stripped):
+            if re.match(rf"^{re.escape(target)}\s*:(?!=)", line):
                 declared.add(target)
     return declared
 
@@ -191,7 +192,7 @@ def collect_test_lint_ci_observations(
         content = read_entry_text(root, makefile_entry, max_bytes=max_file_bytes)
         if content:
             for target, subject in sorted(_MAKEFILE_TARGET_SUBJECTS.items()):
-                if target in _makefile_declared_targets(content):
+                if target in makefile_declared_targets(content):
                     observations.append(
                         _observed(
                             subject,
@@ -300,6 +301,27 @@ def collect_foundry_observations(
                         rel,
                     )
                 )
+    return observations
+
+
+def collect_unread_file_observations(
+    entries: list[RepoEntry],
+    *,
+    max_file_bytes: int,
+) -> list[ProjectObservation]:
+    observations: list[ProjectObservation] = []
+    for entry in file_entries(entries):
+        if entry.size_bytes is not None and entry.size_bytes > max_file_bytes:
+            observations.append(
+                _observed(
+                    "file-read-skipped",
+                    (
+                        f"file exceeds read limit "
+                        f"({entry.size_bytes} > {max_file_bytes} bytes): {entry.relative_path}"
+                    ),
+                    entry.relative_path,
+                )
+            )
     return observations
 
 

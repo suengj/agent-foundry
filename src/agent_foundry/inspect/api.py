@@ -17,6 +17,7 @@ from agent_foundry.inspect.collectors import (
     collect_runtime_deploy_observations,
     collect_structure_observations,
     collect_test_lint_ci_observations,
+    collect_unread_file_observations,
 )
 from agent_foundry.inspect.conventions import discover_conventions
 from agent_foundry.inspect.readiness import assess_readiness
@@ -63,6 +64,12 @@ def inspect_project(
     observations.extend(
         collect_foundry_observations(
             root,
+            traversal.entries,
+            max_file_bytes=max_file_bytes,
+        )
+    )
+    observations.extend(
+        collect_unread_file_observations(
             traversal.entries,
             max_file_bytes=max_file_bytes,
         )

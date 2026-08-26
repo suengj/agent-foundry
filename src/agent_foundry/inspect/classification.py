@@ -30,10 +30,12 @@ def _finding(
     source_ref: str,
     confidence: float | None = None,
     evidence_refs: list[str] | None = None,
+    reason: str | None = None,
 ) -> ClassificationFinding:
     return ClassificationFinding(
         dimension=dimension,
         value=value,
+        reason=reason,
         provenance=Provenance(kind=kind, confidence=confidence, source_ref=source_ref),
         evidence_refs=sorted(evidence_refs or []),
     )
@@ -46,7 +48,7 @@ def _unknown(dimension: str, *, reason: str, source_ref: str = ".") -> Classific
         kind=ProvenanceKind.INFERRED,
         source_ref=source_ref,
         confidence=0.0,
-        evidence_refs=[f"reason:{reason}"],
+        reason=reason,
     )
 
 
@@ -82,7 +84,8 @@ def _declared_intake_mode(
             None,
             kind=ProvenanceKind.DECLARED,
             source_ref=rel,
-            evidence_refs=[rel, "reason:intake_mode not declared in project.yaml"],
+            evidence_refs=[rel],
+            reason="intake_mode not declared in project.yaml",
         )
     return _finding(
         "intake_mode",
@@ -211,7 +214,8 @@ def propose_classification_findings(
                         None,
                         kind=ProvenanceKind.DECLARED,
                         source_ref=declared_project_rel,
-                        evidence_refs=[declared_project_rel, "reason:work_modes not parsed in AF2"],
+                        evidence_refs=[declared_project_rel],
+                        reason="work_modes not parsed in AF2",
                     )
                 )
             else:
