@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-foundry"
+version = "0.1.0"
+description = "Personal-first AI-native project toolbox"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+agent-foundry = "agent_foundry.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_foundry"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
