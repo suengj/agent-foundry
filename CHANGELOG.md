@@ -33,6 +33,7 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 ### Changed
 
 - Task toolkit resolution derives `role_ids` from selected skills, filters workflow roles by work-item authority, and records explaining decisions when a work item cannot be satisfied from the project lock.
+- Builtin registry skill triggers now cover `INCIDENT` and `CONTRACT_AMENDMENT` via honest extensions to existing skills.
 
 - Toolkit resolution reconciles capabilities against the manifest-declared external-effect ceiling (not the selected profile), pins that declaration in locks, and raises on unsatisfiable hard policy requirements.
 - Pre-release vocabulary correction: removed `external-shared` from `Statefulness` (use `persistent-shared-external`); removed `deterministic` from `AssuranceMode` (use `deterministic-tests`).

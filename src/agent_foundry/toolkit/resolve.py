@@ -1325,6 +1325,13 @@ def _work_item_workflow_for_item(
     preference: list[str] = []
     if work_item.work_class == WorkClass.DISCOVERY:
         preference = ["investigator-synthesis"]
+    elif work_item.work_class == WorkClass.INCIDENT:
+        if work_item.authority_class == ExternalEffectClass.READ_ONLY:
+            preference = ["investigator-synthesis"]
+        else:
+            preference = ["single-worker-validation", "investigator-synthesis"]
+    elif work_item.work_class == WorkClass.CONTRACT_AMENDMENT:
+        preference = ["builder-reviewer", "single-worker-validation"]
     elif work_item.work_class in {WorkClass.CAPABILITY, WorkClass.BASELINE}:
         if work_item.consequence_class in {ConsequenceClass.HIGH, ConsequenceClass.CRITICAL}:
             preference = ["builder-reviewer", "single-worker-validation"]

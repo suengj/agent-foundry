@@ -262,8 +262,13 @@ def build_default_registry() -> CapabilityRegistry:
             required_capabilities=["repository.read", "inspection.read"],
             triggers=SkillTriggers(
                 artifact_types=["source-code"],
-                work_modes=[PrimaryWorkMode.ANALYZE, PrimaryWorkMode.RESEARCH],
-                work_classes=[WorkClass.DISCOVERY, WorkClass.ADOPTION],
+                work_modes=[PrimaryWorkMode.ANALYZE, PrimaryWorkMode.RESEARCH, PrimaryWorkMode.OPERATE],
+                work_classes=[
+                    WorkClass.DISCOVERY,
+                    WorkClass.ADOPTION,
+                    WorkClass.INCIDENT,
+                    WorkClass.CONTRACT_AMENDMENT,
+                ],
             ),
             roles=SkillRoleConstraint(allowed=["explorer", "manager"]),
             inputs=["repository-root"],
@@ -276,8 +281,13 @@ def build_default_registry() -> CapabilityRegistry:
             required_capabilities=["repository.read", "repository.write"],
             triggers=SkillTriggers(
                 artifact_types=["source-code"],
-                work_modes=[PrimaryWorkMode.BUILD],
-                work_classes=[WorkClass.CAPABILITY, WorkClass.BASELINE],
+                work_modes=[PrimaryWorkMode.BUILD, PrimaryWorkMode.OPERATE],
+                work_classes=[
+                    WorkClass.CAPABILITY,
+                    WorkClass.BASELINE,
+                    WorkClass.INCIDENT,
+                    WorkClass.CONTRACT_AMENDMENT,
+                ],
             ),
             roles=SkillRoleConstraint(allowed=["builder"]),
             external_write=True,
@@ -292,7 +302,12 @@ def build_default_registry() -> CapabilityRegistry:
             triggers=SkillTriggers(
                 artifact_types=["source-code"],
                 work_modes=[PrimaryWorkMode.BUILD, PrimaryWorkMode.OPERATE],
-                work_classes=[WorkClass.CAPABILITY, WorkClass.BASELINE],
+                work_classes=[
+                    WorkClass.CAPABILITY,
+                    WorkClass.BASELINE,
+                    WorkClass.INCIDENT,
+                    WorkClass.CONTRACT_AMENDMENT,
+                ],
             ),
             roles=SkillRoleConstraint(allowed=["builder", "validator"]),
             inputs=["changed-scope"],
@@ -304,7 +319,11 @@ def build_default_registry() -> CapabilityRegistry:
             provides=["validation.review"],
             required_capabilities=["validation.review"],
             triggers=SkillTriggers(
-                work_classes=[WorkClass.CAPABILITY, WorkClass.RESIDUAL_HARDENING],
+                work_classes=[
+                    WorkClass.CAPABILITY,
+                    WorkClass.RESIDUAL_HARDENING,
+                    WorkClass.CONTRACT_AMENDMENT,
+                ],
             ),
             roles=SkillRoleConstraint(allowed=["reviewer"]),
             inputs=["implementation-diff", "test-evidence"],

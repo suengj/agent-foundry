@@ -458,6 +458,104 @@ def test_task_toolkit_nonempty_mutation_killed(monkeypatch: pytest.MonkeyPatch) 
         _assert_satisfiable_task_toolkit_nonempty(task, lock)
 
 
+_SUPPORTIVE_TASK_AUTHORITIES: tuple[ExternalEffectClass, ...] = (
+    ExternalEffectClass.READ_ONLY,
+    ExternalEffectClass.REPOSITORY_WRITE,
+    ExternalEffectClass.PUBLICATION,
+)
+
+
+def _supportive_project_lock() -> ToolkitLock:
+    _, lock = resolve_toolkit(_sample_manifest())
+    return lock
+
+
+def _work_item_for_matrix(work_class: WorkClass, authority: ExternalEffectClass) -> WorkItemContract:
+    consequence = (
+        ConsequenceClass.HIGH
+        if work_class in {WorkClass.CONTRACT_AMENDMENT, WorkClass.INCIDENT}
+        else ConsequenceClass.MEDIUM
+    )
+    return _sample_work_item(
+        work_class=work_class.value,
+        authority_class=authority.value,
+        consequence_class=consequence.value,
+    )
+
+
+def _assert_task_toolkit_resolves_or_explains(
+    task: object,
+    project_lock: ToolkitLock,
+) -> None:
+    from agent_foundry.models.toolkit import TaskToolkit
+
+    assert isinstance(task, TaskToolkit)
+    has_content = bool(task.role_ids and task.skill_ids and task.capability_ids)
+    unsatisfied = [
+        decision
+        for decision in task.decisions
+        if decision.component_kind == "task-toolkit"
+    ]
+    if has_content:
+        assert set(task.role_ids) <= set(project_lock.role_ids)
+        assert set(task.skill_ids) <= set(project_lock.skill_ids)
+        assert set(task.capability_ids) <= set(project_lock.capability_ids)
+        return
+    assert unsatisfied, "empty task toolkit must record an explaining decision"
+    assert all(decision.rationale for decision in unsatisfied)
+
+
+def test_every_work_class_and_authority_resolves_or_explains_on_supportive_project() -> None:
+    """Enum-complete matrix: every WorkClass × authority either resolves or explains emptiness."""
+    lock = _supportive_project_lock()
+    matrix: list[tuple[WorkClass, ExternalEffectClass, bool]] = []
+
+    for work_class in WorkClass:
+        for authority in _SUPPORTIVE_TASK_AUTHORITIES:
+            work_item = _work_item_for_matrix(work_class, authority)
+            task = resolve_task_toolkit_for_work_item(work_item, lock)
+            has_content = bool(task.role_ids and task.skill_ids and task.capability_ids)
+            matrix.append((work_class, authority, has_content))
+            _assert_task_toolkit_resolves_or_explains(task, lock)
+
+    assert all(
+        resolved
+        for work_class, authority, resolved in matrix
+        if work_class in {WorkClass.INCIDENT, WorkClass.CONTRACT_AMENDMENT}
+        and authority != ExternalEffectClass.READ_ONLY
+    ), "INCIDENT and CONTRACT_AMENDMENT must resolve when authority permits remediation"
+
+
+def test_incident_and_contract_amendment_nonempty_on_supportive_project() -> None:
+    lock = _supportive_project_lock()
+    for work_class in (WorkClass.INCIDENT, WorkClass.CONTRACT_AMENDMENT):
+        work_item = _work_item_for_matrix(work_class, ExternalEffectClass.REPOSITORY_WRITE)
+        task = resolve_task_toolkit_for_work_item(work_item, lock)
+        _assert_satisfiable_task_toolkit_nonempty(task, lock)
+
+
+def test_work_class_enum_coverage_mutation_killed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_foundry.toolkit import resolve as resolve_module
+
+    original = resolve_module._work_item_skill_relevance
+
+    def _block_incident(
+        work_item: WorkItemContract,
+        skill_id: str,
+        skills: dict[str, object],
+    ) -> bool:
+        if work_item.work_class == WorkClass.INCIDENT:
+            return False
+        return original(work_item, skill_id, skills)
+
+    monkeypatch.setattr(resolve_module, "_work_item_skill_relevance", _block_incident)
+    lock = _supportive_project_lock()
+    work_item = _work_item_for_matrix(WorkClass.INCIDENT, ExternalEffectClass.REPOSITORY_WRITE)
+    task = resolve_task_toolkit_for_work_item(work_item, lock)
+    with pytest.raises(AssertionError):
+        _assert_satisfiable_task_toolkit_nonempty(task, lock)
+
+
 def test_include_and_exclude_rationale_present() -> None:
     manifest = _sample_manifest(
         impact={

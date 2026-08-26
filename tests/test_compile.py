@@ -272,6 +272,36 @@ def test_repository_write_work_item_compiles_as_control():
     assert "builder" in result.task_toolkit.role_ids
 
 
+def test_incident_work_class_compiles_on_supportive_project():
+    manifest = _sample_manifest()
+    work_item = _sample_work_item(
+        work_class="INCIDENT",
+        authority_class="repository-write",
+        consequence_class="high",
+        objective="Diagnose and contain broken operating state",
+    )
+    _, lock = resolve_toolkit(manifest)
+    result = compile_work_item(work_item, manifest, lock, "builder", "RUN-INCIDENT")
+    assert "builder" in result.task_toolkit.role_ids
+    assert "bounded-change" in result.task_toolkit.skill_ids
+
+
+def test_contract_amendment_work_class_compiles_on_supportive_project():
+    manifest = _sample_manifest(
+        assurance={"required": ["deterministic-tests", "independent-review"]},
+    )
+    work_item = _sample_work_item(
+        work_class="CONTRACT_AMENDMENT",
+        authority_class="repository-write",
+        consequence_class="high",
+        objective="Amend durable project contract with review",
+    )
+    _, lock = resolve_toolkit(manifest)
+    result = compile_work_item(work_item, manifest, lock, "builder", "RUN-AMEND")
+    assert "reviewer" in result.task_toolkit.role_ids
+    assert "independent-review" in result.task_toolkit.skill_ids
+
+
 def test_unknown_manifest_external_effect_tightens_compiled_authority():
     manifest = ProjectManifest(
         schema_version=FOUNDRY_SCHEMA_VERSION,
