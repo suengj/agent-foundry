@@ -15,7 +15,11 @@ from pathlib import Path
 import pytest
 
 from agent_foundry.inspect import inspect_project
-from agent_foundry.inspect.conventions import strip_trailing_comment
+from agent_foundry.inspect.evidence import (
+    recipe_lines_invoking,
+    strip_trailing_comment,
+    workflow_steps_using,
+)
 from agent_foundry.models.common import IntakeMode, ProvenanceKind
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -121,10 +125,11 @@ def test_every_convention_evidence_is_a_line_of_its_source_file() -> None:
     for convention in intake.conventions:
         source = BROWNFIELD / convention.source_ref
         lines = {line.strip() for line in source.read_text(encoding="utf-8").splitlines()}
-        assert convention.evidence in lines, (
-            f"{convention.subject} evidence {convention.evidence!r} is not a line of "
-            f"{convention.source_ref}"
-        )
+        for evidence_line in convention.evidence.split("\n"):
+            assert evidence_line in lines, (
+                f"{convention.subject} evidence {evidence_line!r} is not a line of "
+                f"{convention.source_ref}"
+            )
 
 
 # --- Item 1 (cont.): inert text cannot support a claim about effective behaviour ---
@@ -302,6 +307,148 @@ def test_mention_claims_deliberately_still_record_commented_text(tmp_path: Path)
 )
 def test_strip_trailing_comment_rules(line: str, expected: str) -> None:
     assert strip_trailing_comment(line) == expected
+
+
+# --- Detection and evidence are one pass: no seam for them to disagree across ---
+
+# (recipe line, does the `test` target invoke pytest)
+RECIPE_CASES = [
+    ("pytest", True),
+    ("pytest -q # live invocation", True),
+    ("@pytest -q", True),
+    ("PYTHONPATH=src pytest -q", True),
+    ("env PYTHONPATH=src pytest", True),
+    ("python -m pytest", True),
+    ("python3.11 -X dev -m pytest", True),
+    ("uv run pytest", True),
+    ("poetry run pytest -q", True),
+    (".venv/bin/pytest -q", True),
+    ('echo "step # 1" && pytest -q', True),
+    ("true && pytest", True),
+    # Data, not a command in any of these.
+    ('echo "# pytest -q"', False),
+    ("echo word#pytest", False),
+    ("echo pytest", False),
+    ('sh -c "pytest -q"', False),
+    ('echo "pytest"', False),
+    # A quoted head would run, but quoting is how data is handed around; the
+    # conservative reading costs a rare true case and never invents a false one.
+    ('"pytest" -q', False),
+    # A shell syntax error runs nothing, so it cannot establish an invocation.
+    ('pytest -q "unterminated', False),
+    # A separator inside a comment does not start a new command.
+    ("echo a # && pytest", False),
+    ("echo a # ; pytest -q", False),
+    ("# pytest -q", False),
+    ("@# pytest -q", False),
+    ("pytest-benchmark run", False),
+    ("unittest discover", False),
+    ('echo "unterminated', False),
+]
+
+
+@pytest.mark.parametrize(("recipe", "invokes"), RECIPE_CASES)
+def test_pytest_invocation_is_decided_by_command_position(
+    tmp_path: Path, recipe: str, invokes: bool
+) -> None:
+    """A substring cannot tell an executed command from shell data; position can."""
+    repo = _makefile_repo(tmp_path, "repo", f"test:\n\t{recipe}\n")
+    found = _conventions(inspect_project(repo), "test-invocation")
+    assert [c.evidence for c in found] == ([recipe] if invokes else [])
+
+
+@pytest.mark.parametrize(("recipe", "invokes"), RECIPE_CASES)
+def test_recipe_detector_returns_the_line_it_matched(recipe: str, invokes: bool) -> None:
+    """The detector's finding IS its evidence — there is nothing to re-find."""
+    source = f"test:\n\t{recipe}\n"
+    matched = recipe_lines_invoking(source, "test", "pytest")
+    assert matched == ([recipe] if invokes else [])
+    for line in matched:
+        assert line in {raw.strip() for raw in source.splitlines()}
+
+
+ALIAS_WORKFLOW = """defaults:
+  checkout: &checkout actions/checkout@v4
+jobs:
+  build:
+    steps:
+      - uses: *checkout
+"""
+
+FOLDED_WORKFLOW = """jobs:
+  build:
+    steps:
+      - uses: >
+          actions/checkout@v4
+"""
+
+LIVE_WORKFLOW = """jobs:
+  build:
+    steps:
+      - uses: actions/checkout@v4
+"""
+
+
+def test_aliased_checkout_never_cites_the_anchor_declaration(tmp_path: Path) -> None:
+    """The anchor line configures no step, so it cannot be this step's evidence.
+
+    The step's own text (`- uses: *checkout`) does not say what it uses either,
+    so the claim is not established at all rather than established falsely.
+    """
+    repo = _workflow_repo(tmp_path, "alias", ALIAS_WORKFLOW)
+    found = _conventions(inspect_project(repo), "ci-checkout")
+    assert found == []
+    assert workflow_steps_using(ALIAS_WORKFLOW, "actions/checkout") == []
+
+
+def test_folded_checkout_scalar_yields_its_own_source_evidence(tmp_path: Path) -> None:
+    """Accepted by the detector, so it must produce evidence — not be dropped."""
+    repo = _workflow_repo(tmp_path, "folded", FOLDED_WORKFLOW)
+    found = _conventions(inspect_project(repo), "ci-checkout")
+    assert len(found) == 1
+    assert found[0].evidence == "- uses: >\nactions/checkout@v4"
+
+
+def test_ordinary_checkout_step_still_emits(tmp_path: Path) -> None:
+    repo = _workflow_repo(tmp_path, "live", LIVE_WORKFLOW)
+    assert [c.evidence for c in _conventions(inspect_project(repo), "ci-checkout")] == [
+        "- uses: actions/checkout@v4"
+    ]
+
+
+WORKFLOW_CORPUS = [
+    LIVE_WORKFLOW,
+    FOLDED_WORKFLOW,
+    ALIAS_WORKFLOW,
+    "jobs:\n  build:\n    steps:\n      # - uses: actions/checkout@v4\n      - run: x\n",
+    "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4  # pinned\n",
+    "jobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n"
+    "  b:\n    steps:\n      - uses: actions/checkout@v3\n",
+    "jobs:\n  build:\n    steps:\n      - run: |\n          echo actions/checkout@v4\n",
+    "jobs: [\n  - uses: actions/checkout@v4\n",
+    "jobs:\n  build:\n    steps:\n      - uses: actions/setup-python@v5\n",
+]
+
+
+@pytest.mark.parametrize("source", WORKFLOW_CORPUS)
+def test_workflow_detection_and_evidence_cannot_disagree(tmp_path: Path, source: str) -> None:
+    """Whatever the detector accepts, it hands back real source text for.
+
+    A structural check followed by a value re-scan could accept a step and then
+    fail to quote it, or quote a different line carrying the same value. This
+    pins that no such state exists: every accepted step yields lines drawn from
+    the file, and the emitter produces exactly one convention per accepted step.
+    """
+    spans = workflow_steps_using(source, "actions/checkout")
+    file_lines = {line.strip() for line in source.splitlines()}
+    for span in spans:
+        assert span, "an accepted step produced empty evidence"
+        for line in span.split("\n"):
+            assert line in file_lines
+
+    repo = _workflow_repo(tmp_path, "corpus", source)
+    found = _conventions(inspect_project(repo), "ci-checkout")
+    assert [c.evidence for c in found] == spans
 
 
 # --- Item 2: unobservability is reported, and skips are separated by cause ---
