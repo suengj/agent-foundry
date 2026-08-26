@@ -71,17 +71,21 @@ Controlled Apply is the intended next layer after the read-only/preview Core has
 
 ## Release status
 
-Current development version:
+Package version:
 
 ```text
-0.1.0.dev0
+0.1.0
 ```
 
-Target first public release:
+First public release — **prepared and certified, not yet tagged**:
 
 ```text
 v0.1.0 — Public Preview
 ```
+
+No `v0.1.0` Git tag and no GitHub release exist yet. Until one is created, install from a
+clone of `main`; the version metadata reads `0.1.0` because the release was frozen, not
+because it was published.
 
 `v0.1.0` is scoped to:
 

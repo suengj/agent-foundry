@@ -6,7 +6,24 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 
 ## [Unreleased]
 
-<!-- AF8 (SUE-302) -->
+Nothing yet.
+
+## [0.1.0] - 2026-08-27
+
+> **Prepared, not yet released.** This section is written for the `v0.1.0` tag and dated
+> for the day it was prepared. **No `v0.1.0` tag and no GitHub release exist yet**; both
+> require explicit authorization from the repository owner. If the tag is created on a
+> different day, correct this date first.
+
+First public preview. Diagnosis -> Prescription -> Compilation -> Validation, read-only
+and preview-only throughout: no command in this release writes to a target project, and
+nothing executes the work an `ExecutionBundle` describes.
+
+Read [Known limitations](README.md#known-limitations) before relying on any of it, and
+[`docs/release-notes/v0.1.0.md`](docs/release-notes/v0.1.0.md) for the release notes.
+
+Entries are grouped in the order the work landed, so a category heading may appear more
+than once under this release.
 
 ### Added
 
@@ -44,8 +61,6 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 - `tests/fixtures/valid/work_item_contract.yaml` scopes work to repository paths rather than prose. `scope` bounds compiled write authority, so an item scoped to "models package" can be granted no write at all.
 - The README's end-user flow separates the eight commands that ship from the five that do not. It previously listed ten as "approximately" the intended experience, of which `profile`, `work plan`, `render`, `reconcile` and `validate` had no subcommand at all; `validate` is now real and the other four are marked as not built.
 - `docs/foundry/08` §4.1 records that §4.2's conservative authority rule governs profile synthesis. Read alone, §4.1 suggests synthesis derives profile values from observation; an implementer following it builds a system that grants authority by inference. The measured cost of the correct reading is stated there.
-
-<!-- AF1-AF7 -->
 
 ### Fixed
 
@@ -165,11 +180,7 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 - Toolkit resolution reconciles capabilities against the manifest-declared external-effect ceiling (not the selected profile), pins that declaration in locks, and raises on unsatisfiable hard policy requirements.
 - Pre-release vocabulary correction: removed `external-shared` from `Statefulness` (use `persistent-shared-external`); removed `deterministic` from `AssuranceMode` (use `deterministic-tests`).
 
-### In progress
-
-- V0.1 typed contracts, inspection, adoption planning, work decomposition, toolkit resolution, compilation, validation, and end-to-end preview proof.
-
 ## Release targets
 
-- `v0.1.0` — first Public Preview: Diagnosis → Prescription → Compilation → Validation.
-- Post-`v0.1` — bounded Controlled Apply, first MCP facade, and selected live adapters based on V0.1 evidence.
+- `v0.1.0` — first Public Preview: Diagnosis → Prescription → Compilation → Validation. **Prepared and certified; awaiting the tag.**
+- Post-`v0.1` — bounded Controlled Apply, first MCP facade, and selected live adapters based on V0.1 evidence. The boundary is meant to be decided by evidence from using V0.1 rather than precommitted.
