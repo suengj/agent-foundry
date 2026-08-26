@@ -108,7 +108,9 @@ def _manifest_value(
         return None
     parsed = _parse_enum(finding.value, enum_type)
     if parsed is None and finding.provenance.kind == ProvenanceKind.DECLARED:
-        source_ref = finding.provenance.source_ref or finding.evidence_refs[0] if finding.evidence_refs else "."
+        source_ref = finding.provenance.source_ref or (
+            finding.evidence_refs[0] if finding.evidence_refs else "."
+        )
         synthesis_readiness.append(
             ReadinessFinding(
                 dimension="declared-value-invalid",

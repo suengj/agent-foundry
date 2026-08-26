@@ -383,11 +383,17 @@ def build_change_set(intake: ProjectIntake, manifest: ProjectManifest) -> Adopti
     else:
         changes = _brownfield_retrofit_changes(intake)
         if intake_mode is None:
-            changes.insert(0, _unknown_intake_mode_change())
+            changes.append(_unknown_intake_mode_change())
 
     changes.extend(_authority_proposal_changes(manifest, intake))
 
-    changes.sort(key=lambda item: (item.priority or 99, item.target, item.action.value))
+    changes.sort(
+        key=lambda item: (
+            item.priority if item.priority is not None else 99,
+            item.target,
+            item.action.value,
+        )
+    )
 
     return AdoptionChangeSet(
         schema_version=FOUNDRY_SCHEMA_VERSION,

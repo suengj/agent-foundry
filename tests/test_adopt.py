@@ -421,3 +421,53 @@ def test_two_file_test_mentions_still_produce_reconciliation_change() -> None:
     assert reconcile
     assert reconcile[0].action == AdoptionAction.CONSOLIDATE
     assert "reconciled" in reconcile[0].evidence.summary.lower()
+
+
+def test_declared_source_ref_survives_empty_evidence_refs() -> None:
+    """The ternary bound as (a or b) if refs else '.', discarding a set source_ref."""
+    from agent_foundry.adopt.manifest import synthesize_manifest
+    from agent_foundry.models import (
+        ClassificationFinding, Provenance, ProvenanceKind, ProjectIntake,
+        TraversalStats, TraversalLimits,
+    )
+
+    intake = ProjectIntake(
+        schema_version="0.1",
+        project_root=".",
+        classification_findings=[
+            ClassificationFinding(
+                dimension="intake_mode",
+                value="brown-field",
+                provenance=Provenance(
+                    kind=ProvenanceKind.DECLARED, source_ref=".foundry/project.yaml"
+                ),
+                evidence_refs=[],
+            )
+        ],
+        traversal_stats=TraversalStats(
+            entries_visited=0, entries_skipped=0, depth_limit_reached=False,
+            entry_limit_reached=False,
+            limits=TraversalLimits(max_depth=1, max_entries=1, max_file_bytes=1),
+        ),
+    )
+    manifest = synthesize_manifest(intake)
+    invalid = [
+        f for f in manifest.readiness_findings
+        if f.dimension == "declared-value-invalid"
+    ]
+    assert invalid, "expected a declared-value-invalid finding"
+    assert ".foundry/project.yaml" in invalid[0].message
+    assert invalid[0].provenance.source_ref == ".foundry/project.yaml"
+
+
+def test_blocking_change_sorts_first_despite_zero_priority() -> None:
+    """`item.priority or 99` sent priority=0 to the bottom, under auto-applicable items."""
+    from agent_foundry.adopt import plan_adoption
+    from agent_foundry.inspect import inspect_project
+
+    fixture = FIXTURES / "brownfield-missing-intake-mode"
+    changes = plan_adoption(inspect_project(str(fixture))).change_set.changes
+    assert changes, "expected changes"
+    assert changes[0].target == "intake-mode", (
+        f"BLOCK should sort first, got {[c.target for c in changes]}"
+    )
