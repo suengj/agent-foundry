@@ -1,30 +1,46 @@
 # Agent Foundry
 
-Personal-first AI-native project toolbox that applies [AI Dev Playbook](https://github.com/suengj/ai-agent-dev-playbook) principles to real projects.
+Provider-neutral tooling for turning new or existing projects into bounded AI-native execution environments.
 
-**Work SSOT:** [Linear — Agent Foundry · M0 Personal MVP](https://linear.app/suengj)  
-**Implementation SSOT:** this repository (`suengj/agent-foundry`)
+Agent Foundry is designed around a simple pipeline:
 
-Linear owns current issue priority and status. This repository does not duplicate live task state.
+```text
+Inspect project
+→ classify operating characteristics
+→ bootstrap or retrofit AI-native controls
+→ decompose objectives into causal work
+→ resolve a least-capability toolkit
+→ compile agent execution contracts
+→ verify and reconcile evidence
+```
 
 ## What this is
 
-- Executable toolbox that turns Playbook principles into project bootstrap, project/toolkit classification, work orders, and evidence-aware execution adapters
-- Provider-neutral core with Cursor / Codex / Claude as adapters
-- Long-term compiler path: `Project Manifest → Project Toolkit → Task Toolkit → Execution Bundle → Evidence`
+- A project intake and adoption layer for both greenfield and brownfield systems
+- A tracker-neutral work/decomposition model
+- A capability registry and Project/Task Toolkit resolver
+- A compiler from structured project/work state to concise agent-facing execution bundles
+- A validation and reconciliation layer across work trackers, repositories, integrations, and runtime/external state
+- A provider-neutral core with provider/tool-specific adapters at the edges
 
-## What this is not (M0)
+## What this is not
 
-- SaaS, billing, authentication, multi-tenancy
-- Playbook wholesale copy or fork
-- Linear auto-write compiler (AF0.2+)
-- ProjectTruth engine (AF0.2+)
+- A second project-management database
+- A secret vault
+- A general-purpose workflow engine
+- A monolithic agent runtime
+- A plugin marketplace or SaaS control plane
+- A collection of giant prompts copied into every project
+
+## Current repository state
+
+The repository currently contains a minimal Python CLI/bootstrap plus the canonical operating-model contracts for the next implementation phase. The full classifier, work planner, toolkit resolver, compiler, integration layer, and runtime orchestration are not yet implemented.
 
 ## Quick start
 
 ```bash
-cd ~/Developer/PJT/p01_agent_foundry
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
 python -m agent_foundry --help
 python -m agent_foundry doctor
@@ -35,61 +51,125 @@ pytest
 
 | Artifact | Path |
 |---|---|
-| Product / authority boundary (SUE-294) | `docs/contracts/product-boundary.md` |
+| Product / authority boundary | `docs/contracts/product-boundary.md` |
 | Project Agent Constitution | `docs/ai/PROJECT_AGENT_CONSTITUTION.md` |
 | Technical environment | `docs/ai/project-context.md` |
 | Architecture overview | `docs/architecture/overview.md` |
 | Foundry operating model / ToC | `docs/foundry/00-overview.md` |
-| Governance + Harness | `docs/foundry/01-governance-and-harness.md` |
-| Roles + Agent interaction | `docs/foundry/02-roles-and-interaction.md` |
-| Domain-neutral project classification | `docs/foundry/03-project-classification.md` |
-| Toolkit composition / resolution | `docs/foundry/04-toolkit-composition.md` |
-| Workflow / task-time compilation | `docs/foundry/05-workflow-and-compilation.md` |
-| Evidence / learning | `docs/foundry/06-execution-evidence-learning.md` |
-| Next implementation direction | `docs/foundry/07-implementation-direction.md` |
+| Governance + executable controls | `docs/foundry/01-governance-and-control.md` |
+| Project intake + greenfield/brownfield adoption | `docs/foundry/02-project-intake-and-adoption.md` |
+| Work model + decomposition | `docs/foundry/03-work-model-and-decomposition.md` |
+| Toolkit + integrations + credential references | `docs/foundry/04-toolkit-and-integrations.md` |
+| Orchestration + agent interaction | `docs/foundry/05-orchestration-and-interaction.md` |
+| Verification + reconciliation + learning | `docs/foundry/06-verification-reconciliation-learning.md` |
+| Machine-readable implementation contracts | `docs/foundry/07-implementation-contracts.md` |
 
 ## Operating model
 
 ```text
-AI Dev Playbook
-        ↓ pinned adoption
-Global governance / harness principles
+Human objective / existing project
         ↓
-Project definition + classification
+Project intake + current-truth inspection
+        ↓
+Classification + readiness assessment
         ↓
 Project Manifest
         ↓
-Project Toolkit resolution
+Objective → Outcome → Work Package → Work Item
         ↓
-Current Task + fresh truth
+Project Toolkit resolution + pinning
+        ↓
+Current Work Item + fresh project truth
         ↓
 Task Toolkit + Execution Bundle
         ↓
 Agent / Agent Graph execution
         ↓
-Verification / Evidence / Receipt
+Verification / evidence / reconciliation
+        ↓
+Learning and versioned improvement
 ```
 
-The Project Toolkit is the approved capability universe for a project. A Task Toolkit is the minimum subset actually exposed for one execution. Provider/model selection occurs after role and capability requirements are resolved.
+A **Project Toolkit** is the approved capability universe for a project. A **Task Toolkit** is the minimum subset exposed for one Work Item/run. Provider/model selection happens after role and capability requirements are resolved.
 
-## Playbook adoption
+## Greenfield and brownfield
 
-Playbook is referenced by pinned repository + commit SHA in the constitution. Content is not copied wholesale into this repo.
+Foundry does not assume a new project.
+
+```text
+Greenfield
+→ bootstrap minimum contracts and toolkit
+
+Brownfield
+→ inventory existing project
+→ distinguish observed behavior from intended contracts
+→ assess AI-native readiness
+→ consolidate/wrap/harden/migrate only where needed
+→ increase autonomy progressively
+```
+
+The goal is migration and retrofit, not rewriting a functioning system around Foundry.
+
+## Work model
+
+Foundry defines work above any specific tracker:
+
+```text
+Objective
+→ Outcome / Capability
+→ Work Package
+→ Work Item
+→ Execution Run
+```
+
+Trackers such as issue/project-management systems are adapters. Repository and runtime state remain authoritative in their own domains rather than being mirrored into Foundry.
+
+## Integrations and credentials
+
+Toolkits can declare tools, MCP servers, APIs, and external services through `IntegrationSpec`-style metadata. Version-controlled Foundry configuration stores only capability declarations and credential references.
+
+```text
+Agent / Execution Bundle
+→ scoped Integration Adapter
+→ credential reference / delegated identity
+→ external system
+```
+
+Raw API keys or secret values do not belong in `.foundry/` project configuration or generated Markdown.
 
 ## Authority model
 
 ```text
-Human           → objective / authority
-ChatGPT         → governor / architecture / Linear decomposition
-Linear          → Work SSOT
-GitHub          → Implementation SSOT
-Runtime         → Production Truth (where applicable)
-AI Dev Playbook → reusable development constitution (external, pinned)
-Project Constitution → repository-specific behavior / safety
-Foundry outputs → generated artifacts (single-owner rules apply)
+Human / project owner
+= objective and reserved authority
+
+Work tracker
+= work intent, priority, dependency, lifecycle
+
+Repository
+= implementation truth: code, config, tests, reviews, revisions
+
+Runtime / external systems
+= applied/external factual truth
+
+Credential provider
+= secret and identity material
+
+Agent Foundry
+= project manifest, work contracts, toolkit resolution, execution contracts,
+  adapters, validation, and reconciliation
 ```
 
-## Repository
+## Design constraints
 
-- **Local:** `~/Developer/PJT/p01_agent_foundry`
-- **GitHub:** https://github.com/suengj/agent-foundry (private)
+- Provider-neutral core; provider identities stay in adapters
+- Progressive disclosure instead of loading all docs/Skills into every prompt
+- Causal Work Items rather than file-shaped tasks
+- External writes default to preview/dry-run until narrower authority is explicitly granted
+- Hard policies become executable controls where practical
+- Structured canonical configuration generates Markdown projections
+- Tracker state, execution state, and evidence state remain separate
+- Secrets are referenced, never embedded
+- Toolkit/schema/adapter upgrades are versioned and explicit
+
+Start with [`docs/foundry/00-overview.md`](docs/foundry/00-overview.md).
