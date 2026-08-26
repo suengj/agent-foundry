@@ -175,10 +175,22 @@ class TraversalLimits(FoundryModel):
 
 
 class TraversalStats(FoundryModel):
-    """Traversal accounting for bounded inspection."""
+    """Traversal accounting for bounded inspection.
+
+    ``entries_skipped`` stays the total so existing consumers keep working, but a
+    single total cannot tell a deliberate cache-directory skip from a containment
+    refusal or from a subtree the OS refused to show. The per-reason counters carry
+    that distinction, and ``entries_unobservable`` counts paths whose contents could
+    not be read at all — unreadable directories (also counted in
+    ``entries_skipped_unreadable``) plus files that were listed but not readable.
+    """
 
     entries_visited: int
     entries_skipped: int
+    entries_skipped_ignored_dir: int = 0
+    entries_skipped_refused: int = 0
+    entries_skipped_unreadable: int = 0
+    entries_unobservable: int = 0
     depth_limit_reached: bool
     entry_limit_reached: bool
     limits: TraversalLimits

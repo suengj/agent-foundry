@@ -7,7 +7,7 @@ from pathlib import Path
 
 from agent_foundry.models.common import Provenance, ProvenanceKind
 from agent_foundry.models.project import ConventionSpec, ProjectObservation
-from agent_foundry.inspect.collectors import makefile_declared_targets
+from agent_foundry.inspect.collectors import makefile_recipe_lines
 from agent_foundry.inspect.traversal import (
     CI_WORKFLOW_PREFIX,
     RepoEntry,
@@ -19,14 +19,27 @@ TEST_RUNNER_SUBJECT = "test-runner"
 MENTION_CONFIDENCE = 0.5
 _MENTION_PATTERN = "instruction surface mentions pytest"
 
+# A convention's evidence must be the text that actually produced the claim. These
+# patterns are applied per line so the quoted line and the match are the same line.
+_COMMIT_CONSTRAINT_PATTERN = re.compile(
+    r"\bcommit\b.*\bnot\b|\bdo not commit\b", re.IGNORECASE
+)
+_CHECKOUT_ACTION = "actions/checkout"
+_MAKEFILE_TEST_TARGET = "test"
+
+
+def lines_matching(content: str, pattern: re.Pattern[str]) -> list[str]:
+    """Return the stripped source lines that *pattern* matches, in file order."""
+    return [line.strip() for line in content.splitlines() if pattern.search(line)]
+
+
+def lines_containing(content: str, needle: str) -> list[str]:
+    """Return the stripped source lines containing *needle*, in file order."""
+    return [line.strip() for line in content.splitlines() if needle in line]
+
 
 def lines_mentioning_subject(content: str, subject: str) -> list[str]:
-    pattern = re.compile(rf"\b{re.escape(subject)}\b", re.IGNORECASE)
-    quoted: list[str] = []
-    for line in content.splitlines():
-        if pattern.search(line):
-            quoted.append(line.strip())
-    return quoted
+    return lines_matching(content, re.compile(rf"\b{re.escape(subject)}\b", re.IGNORECASE))
 
 
 def _mention_convention(source_ref: str, quoted_line: str) -> ConventionSpec:
@@ -90,20 +103,13 @@ def discover_conventions(
         for quoted_line in lines_mentioning_subject(content, "pytest"):
             conventions.append(_mention_convention(rel, quoted_line))
 
-        if re.search(r"\bcommit\b.*\bnot\b|\bdo not commit\b", content, re.IGNORECASE):
+        for quoted_line in lines_matching(content, _COMMIT_CONSTRAINT_PATTERN):
             conventions.append(
                 _convention(
                     "git-policy",
-                    "instruction surface mentions commit constraints",
+                    "instruction surface line mentions a commit constraint",
                     rel,
-                    next(
-                        (
-                            line.strip()
-                            for line in content.splitlines()
-                            if re.search(r"\bcommit\b", line, re.IGNORECASE)
-                        ),
-                        "commit guard language present",
-                    ),
+                    quoted_line,
                     confidence=0.5,
                 )
             )
@@ -111,16 +117,18 @@ def discover_conventions(
     makefile_entry = entry_by_path.get("Makefile")
     if makefile_entry is not None:
         content = read_entry_text(root, makefile_entry, max_bytes=max_file_bytes)
-        if content and "pytest" in content and "test" in makefile_declared_targets(content):
-            conventions.append(
-                _convention(
-                    "test-invocation",
-                    "Makefile mentions pytest near a test target",
-                    "Makefile",
-                    "pytest referenced in Makefile",
-                    confidence=0.5,
+        if content:
+            recipe = makefile_recipe_lines(content, _MAKEFILE_TEST_TARGET)
+            for quoted_line in lines_containing("\n".join(recipe), "pytest"):
+                conventions.append(
+                    _convention(
+                        "test-invocation",
+                        "Makefile 'test' target recipe invokes pytest",
+                        "Makefile",
+                        quoted_line,
+                        confidence=0.5,
+                    )
                 )
-            )
 
     for entry in file_entries(entries):
         rel = entry.relative_path
@@ -129,13 +137,15 @@ def discover_conventions(
         if Path(rel).suffix not in {".yml", ".yaml"}:
             continue
         content = read_entry_text(root, entry, max_bytes=max_file_bytes)
-        if content and "actions/checkout" in content:
+        if not content:
+            continue
+        for quoted_line in lines_containing(content, _CHECKOUT_ACTION):
             conventions.append(
                 _convention(
                     "ci-checkout",
-                    "CI workflow mentions checkout action pattern",
+                    "CI workflow line references the checkout action",
                     rel,
-                    "actions/checkout step present",
+                    quoted_line,
                     confidence=0.5,
                 )
             )

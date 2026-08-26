@@ -15,6 +15,7 @@ from agent_foundry.inspect.traversal import (
     FOUNDRY_DIR_PREFIX,
     PACKAGE_METADATA_FILES,
     RepoEntry,
+    UnobservablePath,
     file_entries,
     file_path_set,
     read_entry_text,
@@ -69,6 +70,28 @@ def makefile_declared_targets(content: str) -> set[str]:
             if re.match(rf"^{re.escape(target)}\s*:(?!=)", line):
                 declared.add(target)
     return declared
+
+
+def makefile_recipe_lines(content: str, target: str) -> list[str]:
+    """Recipe lines belonging to *target*.
+
+    Needed to justify an adjacency claim: "the Makefile mentions pytest" and "the
+    Makefile's test target runs pytest" are different facts, and only the second one
+    survives a Makefile where pytest appears in an unrelated comment or recipe.
+    """
+    recipe: list[str] = []
+    in_target = False
+    for line in content.splitlines():
+        if line.startswith("\t"):
+            if in_target:
+                recipe.append(line)
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            # Blank and comment lines do not terminate a recipe.
+            continue
+        in_target = bool(re.match(rf"^{re.escape(target)}\s*:(?!=)", line))
+    return recipe
 
 
 def collect_structure_observations(
@@ -322,6 +345,30 @@ def collect_unread_file_observations(
                     entry.relative_path,
                 )
             )
+    return observations
+
+
+def collect_unobservable_observations(
+    unobservable: list[UnobservablePath],
+) -> list[ProjectObservation]:
+    """Name every path the walk could not observe.
+
+    Without this, a directory the OS refused to list is indistinguishable from an
+    empty one, and downstream reasoning treats "not allowed to look" as "nothing there".
+    """
+    observations: list[ProjectObservation] = []
+    for item in unobservable:
+        kind = "directory" if item.is_dir else "file"
+        observations.append(
+            _observed(
+                "path-unobservable",
+                (
+                    f"{kind} contents could not be observed "
+                    f"({item.reason}): {item.relative_path}"
+                ),
+                item.relative_path,
+            )
+        )
     return observations
 
 

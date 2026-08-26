@@ -6,6 +6,17 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 
 ## [Unreleased]
 
+### Fixed
+
+- Inspection evidence is the text that produced the claim. The `git-policy` convention matched `commit ... not` but quoted the first line containing "commit", so an `AGENTS.md` reading "Always commit early and often." / "Do not commit secrets to the repo." was cited by its opposite; every constraining line is now quoted as its own convention. `test-invocation` claimed pytest appeared "near a test target" while only checking that pytest and a `test` target both existed somewhere in the Makefile; the claim is now backed by the `test` target's own recipe lines. `test-invocation` and `ci-checkout` quote the matched source line instead of a generic description.
+- Unobservable paths are reported instead of silently disappearing. A directory the OS refused to list was counted as a skip and nothing else, and a file that could not be read came back indistinguishable from an empty one — so "not allowed to look" read downstream as "nothing there". Every unreadable path now emits a `path-unobservable` observation naming it.
+- Inferred `intake_mode` confidence reflects signal strength rather than evidence presence. A repository containing only `.github/workflows/c.yml` scored `brownfield | inferred | 0.7` because at least one evidence ref existed; it now scores 0.5, and confidence rises only as independent signals accumulate. Inferred findings state which signals they rest on in the previously unused `reason` field.
+- The read-only regression harness compares mtime. `_tree_snapshot` covered content and directory `st_mode` but not mtime, so an inspector that touched every file it read passed the test that exists to prevent exactly that; verified by making the inspector perform an mtime-only mutation and confirming the named read-only tests now fail.
+
+### Added
+
+- `TraversalStats` reports why entries were skipped: `entries_skipped_ignored_dir` (deliberate cache/vendor skips), `entries_skipped_refused` (containment and symlink refusals), and `entries_skipped_unreadable` (OS refusals), plus `entries_unobservable`. `entries_skipped` is unchanged and remains the total, so existing consumers keep working.
+
 ### Changed
 
 - `agent-foundry doctor` separates a package self-check from a target-project check. The project check resolves artifacts by discovering a project root upward from the working directory (or from an explicit `agent-foundry doctor PROJECT_PATH`), never from the installed package's own location. Exit codes distinguish the two: `1` when the installation itself is broken, `2` when a named project is missing expected artifacts, `0` when no project is in scope.

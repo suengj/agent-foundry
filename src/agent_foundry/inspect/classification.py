@@ -41,6 +41,21 @@ def _finding(
     )
 
 
+# One weak signal must not read like several. Confidence tracks how many independent
+# brownfield signals were found, not merely whether any evidence ref could be listed.
+_SIGNAL_CONFIDENCE_BASE = 0.4
+_SIGNAL_CONFIDENCE_STEP = 0.1
+_SIGNAL_CONFIDENCE_CEILING = 0.85
+
+
+def _signal_strength_confidence(present: int, total: int) -> float:
+    """Map "n of total signals present" onto a bounded inference confidence."""
+    if present <= 0 or total <= 0:
+        return 0.0
+    scaled = _SIGNAL_CONFIDENCE_BASE + _SIGNAL_CONFIDENCE_STEP * present
+    return round(min(_SIGNAL_CONFIDENCE_CEILING, scaled), 2)
+
+
 def _unknown(dimension: str, *, reason: str, source_ref: str = ".") -> ClassificationFinding:
     return _finding(
         dimension,
@@ -148,24 +163,27 @@ def propose_classification_findings(
                     in {"Dockerfile", "docker-compose.yml", "docker-compose.yaml"}
                 )
             )
-        brownfield_signals = sum(
-            [
-                has_code_tree and len(code_files) >= 3,
-                has_ci,
-                has_foundry,
-                has_deploy,
-                len(code_files) >= 8,
-            ]
+        signals: tuple[tuple[str, bool], ...] = (
+            ("source tree with at least three source files", has_code_tree and len(code_files) >= 3),
+            ("CI workflow definitions", has_ci),
+            ("existing Foundry artifacts", has_foundry),
+            ("deploy or runtime manifest", has_deploy),
+            ("at least eight source files", len(code_files) >= 8),
         )
-        if brownfield_signals >= 1:
+        present = [name for name, matched in signals if matched]
+        if present:
             findings.append(
                 _finding(
                     "intake_mode",
                     IntakeMode.BROWNFIELD.value,
                     kind=ProvenanceKind.INFERRED,
                     source_ref=".",
-                    confidence=0.7 if evidence_refs else 0.5,
+                    confidence=_signal_strength_confidence(len(present), len(signals)),
                     evidence_refs=sorted(set(evidence_refs)),
+                    reason=(
+                        f"{len(present)} of {len(signals)} brownfield signals present: "
+                        + "; ".join(present)
+                    ),
                 )
             )
         else:
@@ -176,6 +194,10 @@ def propose_classification_findings(
                     kind=ProvenanceKind.INFERRED,
                     source_ref=".",
                     confidence=0.55,
+                    reason=(
+                        "no brownfield signals present; checked: "
+                        + "; ".join(name for name, _ in signals)
+                    ),
                 )
             )
 
