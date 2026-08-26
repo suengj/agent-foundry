@@ -9,15 +9,15 @@ Its core responsibility is:
 ```text
 Inspect
 → Classify
+→ Synthesize Project Profile
 → Adopt / Retrofit
-→ Resolve capabilities
-→ Compile work
-→ Validate execution contracts
-→ Adapt to tools and agents
-→ Reconcile evidence
+→ Model Work
+→ Resolve Toolkit
+→ Compile
+→ Validate / Reconcile
 ```
 
-Foundry is not intended to become a second project-management database, a secret vault, a general-purpose workflow engine, or a monolithic agent runtime. It should integrate with those systems through explicit adapters and contracts.
+Foundry is not intended to become a second project-management database, a secret vault, a full spec framework, a general-purpose workflow engine, a Skill marketplace, or a monolithic agent runtime. It should integrate with those systems through explicit adapters and contracts.
 
 ## End-to-end lifecycle
 
@@ -28,9 +28,13 @@ Human objective / existing system
         ↓
 Project intake
         ↓
-Project classification + readiness assessment
+Project observations + convention discovery
         ↓
-Project Manifest
+Classification findings + provenance/confidence
+        ↓
+Project Profile Synthesis
+        ↓
+Project Manifest + adoption/readiness state
         ↓
 Work model + Project Toolkit
         ↓
@@ -45,24 +49,96 @@ Verification / evidence / reconciliation
 Learning / project or Foundry improvement
 ```
 
-For a new project, adoption creates the minimum operating structure. For an existing project, adoption begins with inventory, truth reconstruction, gap analysis, and progressive retrofit rather than rewriting the project around Foundry.
+For a new project, adoption creates the minimum operating structure. For an existing project, adoption begins with inventory, truth reconstruction, convention discovery, gap analysis, and progressive retrofit rather than rewriting the project around Foundry.
+
+## Project Profile Synthesis
+
+The Project Profile is the explicit bridge between observed project facts and downstream policy/toolkit decisions.
+
+It can organize:
+
+```text
+Operating Profile
+Governance Profile
+Work Profile
+Role Profile
+Interaction Profile
+Evidence Profile
+Integration Requirements
+Toolkit Requirements
+```
+
+A profile must be evidence-aware. Material findings should distinguish:
+
+```text
+observed
+≠ declared
+≠ inferred
+≠ normative
+```
+
+and retain provenance/confidence where interpretation is involved.
+
+Conservative authority principle:
+
+```text
+inference may tighten controls
+inference must not silently expand authority
+```
 
 ## Design principles
 
 1. **Source once, compile many.** Durable rules and structured configuration have one canonical owner; agent-facing Markdown is a projection.
 2. **Project first, task second.** Project characteristics determine the allowed capability universe before a task selects its minimum subset.
-3. **Work is causal, not file-shaped.** Work items are split by independently testable outcomes, authority boundaries, dependencies, rollback units, and ownership surfaces—not by arbitrary file or agent boundaries.
-4. **Project Toolkit is an approved universe; Task Toolkit is least-capability.** A task receives only the capabilities it actually needs.
-5. **Policy is not Skill.** Policy defines what is allowed or required; Skills define reusable procedures.
-6. **Hard rules should become executable controls where practical.** Prose alone is not a permission system.
-7. **Typed boundaries reduce interpretation loss.** Material handoffs, evidence, state transitions, and decisions should be structured.
-8. **Fresh truth beats hidden memory.** Repository, tracker, runtime, and external-system read-back outrank agent recollection.
-9. **Role before provider.** Responsibility and capability requirements are resolved before provider/model selection.
-10. **Evidence controls state transition.** Agent self-report is never sufficient completion evidence.
-11. **Tracker state, execution state, and evidence state are distinct.** A task can be in review while a run is retrying and evidence is only partially complete.
-12. **Secrets are referenced, not stored.** Foundry configuration may point to credential providers but should not contain raw secret values.
-13. **Pinned and compatible by default.** Schemas, toolkits, adapters, and capability versions must not silently alter existing projects.
-14. **Learning is gated.** A project-local incident or workaround is not automatically promoted to a global Foundry rule.
+3. **Project characteristics are compositional.** Avoid hard-coded domain taxonomies when operational predicates can express the same constraint.
+4. **Work is causal, not file-shaped.** Work items are split by independently testable outcomes, authority boundaries, dependencies, rollback units, and ownership surfaces - not arbitrary file or agent boundaries.
+5. **Project Toolkit is an approved universe; Task Toolkit is least-capability.** A task receives only the capabilities it actually needs.
+6. **Policy is not Skill.** Policy defines what is allowed or required; Skills define reusable procedures.
+7. **Hard rules should become executable controls where practical.** Prose alone is not a permission system.
+8. **Typed boundaries reduce interpretation loss.** Material handoffs, evidence, state transitions, and decisions should be structured.
+9. **Fresh truth beats hidden memory.** Repository, tracker, runtime, and external-system read-back outrank agent recollection.
+10. **Role before provider.** Responsibility and capability requirements are resolved before provider/model selection.
+11. **Evidence controls state transition.** Agent self-report is never sufficient completion evidence.
+12. **Tracker state, execution state, and evidence state are distinct.** A Work Item can be in review while a run is retrying and evidence is incomplete.
+13. **Secrets are referenced, not stored.** Foundry configuration may point to credential providers but should not contain raw secret values.
+14. **Pinned and compatible by default.** Schemas, toolkits, adapters, and capability versions must not silently alter existing projects.
+15. **Progressive disclosure.** Discover through lightweight metadata/indexes, then load only relevant standards, Skills, policy, and context.
+16. **Learning is gated.** A project-local incident, benchmark choice, or workaround is not automatically promoted to a global Foundry rule.
+
+## Adaptive behavior model
+
+Foundry should combine three layers rather than hard-code project types.
+
+### Deterministic invariants
+
+Examples:
+
+- raw secret serialization is forbidden;
+- path/workspace escape is rejected;
+- incompatible schema versions fail closed;
+- required evidence cannot be treated as present when missing;
+- hard higher-authority policy cannot be weakened downstream;
+- reviewer independence is enforced when required.
+
+### Declarative policies
+
+Example:
+
+```yaml
+when:
+  consequence: high
+  external_effect: true
+require:
+  - independent-review
+forbid:
+  - self-approval
+```
+
+### Bounded interpretation
+
+Use reasoning only where project evidence genuinely requires interpretation, such as ambiguity, convention equivalence, architecture-boundary inference, or Skill/workflow selection among already-authorized options.
+
+Interpretation should produce typed findings with evidence and confidence rather than implicit prompt memory.
 
 ## Canonical document map
 
@@ -78,6 +154,7 @@ For a new project, adoption creates the minimum operating structure. For an exis
 | `docs/foundry/05-orchestration-and-interaction.md` | Roles, workflows, Agent Graph, communication and handoff contracts |
 | `docs/foundry/06-verification-reconciliation-learning.md` | Evidence, state reconciliation, incidents and learning feedback |
 | `docs/foundry/07-implementation-contracts.md` | Machine-readable schemas, package boundaries and implementation sequence |
+| `docs/foundry/08-benchmarks-and-evolution.md` | Public benchmarks, MCP direction and benchmark-derived design deltas |
 
 ## Conceptual layers
 
@@ -92,10 +169,10 @@ Controls
   Harness / permissions / trust / budgets
       ↓
 Project interpretation
-  Intake / Classification / Adoption
+  Intake / Observation / Classification / Profile Synthesis / Adoption
       ↓
 Work control
-  Objective / Outcome / Work Package / Work Item
+  Objective / Outcome / Work Package / Work Item / Execution Run
       ↓
 Capability composition
   Project Toolkit / Integrations
@@ -104,13 +181,13 @@ Coordination
   Roles / Workflow / Task Toolkit / Interaction
       ↓
 Execution
-  Agent / Skills / Tools
+  Agent / Skills / Tool Interfaces
       ↓
 Verification
   Evidence / review / runtime read-back
       ↓
 Reconciliation & Learning
-  Tracker / repository / runtime state + improvements
+  Tracker / repository / runtime state + versioned improvements
 ```
 
 Communication is a cross-cutting protocol rather than another hierarchy level. It defines how authority, context, evidence, uncertainty, state, and requested decisions move between agents and systems.
@@ -133,9 +210,27 @@ Credential provider
 = secret values and identity material
 
 Foundry
-= project manifest, toolkit resolution/lock, task execution contracts,
-  adapters, validation, and reconciliation logic
+= observations/profile, project manifest, adoption state, toolkit resolution/lock,
+  task execution contracts, adapters, validation, and reconciliation logic
 ```
+
+## MCP boundary
+
+MCP is an optional facade over Foundry Core, not the implementation substrate of the core itself.
+
+```text
+              Foundry Core
+                  │
+       ┌──────────┼──────────┐
+       ↓          ↓          ↓
+      CLI     Python API   MCP Server
+```
+
+The core must remain usable when MCP is unavailable.
+
+New MCP implementation should not rely on deprecated MCP Roots for project selection. Prefer explicit project path parameters, resource URIs, or server configuration, with Foundry-side path containment and permission checks.
+
+See `04-toolkit-and-integrations.md` and `08-benchmarks-and-evolution.md`.
 
 ## Public-repository boundary
 
@@ -143,7 +238,7 @@ The public architecture must be self-contained. It should not depend on private 
 
 ## Documentation versus implementation
 
-Human-readable Markdown owns architecture intent, semantics, and rationale. Deterministic behavior should move into structured schemas and code.
+Human-readable Markdown owns architecture intent, semantics, benchmark rationale, and design boundaries. Deterministic behavior should move into structured schemas and code.
 
 ```text
 Human-readable contract
@@ -152,7 +247,7 @@ Machine-readable spec
         ↓
 Resolver / Compiler / Validator
         ↓
-Generated agent-facing Markdown
+Generated agent-facing Markdown / adapters
 ```
 
-The implementation target is described in `07-implementation-contracts.md`.
+The implementation target is described in `07-implementation-contracts.md`; benchmark-derived evolution is tracked in `08-benchmarks-and-evolution.md`.

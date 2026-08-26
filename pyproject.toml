@@ -5,9 +5,10 @@ build-backend = "hatchling.build"
 [project]
 name = "agent-foundry"
 version = "0.1.0"
-description = "Personal-first AI-native project toolbox"
+description = "Provider-neutral tooling for turning new or existing projects into bounded AI-native execution environments"
 readme = "README.md"
 requires-python = ">=3.11"
+license = { file = "LICENSE" }
 dependencies = []
 
 [project.optional-dependencies]

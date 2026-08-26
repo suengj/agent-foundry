@@ -2,22 +2,23 @@
 
 ## 1. Purpose
 
-This document defines the boundary between the architecture/specification layer and the next code implementation layer.
+This document defines the boundary between the architecture/specification layer and the code implementation layer.
 
-The implementation goal is not to generate more hand-maintained Markdown. It is to create typed models, registries, resolvers, compilers, validators, and adapters that can produce concise agent-facing artifacts from canonical structured data.
+The implementation goal is not to generate more hand-maintained Markdown. It is to create typed models, registries, resolvers, compilers, validators, adapters, and provenance-bearing outputs that can produce concise agent-facing artifacts from canonical structured data.
 
 ## 2. What remains human-readable
 
 Markdown should continue to explain:
 
-- architecture intent and rationale
-- governance semantics
-- project-intake semantics
-- work-decomposition principles
-- interaction vocabulary
-- toolkit composition rules
-- evidence semantics
-- migration/adoption guidance
+- architecture intent and rationale;
+- governance semantics;
+- project-intake semantics;
+- work-decomposition principles;
+- interaction vocabulary;
+- toolkit composition rules;
+- evidence semantics;
+- migration/adoption guidance;
+- benchmark-derived design choices and non-goals.
 
 These documents answer why the system behaves the way it does.
 
@@ -28,17 +29,24 @@ Recommended first-class objects:
 ```text
 ProjectIntake
 ProjectObservation
+ClassificationFinding
+ConventionSpec
 ReadinessFinding
+ProjectProfile
 AdoptionPlan
+AdoptionChangeSet
 ProjectManifest
 PolicyRule / PolicyRef
 WorkObjective
 WorkPackage
 WorkItemContract
 DependencySpec
+ExecutionRun
+WorkspaceLease / WriteLease
 RoleContract
 CapabilitySpec
 SkillSpec
+ToolInterfaceProfile
 WorkflowSpec
 NodeSpec / EdgeSpec
 PermissionProfile
@@ -58,31 +66,84 @@ ExecutionReceipt
 LearningRecord
 ```
 
-The exact storage format can be YAML/JSON/TOML plus typed application models, but every mutable concept should have one canonical owner.
+Not every object must land in one implementation issue. The list defines the intended durable model vocabulary.
 
-## 4. Proposed package boundaries
+Every mutable concept should have one canonical owner. Generated Markdown remains a projection.
+
+## 4. Common provenance contract
+
+Observed/inferred project facts should share a small provenance envelope where useful:
+
+```yaml
+key: runtime_mutation
+value: true
+source: observed        # observed | declared | inferred | confirmed
+evidence:
+  - deploy-config
+confidence: 0.98
+```
+
+Design rules:
+
+- absence of evidence is not positive evidence;
+- unknown stays explicit;
+- inferred facts may tighten controls;
+- inferred facts may not silently widen authority;
+- validation should be able to explain which evidence/policy led to a profile/toolkit decision.
+
+## 5. Project Profile Synthesis
+
+Make synthesis an explicit compiler stage rather than hiding it inside ad hoc classification.
+
+```text
+ProjectObservation
++ ClassificationFinding
++ ConventionSpec
++ ReadinessFinding
+        ↓
+Project Profile Synthesis
+        ↓
+ProjectProfile
+```
+
+A `ProjectProfile` can group:
+
+```text
+Operating Profile
+Governance Profile
+Work Profile
+Role Profile
+Interaction Profile
+Evidence Profile
+Integration Requirements
+Toolkit Requirements
+```
+
+The exact internal schema may evolve, but downstream Toolkit resolution should consume structured profile/manifest facts rather than repeatedly reinterpret the raw repository.
+
+## 6. Proposed package boundaries
 
 ```text
 src/agent_foundry/
 ├─ models/          # typed contracts / schemas
-├─ inspect/         # repository/system inventory and observations
-├─ classify/        # project classification / readiness
-├─ adopt/           # greenfield bootstrap + brownfield retrofit planning
+├─ inspect/         # repository/system inventory, conventions and observations
+├─ classify/        # classification findings / readiness / profile synthesis
+├─ adopt/           # greenfield bootstrap + brownfield retrofit planning/change sets
 ├─ work/            # work hierarchy, decomposition, tracker-neutral contracts
 ├─ registry/        # roles, skills, workflows, tools, integrations, validators
-├─ policy/          # authority, inheritance, trust, filtering, budgets
-├─ resolve/         # Project Toolkit / Task Toolkit / compatibility
-├─ compile/         # Work Item + context → Execution Bundle
+├─ policy/          # invariants, declarative rules, trust, filtering, budgets
+├─ resolve/         # Project Toolkit / Task Toolkit / compatibility / rationale
+├─ compile/         # Work Item + profile/context → Execution Bundle
 ├─ render/          # Markdown and provider/tool-specific projections
 ├─ integrations/    # tracker, repository, MCP/API, credential-provider adapters
-├─ validate/        # schema, policy, work, toolkit, graph, evidence validators
+├─ validate/        # schema, policy, work, toolkit, graph, provenance, evidence validators
 ├─ reconcile/       # tracker/repository/runtime state reconciliation
-└─ runtime/         # later dispatch / observe / retry lifecycle
+└─ runtime/         # later dispatch / workspace lease / observe / retry lifecycle
 ```
 
 This is a target architecture, not a requirement to create every package in the first coding change.
 
-## 5. Project-side output
+## 7. Project-side output
 
 A project managed by Foundry may eventually contain:
 
@@ -95,11 +156,12 @@ docs/ai/
 
 .foundry/
 ├─ project.yaml
+├─ profile.yaml            # generated/confirmed project operating profile
 ├─ toolkit.lock.yaml
-├─ adoption.yaml          # optional for brownfield migration
+├─ adoption.yaml           # optional for migration/retrofit state
+├─ integrations.yaml       # declarations + SecretRefs, never raw secrets
 ├─ profiles/
-├─ integrations.yaml      # declarations + SecretRefs, never raw secrets
-└─ local-registry/        # optional project-specific extensions
+└─ local-registry/         # optional project-specific extensions
 ```
 
 Important ownership:
@@ -108,8 +170,14 @@ Important ownership:
 project.yaml
 = declared/confirmed project characteristics and authority inputs
 
+profile.yaml / equivalent canonical object
+= synthesized operating/work/role/evidence/integration requirements
+
 toolkit.lock.yaml
 = resolved/pinned operational capability set
+
+adoption.yaml
+= current vs proposed adoption changes and status when needed
 
 integrations.yaml
 = desired integration declarations and credential references
@@ -121,7 +189,9 @@ generated Markdown
 = agent/human-readable projection, not an independently edited truth source
 ```
 
-## 6. Work-tracker boundary
+The exact persisted files may be reduced if the same ownership can be represented more simply. Do not create files merely to mirror in-memory objects.
+
+## 8. Work-tracker and runtime boundary
 
 Foundry should define its own tracker-neutral work model and adapt it to external trackers rather than copying one product's hierarchy into the core.
 
@@ -135,88 +205,140 @@ Objective
 → Execution Run
 ```
 
-Tracker adapters map these semantics to available initiatives, projects, epics, issues, stories, tasks, or subtasks.
+Maintain the distinction:
 
-The runtime should maintain Execution Run and evidence state separately from tracker lifecycle state.
+```text
+Work Item
+≠ Execution Run
+≠ Evidence state
+```
 
-## 7. Initial CLI direction
+Tracker adapters map work semantics to initiatives, projects, epics, issues, stories, tasks, or subtasks.
+
+A future runtime may attach an isolated `WorkspaceLease`/`WriteLease` to an Execution Run. V0.1 can define the model without implementing a persistent scheduler.
+
+## 9. Initial CLI direction
 
 A useful CLI can evolve toward:
 
 ```text
-agent-foundry inspect
-# inventory existing repository/system and integrations
+agent-foundry inspect <project-path>
+# inventory repository/system, conventions and integrations
 
-agent-foundry classify
-# propose/validate Project Manifest and readiness findings
+agent-foundry classify <project-path>
+# produce classification/readiness findings
 
-agent-foundry adopt
-# generate greenfield bootstrap or brownfield retrofit plan
+agent-foundry profile <project-path>
+# synthesize/validate ProjectProfile
 
-agent-foundry work plan
-# propose causal work hierarchy/dependencies from an objective or adoption gap
+agent-foundry adopt <project-path> --preview
+# generate greenfield bootstrap or brownfield AdoptionChangeSet
 
-agent-foundry resolve
-# resolve Project Toolkit and lock
+agent-foundry adopt <project-path> --apply
+# later: apply explicitly authorized project-local changes
 
-agent-foundry integration check
-# validate declared integrations, SecretRefs, auth/health without exposing secrets
+agent-foundry work plan <objective>
+# propose causal work hierarchy/dependencies
 
-agent-foundry compile
+agent-foundry resolve <project-path>
+# resolve Project Toolkit and lock, with rationale
+
+agent-foundry integration check <project-path>
+# validate IntegrationSpec/SecretRef/auth/health without exposing secrets
+
+agent-foundry compile <work-item>
 # compile one Work Item into Task Toolkit + Execution Bundle
 
-agent-foundry render
+agent-foundry render <execution-bundle>
 # render concise agent-facing Markdown/adapters
 
-agent-foundry validate
-# validate manifest, work graph, toolkit, bundle, evidence
+agent-foundry validate <artifact>
+# validate manifest/profile/work/toolkit/bundle/evidence
 
-agent-foundry reconcile
-# compare tracker/repository/runtime evidence and produce state updates/receipt
+agent-foundry reconcile <project-path>
+# compare tracker/repository/runtime evidence and propose state updates/receipt
 ```
 
 External mutation remains preview-first and explicit-apply unless project policy grants narrower automatic authority.
 
-## 8. Recommended implementation sequence
+## 10. MCP interface direction
 
-### Phase A — core typed contracts
+MCP is an optional facade around Foundry Core:
 
-Implement and test:
+```text
+              Foundry Core
+                  │
+       ┌──────────┼──────────┐
+       ↓          ↓          ↓
+      CLI     Python API   MCP Server
+```
 
-- Project Manifest
-- Work Item Contract
-- Role/Capability metadata
-- IntegrationSpec / SecretRef
-- Toolkit Resolution / Lock
-- Execution Bundle
+Candidate MCP tools should map to the same Core functions used by CLI/API. Do not implement a second MCP-specific business logic path.
+
+New MCP implementation should use explicit project-path parameters, resource URIs, or server configuration rather than depending on deprecated Roots.
+
+Possible later MCP resources expose project profile/manifest/adoption/toolkit/work/current task as read-only structured views.
+
+The MCP Tasks extension is optional future transport for long-running calls, not a V0.1 requirement.
+
+## 11. Recommended implementation sequence
+
+### Phase A - core typed contracts
+
+Implement/test the smallest foundational model set required by downstream work:
+
+- Project Manifest;
+- provenance-bearing observation/classification primitives;
+- ProjectProfile skeleton if it can be defined without premature over-modeling;
+- Work Item Contract;
+- Role/Capability metadata;
+- IntegrationSpec / SecretRef;
+- Toolkit Resolution / Lock;
+- Execution Bundle.
 
 Goal: deterministic parse/validate/round-trip without live agent execution.
 
-### Phase B — intake and brownfield inspection
+If active implementation has already frozen an interface, do not destabilize it for non-foundational benchmark ideas. Record bounded follow-ups.
+
+### Phase B - intake, convention discovery and brownfield inspection
 
 Implement a small repository inspector that can collect:
 
-- existing instructions/rules
-- package/tooling metadata
-- test/CI entrypoints
-- repository structure
-- declared integrations
-- runtime/deploy hints when observable
+- existing instructions/rules;
+- package/tooling metadata;
+- test/CI entrypoints;
+- repository structure;
+- declared integrations;
+- runtime/deploy hints when observable;
+- representative architectural/coding conventions worth recording.
 
-Output observed facts and readiness findings without rewriting the project.
+Output evidence-bearing observations/findings without rewriting the project.
 
-### Phase C — work decomposition model
+Do not document obvious framework defaults merely to fill a standards catalog.
+
+### Phase C - Project Profile Synthesis and adoption planning
 
 Implement:
 
-- Objective / Work Package / Work Item schemas
-- dependency graph validation
-- causal-decomposition heuristics
-- detection of mega-items, mixed authority, unverifiable acceptance, and ownership collisions
+- profile synthesis from structured findings;
+- readiness interpretation with conservative authority;
+- greenfield bootstrap plan;
+- brownfield `AdoptionChangeSet` using KEEP / CONSOLIDATE / WRAP / HARDEN / MIGRATE / DEFER / BLOCK;
+- explicit current truth vs proposed state.
+
+### Phase D - work decomposition model
+
+Implement:
+
+- Objective / Work Package / Work Item schemas;
+- dependency graph validation;
+- causal-decomposition heuristics;
+- detection of mega-items, mixed authority, unverifiable acceptance, and ownership collisions;
+- clear Work Item vs Execution Run semantics.
 
 Keep the first tracker adapter read-only or preview-first.
 
-### Phase D — registry and resolver
+### Phase E - registry, declarative policy and resolver
 
 Implement a deliberately small built-in registry:
 
@@ -246,48 +368,64 @@ Validators:
 - role-separation
 - work-decomposition
 - integration-health
+- provenance/explanation
 - evidence-contract
 
-Goal: Project Manifest + Work Item resolve reproducibly to Project Toolkit and Task Toolkit.
+Add compact Skill trigger/relevance metadata and a minimal declarative policy representation. Avoid named-project-type branching.
 
-### Phase E — integration configuration and health
+Goal: ProjectProfile/Manifest + Work Item resolve reproducibly to Project Toolkit and Task Toolkit with explainable include/exclude rationale.
+
+### Phase F - integration configuration and health
 
 Implement:
 
-- IntegrationSpec parsing
-- SecretRef validation
-- no-secret-in-config linting
-- integration state model (`DESIRED → AUTHENTICATED → AUTHORIZED → HEALTHY`)
-- one tracker/repository adapter pair first
+- IntegrationSpec parsing;
+- SecretRef validation;
+- no-secret-in-config linting;
+- integration state model (`DESIRED → AVAILABLE → CONFIGURED → AUTHENTICATED → AUTHORIZED → HEALTHY`);
+- one tracker/repository adapter pair first;
+- MCP adapter skeleton only after Core APIs are stable enough to expose.
 
-Do not build a secret store. Consume environment/keychain/managed-connection/vault-style providers through interfaces.
+Do not build a secret store. Consume environment/keychain/managed-connection/vault/workload-identity style providers through interfaces.
 
-### Phase F — Markdown rendering and task compiler
+### Phase G - Markdown rendering and task compiler
 
-Render:
+Compile:
 
-- project/adoption summary
-- Work Item brief
-- role-specific Execution Bundle
-- handoff/evidence summary
+```text
+ProjectProfile
++ applicable policy
++ relevant conventions
++ Work Item
++ Project Toolkit
++ fresh truth
+        ↓
+minimal Task Toolkit
++ role-specific Execution Bundle
++ provenance
+```
 
-Goal: structured canonical inputs generate concise `.md` artifacts suitable for existing agent CLIs and Skills.
+Render concise agent-facing Markdown. Do not concatenate the whole project documentation tree.
 
-### Phase G — reconciliation and execution adapters
+A future `ToolInterfaceProfile` may configure normalized tool/feedback behavior, but V0.1 need not ship a custom ACI shell.
+
+### Phase H - verification, reconciliation and execution adapters
 
 Add:
 
-- current tracker/repository truth acquisition
-- evidence ingestion
-- state reconciliation
-- provider-specific execution adapters
-- bounded retry/escalation
+- validation of classification/profile provenance;
+- validation/explanation of toolkit selection;
+- current tracker/repository truth acquisition;
+- evidence ingestion;
+- state reconciliation;
+- provider-specific execution adapters;
+- bounded retry/escalation.
 
-Long-running orchestration comes after the compiler and evidence contracts are stable.
+Long-running orchestration comes after compiler and evidence contracts are stable.
 
-## 9. First practical vertical slice
+## 12. First practical vertical slice
 
-The most useful first end-to-end slice is now:
+The useful end-to-end slice is:
 
 ```text
 Input
@@ -297,19 +435,22 @@ Input
 - optional generic integration declarations using SecretRefs
 
 Inspect
-- collect observed project facts
+- collect observed project facts + conventions
 
-Classify
-- produce/validate Project Manifest + readiness findings
+Classify / Profile
+- produce/validate findings, readiness and ProjectProfile
+
+Adopt
+- produce preview-only AdoptionChangeSet
 
 Resolve
-- Project Toolkit + lock
+- Project Toolkit + lock + selection rationale
 
 Work
 - validate one causal Work Item
 
 Compile
-- Task Toolkit + Execution Bundle
+- Task Toolkit + Execution Bundle + provenance
 
 Render
 - concise role-specific Markdown
@@ -321,17 +462,18 @@ Validate
 - reject invalid work decomposition
 - reject missing evidence requirements
 - reject invalid builder/reviewer identity
+- reject unsupported version
 ```
 
 This proves that Foundry can retrofit or bootstrap an AI-native execution contract without requiring a brand-new project.
 
-## 10. Version and compatibility contract
+## 13. Version and compatibility contract
 
 Version at least:
 
 ```text
-foundry schema
-Project Manifest
+Foundry schema
+Project Manifest / Profile
 Work Item schema
 Toolkit lock
 Capability/Skill/Workflow metadata
@@ -342,23 +484,41 @@ Evidence/Receipt schema
 
 Compatibility errors should be explicit. Existing project behavior must not silently change when the global registry or Foundry implementation updates.
 
-## 11. Public implementation boundary
+## 14. Public implementation boundary
 
 The core package and public documentation must be self-contained and generic.
 
 Avoid:
 
-- dependencies on private repositories or unpublished policy sources
-- hard-coded personal project names or filesystem paths
-- raw credentials or real external-system identifiers in examples
-- provider-specific assumptions in core models
+- dependencies on private repositories or unpublished policy sources;
+- hard-coded personal project names or filesystem paths;
+- raw credentials or real external-system identifiers in examples;
+- provider-specific assumptions in core models;
+- project-type condition trees standing in for composable policy predicates.
 
 Examples should use synthetic projects, synthetic Work Item IDs, and generic integrations.
 
-## 12. Definition of the next milestone
+## 15. Benchmark learning during implementation
 
-The next milestone should prove:
+Benchmark-derived improvements should be integrated conservatively.
 
-> Given either a new project description or an existing repository, Agent Foundry can inspect and classify the operating environment, express a bounded causal Work Item, resolve a pinned least-capability toolkit with safe integration references, and generate a validated concise agent-facing execution package from structured canonical data.
+```text
+benchmark finding
+→ design delta
+→ determine whether foundational
+→ current issue acceptance update OR bounded follow-up
+→ implementation evidence
+→ retain / revise / reject
+```
+
+The current V0.1 work graph should not be constantly reset by benchmark review.
+
+See `08-benchmarks-and-evolution.md` for the source projects and issue-level mapping.
+
+## 16. Definition of the V0.1 milestone
+
+V0.1 should prove:
+
+> Given either a new project description or an existing repository, Agent Foundry can inspect and profile the operating environment, express a bounded causal Work Item, resolve a pinned least-capability toolkit with safe integration references and explainable selection, and generate a validated concise agent-facing execution package from structured canonical data.
 
 That is the point where the repository moves from operating philosophy into a practical project-to-agent compiler.
