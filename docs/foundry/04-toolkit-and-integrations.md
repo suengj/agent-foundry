@@ -227,6 +227,21 @@ api_key: actual-secret-value
 
 Foundry may validate that a reference exists or that an integration can authenticate, but the secret value belongs to the credential provider or execution environment.
 
+### Embedded-secret guard (write/render boundary)
+
+Foundry enforces the public promise — secrets are referenced, never embedded — at two layers with different scope:
+
+**Model validation (structural, fail-closed).** Credential-shaped keys (`api_key`, `token`, `secret`, and similar) are rejected when the value is not a `SecretRef`. This is structural matching with near-zero false-positive rate.
+
+**Serialization boundary (write/render).** When a model is dumped to JSON or YAML (`dump_json`, `dump_yaml`, and the raw dump helpers), a scanner runs before bytes are written:
+
+- **Tier A — known vendor credential formats** (OpenAI-style `sk-` keys with an unbroken alphanumeric body, GitHub tokens, Slack tokens, AWS access keys, Google API keys, GitLab/npm/Doppler/Stripe prefixes, PEM private-key headers, JWTs with a valid `{"alg"` header) in string **values** or dict **keys** cause a hard failure. Strong prefixes match on format alone; the weak `sk-` prefix additionally requires a single unbroken alphanumeric body (not hyphenated dictionary words).
+- **Tier B — value entropy** is reported as an **advisory diagnostic only** and deliberately does **not** block. Entropy cannot distinguish a credential from a legitimate opaque identifier without unacceptable false positives. This is a known limitation, not total coverage.
+- Detection runs at the serialization boundary, **not** in model validation. A false positive on Tier A is recoverable: the project can still be loaded and inspected; only the write is refused, with a diagnostic naming the JSON path and the rule that matched (never the secret value).
+- A per-path `allow_paths` escape exists for legitimate values that trip Tier A. It is per-path by design, not a global off-switch. Paths are matched structurally: `adapter_options.a.b` means nested keys `a` then `b`, not a literal key `a.b`. Escape a literal dot in a key name with `\\.` (for example `adapter_options.a\\.b`). The bracket form `[key]` marks a credential used as a dict **key** (distinct from a literal key named `@key`, which encodes as `y.@key`). Diagnostic messages use the escaped dotted form so the reported path can be pasted directly into `allow_paths`.
+
+**Residual risk (honest boundary).** An unrecognised credential format stored under a generic key (for example `adapter_options.custom_option`) can still serialize. Foundry is not a secret vault. `SecretRef` is the supported mechanism for credential material.
+
 ## 11. Identity and delegation
 
 Where supported, prefer delegated or workload identity over long-lived shared credentials.
