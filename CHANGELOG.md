@@ -8,6 +8,10 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 
 ### Added
 
+- Work Item compiler (`agent_foundry.compile`) producing minimum Task Toolkit, role-specific `ExecutionBundle`, and provenance-bearing selections with authority intersection.
+- Concise Markdown renderer (`agent_foundry.render`) projecting agent-facing contracts from `ExecutionBundle` only.
+- `agent-foundry compile` CLI subcommand with `--render` for Markdown projection.
+
 - Capability registry and deterministic two-stage toolkit resolver (`agent_foundry.toolkit`) with explainable include/exclude decisions.
 - `agent-foundry resolve-toolkit` and `agent-foundry integration-check` CLI subcommands.
 - Extended registry/toolkit contracts: skill trigger metadata, policy rules, version-pinned `ToolkitLock`, and integration preflight health states.
