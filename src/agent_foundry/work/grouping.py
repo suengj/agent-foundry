@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 
 from agent_foundry.models.base import WorkDecompositionError
 from agent_foundry.models.common import WorkClass
@@ -24,6 +25,17 @@ _WORK_CLASS_PRECEDENCE: tuple[WorkClass, ...] = (
 _WORK_CLASS_RANK = {work_class: index for index, work_class in enumerate(_WORK_CLASS_PRECEDENCE)}
 
 
+def _ranked_members() -> list[WorkClass]:
+    """Precedence entries that really are `WorkClass` members, in tuple order.
+
+    Read from `_WORK_CLASS_PRECEDENCE` rather than `_WORK_CLASS_RANK`: the dict
+    is lossy. `enumerate` lets a repeated member overwrite its own rank, and
+    because `WorkClass` is a `StrEnum` a bare string entry can collide with a
+    real member's key. The tuple is the source of truth the reviewer edits.
+    """
+    return [entry for entry in _WORK_CLASS_PRECEDENCE if isinstance(entry, WorkClass)]
+
+
 def unranked_work_classes() -> list[str]:
     """WorkClass members `_WORK_CLASS_PRECEDENCE` does not rank, sorted by value.
 
@@ -32,9 +44,43 @@ def unranked_work_classes() -> list[str]:
     only failure is a bare `KeyError` from the rank lookup. `tests/
     test_work_vocabulary_exhaustiveness.py` fails on this list instead.
     """
+    ranked = set(_ranked_members())
+    return sorted(work_class.value for work_class in WorkClass if work_class not in ranked)
+
+
+def unknown_precedence_entries() -> list[str]:
+    """`_WORK_CLASS_PRECEDENCE` entries that are not `WorkClass` members, as reprs.
+
+    The reverse of `unranked_work_classes`, and the direction a one-way set
+    difference cannot see: a renamed, removed, or mistyped member leaves an
+    entry that ranks nothing. It is not inert — it consumes a rank index, so
+    every member after it shifts, and a stale entry can go on masking the real
+    member it was meant to be.
+    """
     return sorted(
-        work_class.value for work_class in WorkClass if work_class not in _WORK_CLASS_RANK
+        repr(entry) for entry in _WORK_CLASS_PRECEDENCE if not isinstance(entry, WorkClass)
     )
+
+
+def duplicated_precedence_entries() -> list[str]:
+    """WorkClass members `_WORK_CLASS_PRECEDENCE` lists more than once, by value.
+
+    Caught by neither completeness direction: the member is present and is a
+    real member. `_WORK_CLASS_RANK` keeps only the last index, so a duplicate
+    silently demotes the member to its lowest listed position and changes which
+    label a merged Work Item carries.
+    """
+    counts = Counter(_ranked_members())
+    return sorted(entry.value for entry, count in counts.items() if count > 1)
+
+
+def precedence_rank_is_lossless() -> bool:
+    """Every precedence entry survived into `_WORK_CLASS_RANK` as its own key.
+
+    One assertion covering both ways the tuple can lose an entry on the way into
+    the dict — a repeated member, or a string entry colliding with a member key.
+    """
+    return len(_WORK_CLASS_RANK) == len(_WORK_CLASS_PRECEDENCE)
 
 
 def capability_group_key(unit: CapabilityUnit) -> GroupKey:
