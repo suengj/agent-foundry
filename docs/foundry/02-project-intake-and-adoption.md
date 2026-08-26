@@ -63,17 +63,17 @@ Classify along operational dimensions:
 | Dimension | Examples |
 |---|---|
 | Primary work mode | build, analyze, research, generate, operate, coordinate, monitor |
-| Primary artifact/state | code, data, model, document, decision, external state, runtime state |
-| Statefulness | stateless, local, persistent internal, persistent shared/external |
-| External effect | read-only, repository write, shared service write, data mutation, runtime mutation, publication |
-| Reversibility | trivial, versioned, rollback-required, partial, effectively irreversible |
-| Autonomy | suggest, prepare, isolated execute, bounded external write, approved apply, continuous operation |
+| Primary artifact/state | code, data, model, document, decision, external-state, runtime-state |
+| Statefulness | stateless, local, persistent-internal, persistent-shared-external |
+| External effect | read-only, repository-write, shared-service-write, data-mutation, runtime-mutation, publication |
+| Reversibility | trivial, versioned, rollback-required, partial, effectively-irreversible |
+| Autonomy | suggest, prepare, isolated-execute, bounded-external-write, approved-apply, continuous-operation |
 | Consequence severity | low, medium, high, critical |
-| Assurance mode | deterministic, statistical, independent review, source evidence, runtime read-back, human acceptance |
-| Ambiguity | procedural, bounded judgment, design trade-off, exploratory |
-| Access sensitivity | public, internal, confidential, secret/privileged |
+| Assurance mode | deterministic-tests, statistical, independent-review, source-evidence, runtime-readback, human-acceptance |
+| Ambiguity | procedural, bounded-judgment, design-trade-off, exploratory |
+| Access sensitivity | public, internal, confidential, secret-privileged |
 | Temporal mode | one-shot, interactive, batch, long-running, continuous |
-| Concurrency | single writer, isolated parallel lanes, coordinated graph |
+| Concurrency | single-writer, isolated-parallel-lanes, coordinated-graph |
 
 ## 4. Observed, declared, inferred, normative
 
@@ -136,7 +136,7 @@ project:
     secondary: [operate]
 
 state:
-  persistence: external-shared
+  persistence: persistent-shared-external
   temporal_mode: long-running
 
 impact:

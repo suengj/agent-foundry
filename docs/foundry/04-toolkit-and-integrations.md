@@ -250,14 +250,14 @@ Presence in configuration is not equivalent to usability.
 Track integration state explicitly:
 
 ```text
-DESIRED
-AVAILABLE
-CONFIGURED
-AUTHENTICATED
-AUTHORIZED
-HEALTHY
-DEGRADED
-UNAVAILABLE
+desired
+available
+configured
+authenticated
+authorized
+healthy
+degraded
+unavailable
 ```
 
 A Task Toolkit requiring `work.write` must fail preflight if the required integration is not both authorized and sufficiently healthy.
@@ -315,11 +315,11 @@ Updating the global registry should not silently change an existing project's re
 The resolver should distinguish declared capability from effective capability.
 
 ```text
-DESIRED
-AVAILABLE
-COMPATIBLE
-AUTHORIZED
-HEALTHY
+desired
+available
+compatible
+authorized
+healthy
 ```
 
 Examples of failure:

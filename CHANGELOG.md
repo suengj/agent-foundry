@@ -6,6 +6,10 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 
 ## [Unreleased]
 
+### Changed
+
+- Pre-release vocabulary correction: removed `external-shared` from `Statefulness` (use `persistent-shared-external`); removed `deterministic` from `AssuranceMode` (use `deterministic-tests`).
+
 ### Added
 
 - Clean public architecture baseline for Agent Foundry.

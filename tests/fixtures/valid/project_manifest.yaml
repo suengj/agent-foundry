@@ -7,7 +7,7 @@ project:
     secondary:
       - operate
 state:
-  persistence: external-shared
+  persistence: persistent-shared-external
   temporal_mode: long-running
 impact:
   external_effect: runtime-mutation
