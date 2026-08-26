@@ -91,6 +91,7 @@ VOCABULARY_FALSE_POSITIVES: tuple[str, ...] = (
     "refs/heads/sk-live-feature-toggle",
     "refs/heads/task-runner-fix",
     "sk-live-feature-toggle",
+    "sk-proj-feature-toggle",
     "https://example.com/v1/sk-live-docs-page",
 )
 
@@ -280,7 +281,7 @@ def test_secret_ref_masquerade_with_extra_field_is_detected() -> None:
         dump_yaml_raw(payload)
 
 
-def test_genuine_secret_ref_subtree_is_still_skipped() -> None:
+def test_genuine_secret_ref_fields_remain_clean() -> None:
     payload = {
         "adapter_options": {
             "ref": {"provider": "env", "name": "SAFE_NAME"},
@@ -450,6 +451,10 @@ TIER_A_MUST_CATCH: tuple[tuple[str, str], ...] = (
     ("sk-live-bearer", "Bearer sk-live-ABCDEFGH12345678"),
     ("sk-live-equals", "api_key=sk-live-ABCDEFGH12345678"),
     ("sk-live-lowercase", "sk-live-aaaaaaaaaaaaaaaa"),
+    ("sk-proj", "sk-proj-" + "a" * 80),
+    ("sk-svcacct", "sk-svcacct-" + "a" * 40),
+    ("sk-admin", "sk-admin-" + "a" * 40),
+    ("sk-bare", "sk-" + "a" * 48),
     ("ghp-lowercase", "ghp_aaaaaaaaaaaaaaaaaaaaaaaa"),
     ("ghp-digits", "ghp_" + "1" * 36),
     ("aws-all-a", "AKIAAAAAAAAAAAAAAAAA"),
@@ -474,6 +479,7 @@ TIER_A_MUST_NOT_CATCH: tuple[str, ...] = (
     "refs/heads/sk-live-feature-toggle",
     "refs/heads/task-runner-fix",
     "sk-live-feature-toggle",
+    "sk-proj-feature-toggle",
     "https://example.com/v1/sk-live-docs-page",
 )
 
@@ -512,6 +518,61 @@ def test_slack_lowercase_bot_token_is_detected() -> None:
 def test_secret_ref_scheme_prefix_does_not_bypass_tier_a() -> None:
     with pytest.raises(EmbeddedSecretError):
         dump_json_raw({"value": "env:sk-live-ABCDEFGH12345678"})
+
+
+def test_openai_sk_proj_format_is_detected() -> None:
+    token = "sk-proj-" + "a" * 80
+    with pytest.raises(EmbeddedSecretError):
+        dump_json_raw({"credential": token})
+
+
+def test_secret_ref_scope_and_version_fields_are_scanned() -> None:
+    with pytest.raises(EmbeddedSecretError):
+        dump_json_raw(
+            {
+                "r": {
+                    "provider": "env",
+                    "name": "SAFE",
+                    "scope": "sk-live-" + "A" * 16,
+                }
+            }
+        )
+    with pytest.raises(EmbeddedSecretError):
+        dump_json_raw(
+            {
+                "r": {
+                    "provider": "env",
+                    "name": "SAFE",
+                    "version": "ghp_" + "a" * 36,
+                }
+            }
+        )
+
+
+def test_secret_ref_credential_in_name_is_detected() -> None:
+    with pytest.raises(EmbeddedSecretError):
+        dump_json_raw(
+            {
+                "r": {
+                    "provider": "env",
+                    "name": "sk-live-ABCDEFGH12345678",
+                }
+            }
+        )
+    spec = IntegrationSpec.model_validate(
+        {
+            **_INTEGRATION_BASE,
+            "auth": {
+                "method": "oauth",
+                "credential_ref": {
+                    "provider": "env",
+                    "name": "sk-live-ABCDEFGH12345678",
+                },
+            },
+        }
+    )
+    with pytest.raises(EmbeddedSecretError):
+        dump_json(spec)
 
 
 def test_deep_nested_clean_payload_serializes() -> None:

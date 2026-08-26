@@ -21,17 +21,6 @@ KEY_PATH_MARKER = KeyPathMarker()
 
 PathSegment = str | int | KeyPathMarker
 
-_SECRET_REF_SCHEMES = frozenset(
-    {
-        "env",
-        "os-keychain",
-        "managed",
-        "vault",
-        "workload-identity",
-        "ci-secret",
-    }
-)
-
 _SHA1_HEX_RE = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _UUID_RE = re.compile(
@@ -48,10 +37,11 @@ _POSIX_PATH_RE = re.compile(r"^(?:/|\./|\.\./).+")
 
 _TOKEN_BOUNDARY = r"(?<![A-Za-z0-9_-])"
 
-# Weak prefix: sk- collides with ordinary language — body must be one unbroken alnum run (16+).
+# Weak prefix: sk- collides with ordinary language — optional closed label set, then unbroken body.
+_OPENAI_KNOWN_LABELS = "(?:live|test|proj|svcacct|admin)"
 _OPENAI_STYLE_KEY_RE = re.compile(
     _TOKEN_BOUNDARY
-    + r"(?:sk-live-[A-Za-z0-9]{16,}|sk-test-[A-Za-z0-9]{16,}|sk-[A-Za-z0-9]{16,})"
+    + rf"(?:sk-(?:{_OPENAI_KNOWN_LABELS})-[A-Za-z0-9_]{{16,}}|sk-[A-Za-z0-9_]{{16,}})"
 )
 
 # Strong prefixes: unambiguous on their own — match prefix + documented body length/charset only.
@@ -75,8 +65,6 @@ _TIER_A_STRONG_RULES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     (rule_name, re.compile(_TOKEN_BOUNDARY + body))
     for rule_name, body in _TIER_A_STRONG_RULE_BODIES
 )
-
-_SECRET_REF_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-/]+$")
 
 _TIER_B_MIN_LENGTH = 20
 _TIER_B_ENTROPY_THRESHOLD = 4.2
@@ -126,31 +114,6 @@ def _char_class_count(value: str) -> int:
     if any(not char.isalnum() for char in value):
         classes += 1
     return classes
-
-
-def _is_valid_secret_ref_dict(value: dict[str, Any]) -> bool:
-    from agent_foundry.models.integrations import SecretRef
-
-    try:
-        ref = SecretRef.model_validate(value)
-    except Exception:
-        return False
-    return _is_reference_shaped_name(ref.name)
-
-
-def _is_reference_shaped_name(name: str) -> bool:
-    if not name or not _SECRET_REF_NAME_RE.fullmatch(name):
-        return False
-    return _match_tier_a(name) is None
-
-
-def _is_secret_ref_string(value: str) -> bool:
-    if ":" not in value:
-        return False
-    scheme, name = value.split(":", 1)
-    if scheme not in _SECRET_REF_SCHEMES:
-        return False
-    return _is_reference_shaped_name(name)
 
 
 def _is_well_formed_http_url(value: str) -> bool:
@@ -354,9 +317,6 @@ def _match_tier_b(value: str) -> str | None:
 
 
 def _scan_value(segments: tuple[PathSegment, ...], value: str) -> list[SecretFinding]:
-    if _is_secret_ref_string(value):
-        return []
-
     path = format_json_path(segments)
     tier_a_rule = _match_tier_a(value)
     if tier_a_rule is not None:
@@ -397,8 +357,6 @@ def _scan_node(value: Any) -> list[SecretFinding]:
         segments, current = stack.pop()
 
         if isinstance(current, dict):
-            if _is_valid_secret_ref_dict(current):
-                continue
             for key, child in current.items():
                 if isinstance(key, str):
                     findings.extend(_scan_key(_key_path_segments(segments), key))
