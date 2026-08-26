@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from agent_foundry import __version__
+from agent_foundry.adopt import plan_adoption
 from agent_foundry.inspect import inspect_project
 from agent_foundry.models.io import dump_json, dump_yaml
 
@@ -70,6 +71,24 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_adopt(args: argparse.Namespace) -> int:
+    try:
+        intake = inspect_project(args.project_path)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    result = plan_adoption(intake)
+
+    if args.format == "json":
+        payload = dump_json(result)
+    else:
+        payload = dump_yaml(result)
+
+    sys.stdout.buffer.write(payload)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agent-foundry",
@@ -96,6 +115,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Structured output format (default: json)",
     )
     inspect_cmd.set_defaults(func=_cmd_inspect)
+
+    adopt_cmd = sub.add_parser(
+        "adopt",
+        help="Preview greenfield bootstrap or brownfield adoption plan from inspection evidence",
+    )
+    adopt_cmd.add_argument("project_path", help="Path to the project repository to plan adoption for")
+    adopt_cmd.add_argument(
+        "--format",
+        choices=("json", "yaml"),
+        default="json",
+        help="Structured output format (default: json)",
+    )
+    adopt_cmd.set_defaults(func=_cmd_adopt)
 
     return parser
 

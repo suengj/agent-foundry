@@ -8,6 +8,7 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 
 ### Added
 
+- `agent-foundry adopt <path>` CLI and Core API for greenfield bootstrap and brownfield adoption planning from inspection evidence.
 - `agent-foundry inspect <path>` CLI and Core API for read-only project inventory, classification candidates, convention discovery, and readiness findings.
 - Tracker-neutral work decomposition engine (`agent_foundry.work`) with causal grouping, dependency graph validation, and quality checks.
 - Work hierarchy extension points: `OutcomeCapability`, `ExecutionRunRef`, `WorkspaceLeaseRef`, `WriteLeaseRef`, and distinct lifecycle/execution/evidence snapshots.

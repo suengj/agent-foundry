@@ -1,0 +1,23 @@
+schema_version: "0.1"
+project:
+  name: sample-service
+  intake_mode: brown-field
+  work_modes:
+    primary: build
+    secondary: []
+state:
+  persistence: persistent-internal
+  temporal_mode: batch
+impact:
+  external_effect: read-only
+  reversibility: versioned
+  consequence: medium
+execution:
+  autonomy: suggest
+  ambiguity: procedural
+  concurrency: single-writer
+assurance:
+  required:
+    - deterministic-tests
+access:
+  sensitivity: internal

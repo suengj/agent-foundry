@@ -19,6 +19,7 @@ from agent_foundry.models.base import (
 from agent_foundry.models.common import (
     AccessSensitivity,
     AdoptionAction,
+    AdoptionChangeStatus,
     Ambiguity,
     AssuranceMode,
     AuthorityRequirement,
@@ -75,8 +76,12 @@ from agent_foundry.models.io import (
 )
 from agent_foundry.models.policy import BudgetProfile, PermissionProfile
 from agent_foundry.models.project import (
+    AdoptionChangeItem,
+    AdoptionChangeSet,
+    AdoptionEvidence,
     AdoptionPlan,
     AdoptionPlanItem,
+    AdoptionPlanResult,
     ClassificationFinding,
     ConventionSpec,
     ProjectAccess,
@@ -129,9 +134,14 @@ __all__ = [
     "FOUNDRY_SCHEMA_VERSION",
     "AccessSensitivity",
     "AdoptionAction",
+    "AdoptionChangeItem",
+    "AdoptionChangeSet",
+    "AdoptionChangeStatus",
+    "AdoptionEvidence",
     "AdoptionGap",
     "AdoptionPlan",
     "AdoptionPlanItem",
+    "AdoptionPlanResult",
     "Ambiguity",
     "AssuranceMode",
     "AuthorityRequirement",
