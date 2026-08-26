@@ -10,6 +10,11 @@ from agent_foundry.models.toolkit import ResolutionSource
 from agent_foundry.models.work import WorkItemContract
 
 _MAX_CONTEXT_ITEMS = 5
+# Provenance answers "why is this in the bundle" for everything that competed for a
+# slot. Material that scored zero never competed, so it is summarized in a single
+# record rather than itemized — otherwise the bundle would grow linearly with
+# project material the work item has nothing to do with.
+_MAX_REJECTED_PROVENANCE_ITEMS = 10
 _TOKEN_SPLIT = re.compile(r"[\s/._:-]+")
 
 
@@ -72,6 +77,56 @@ def _selection_rationale(
     return f"{component_kind} not relevant to work item scope (selection score={selection_score:.2f})"
 
 
+def _rejected_summary_record(
+    *,
+    component_kind: str,
+    unscored_ids: list[str],
+    unlisted_scored: list[tuple[float, str]],
+) -> BundleProvenanceRecord | None:
+    """One record standing in for candidates not itemized above.
+
+    Itemized provenance covers every selected component plus the highest-scoring
+    near-misses — the information needed to answer "why this and not that". Everything
+    further down the ranking is counted, not enumerated, so an ExecutionBundle stays
+    bounded no matter how much material the project holds.
+    """
+    if not unscored_ids and not unlisted_scored:
+        return None
+
+    parts: list[str] = []
+    if unlisted_scored:
+        top = max(score for score, _ in unlisted_scored)
+        parts.append(
+            f"{len(unlisted_scored)} scored candidate(s) ranked below the itemized "
+            f"near-misses (highest unlisted selection score={top:.2f})"
+        )
+    if unscored_ids:
+        parts.append(
+            f"{len(unscored_ids)} candidate(s) shared no token with the work item scope, "
+            f"objective, or title and never competed for a slot"
+        )
+
+    sample = [name for _, name in unlisted_scored[:_MAX_REJECTED_PROVENANCE_ITEMS]]
+    sample.extend(unscored_ids[: max(0, _MAX_REJECTED_PROVENANCE_ITEMS - len(sample))])
+    remainder = (len(unlisted_scored) + len(unscored_ids)) - len(sample)
+    listed = ", ".join(sample)
+    if remainder > 0:
+        listed = f"{listed}, +{remainder} more"
+
+    return BundleProvenanceRecord(
+        component_kind=f"{component_kind}-not-selected",
+        component_id=f"{component_kind}:remainder",
+        selected=False,
+        rationale=f"{component_kind} candidates not selected: " + "; ".join(parts),
+        source=ResolutionSource.PROJECT_FACT,
+        project_fact=(
+            f"unlisted_scored={len(unlisted_scored)}; unscored={len(unscored_ids)}; "
+            f"sample=[{listed}]"
+        ),
+        evidence_refs=[],
+    )
+
+
 def select_relevant_conventions(
     work_item: WorkItemContract,
     conventions: list[ConventionSpec],
@@ -89,8 +144,18 @@ def select_relevant_conventions(
     provenance: list[BundleProvenanceRecord] = []
     selected_subjects = {item.subject for item in selected}
 
-    for convention in sorted(conventions, key=lambda item: item.subject):
-        selection_score = _convention_selection_score(tokens, convention)
+    # Itemize the selected items and the highest-scoring near-misses; count the rest.
+    itemized_limit = _MAX_CONTEXT_ITEMS + _MAX_REJECTED_PROVENANCE_ITEMS
+    itemized = scored[:itemized_limit]
+    unlisted_scored = [(score, item.subject) for score, item in scored[itemized_limit:]]
+    scored_subjects = {item.subject for _, item in scored}
+    unscored_ids = sorted(
+        convention.subject
+        for convention in conventions
+        if convention.subject not in scored_subjects
+    )
+
+    for selection_score, convention in itemized:
         matching_fields = _matching_fields(
             tokens,
             subject=convention.subject,
@@ -117,6 +182,14 @@ def select_relevant_conventions(
                 evidence_refs=[convention.source_ref],
             )
         )
+
+    summary = _rejected_summary_record(
+        component_kind="convention",
+        unscored_ids=unscored_ids,
+        unlisted_scored=unlisted_scored,
+    )
+    if summary is not None:
+        provenance.append(summary)
     return selected, provenance
 
 
@@ -137,8 +210,17 @@ def select_relevant_observations(
     provenance: list[BundleProvenanceRecord] = []
     selected_subjects = {item.subject for item in selected}
 
-    for observation in sorted(observations, key=lambda item: item.subject):
-        selection_score = _observation_selection_score(tokens, observation)
+    itemized_limit = _MAX_CONTEXT_ITEMS + _MAX_REJECTED_PROVENANCE_ITEMS
+    itemized = scored[:itemized_limit]
+    unlisted_scored = [(score, item.subject) for score, item in scored[itemized_limit:]]
+    scored_subjects = {item.subject for _, item in scored}
+    unscored_ids = sorted(
+        observation.subject
+        for observation in observations
+        if observation.subject not in scored_subjects
+    )
+
+    for selection_score, observation in itemized:
         matching_fields = _matching_fields(
             tokens,
             subject=observation.subject,
@@ -164,4 +246,12 @@ def select_relevant_observations(
                 evidence_refs=[observation.provenance.source_ref or observation.subject],
             )
         )
+
+    summary = _rejected_summary_record(
+        component_kind="observation",
+        unscored_ids=unscored_ids,
+        unlisted_scored=unlisted_scored,
+    )
+    if summary is not None:
+        provenance.append(summary)
     return selected, provenance

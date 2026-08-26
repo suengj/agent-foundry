@@ -39,11 +39,30 @@ def _role_max_external_effect(
 
 
 def _normalize_scope_path(scope: str) -> str | None:
-    normalized = scope.strip()
-    if not normalized or normalized == "/":
+    """Normalize a repo-relative scope path, or return None if it is not a usable bound.
+
+    None means "grants nothing": the repository root, an absolute path, and any path
+    that traverses above the root all fail closed rather than widening a bound. Textual
+    prefix comparison is only sound once ``.``/``./``/``..`` segments are resolved, so
+    resolution happens here and every comparison below consumes the normalized form.
+    """
+    normalized = scope.strip().replace("\\", "/")
+    if not normalized or normalized.startswith("/"):
         return None
-    trimmed = normalized.rstrip("/")
-    return trimmed or None
+    parts: list[str] = []
+    for segment in normalized.split("/"):
+        if segment in ("", "."):
+            continue
+        if segment == "..":
+            if not parts:
+                # Escapes the repository root; refuse to produce a bound at all.
+                return None
+            parts.pop()
+            continue
+        parts.append(segment)
+    if not parts:
+        return None
+    return "/".join(parts)
 
 
 def _is_scope_prefix(prefix: str, path: str) -> bool:
@@ -105,11 +124,15 @@ def _scope_contained_in_bounds(compiled_scope: str, bound_scopes: list[str]) -> 
 def _forbidden_scopes(role_scopes: list[str], compiled_write_scope: list[str]) -> list[str]:
     if not role_scopes:
         return []
-    allowed = {scope.rstrip("/") for scope in compiled_write_scope}
+    allowed = {
+        path
+        for path in (_normalize_scope_path(scope) for scope in compiled_write_scope)
+        if path is not None
+    }
     return sorted(
         scope
         for scope in role_scopes
-        if scope.rstrip("/") not in allowed
+        if _normalize_scope_path(scope) not in allowed
     )
 
 
@@ -162,7 +185,36 @@ def validate_execution_bundle_authority(
     permission_profile: PermissionProfile | None,
     registry: CapabilityRegistry,
 ) -> None:
-    """Validate finished bundle authority against every contributing bound."""
+    """Validate finished bundle authority against every contributing bound.
+
+    The checks below are deliberately split. The *structural* checks come first and
+    never call the compiler, so they still reject a forged bundle when the compiler
+    itself is wrong or replaced. The recomputation comparison that follows is a
+    consistency check, not the source of rejection.
+    """
+    for scope in authority.write_scope:
+        if _normalize_scope_path(scope) is None:
+            raise CompileAuthorityError(
+                f"bundle write_scope {scope!r} is not a usable repository-relative bound"
+            )
+
+    if authority.external_effect == ExternalEffectClass.READ_ONLY and authority.write_scope:
+        raise CompileAuthorityError(
+            f"read-only bundle carries write_scope {authority.write_scope!r}"
+        )
+
+    granted = {
+        path
+        for path in (_normalize_scope_path(scope) for scope in authority.write_scope)
+        if path is not None
+    }
+    for scope in authority.forbidden_scopes:
+        forbidden_path = _normalize_scope_path(scope)
+        if forbidden_path is not None and forbidden_path in granted:
+            raise CompileAuthorityError(
+                f"bundle declares {scope!r} both granted and forbidden"
+            )
+
     expected = compute_compiled_authority(
         work_item,
         manifest,

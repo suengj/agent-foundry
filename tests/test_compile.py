@@ -521,8 +521,10 @@ def test_validate_execution_bundle_authority_rejects_forged_write_scope(
     result = compile_work_item(work_item, manifest, lock, "builder", "RUN-FORGE")
     assert result.bundle.authority is not None
 
+    # forbidden_scopes is kept consistent with the forged grant so that the
+    # granted/forbidden contradiction check cannot mask the containment check.
     forged = result.bundle.authority.model_copy(
-        update={"write_scope": ["src/", "tests/"]},
+        update={"write_scope": ["src/", "tests/"], "forbidden_scopes": []},
     )
     profiles = build_default_registry_permission_profiles()
     task_profile = next(profile for profile in profiles if profile.id == lock.permission_profile_ids[0])
@@ -1078,3 +1080,394 @@ def test_compile_test_module_has_no_unused_assignments():
             self.generic_visit(node)
 
     _FunctionUnusedAssignmentChecker().visit(tree)
+
+
+# --- Scope-escape hardening (B1) and independent validator layer (B2) --------
+
+
+@pytest.mark.parametrize(
+    ("role_scopes", "work_scopes", "expected"),
+    [
+        # Traversal must never yield a bound that resolves outside the role scope.
+        (["src"], ["src/../../etc"], []),
+        (["src"], ["src/../secrets"], []),
+        (["src/af"], ["src/af/../../../root"], []),
+        (["src/../.."], ["src"], []),
+        # Absolute paths and the bare repository root grant nothing.
+        (["/etc"], ["/etc"], []),
+        (["."], ["src"], []),
+        (["/"], ["src"], []),
+        # Redundant segments must not silently drop a legitimate overlap.
+        (["src"], ["./src/af"], ["src/af"]),
+        (["./src/"], ["src/af/"], ["src/af"]),
+        (["src/./af"], ["src/af/compile"], ["src/af/compile"]),
+        # Sibling prefixes that merely share a textual prefix stay disjoint.
+        (["src/af"], ["src/afx"], []),
+        (["docs"], ["src"], []),
+        # An empty role write scope or work item scope grants nothing.
+        ([], ["src"], []),
+        (["src"], [], []),
+    ],
+)
+def test_intersect_write_scopes_never_escapes_either_bound(
+    role_scopes: list[str], work_scopes: list[str], expected: list[str]
+):
+    assert _intersect_write_scopes(role_scopes, work_scopes) == expected
+
+
+def test_scope_containment_rejects_traversal_outside_bound():
+    assert _scope_contained_in_bounds("src/af", ["src"]) is True
+    assert _scope_contained_in_bounds("src/../../etc", ["src"]) is False
+    assert _scope_contained_in_bounds("/etc/passwd", ["src"]) is False
+    assert _scope_contained_in_bounds("src/afx", ["src/af"]) is False
+
+
+def _forge_bundle_authority(**update: object):
+    """Compile a real bundle, then hand back a forged authority plus validator args."""
+    work_item = _sample_work_item(scope=["docs/", "infra/terraform"])
+    manifest = _sample_manifest()
+    _, lock = resolve_toolkit(manifest)
+    result = compile_work_item(work_item, manifest, lock, "builder", "RUN-FORGE-IND")
+    assert result.bundle.authority is not None
+    forged = result.bundle.authority.model_copy(update=update)
+    profiles = build_default_registry_permission_profiles()
+    task_profile = next(
+        profile for profile in profiles if profile.id == lock.permission_profile_ids[0]
+    )
+    reg = default_registry()
+    role = next(item for item in reg.roles if item.id == "builder")
+    return forged, (work_item, manifest, result.task_toolkit, role, task_profile, reg)
+
+
+@pytest.mark.parametrize(
+    ("update", "message"),
+    [
+        (
+            {
+                "external_effect": ExternalEffectClass.READ_ONLY,
+                "write_scope": ["docs"],
+                "forbidden_scopes": [],
+            },
+            "read-only bundle carries write_scope",
+        ),
+        (
+            {"write_scope": ["docs/../../etc"], "forbidden_scopes": []},
+            "not a usable repository-relative bound",
+        ),
+        (
+            {"write_scope": ["docs"], "forbidden_scopes": ["docs/"]},
+            "both granted and forbidden",
+        ),
+    ],
+)
+def test_validator_rejects_forged_bundles_without_recomputation(
+    monkeypatch: pytest.MonkeyPatch, update: dict[str, object], message: str
+):
+    """These rejections must survive a compiler that agrees with the forgery."""
+    forged, args = _forge_bundle_authority(**update)
+
+    # Neutralize the recomputation path entirely: it now agrees with the forgery,
+    # so only the independent structural checks can still reject.
+    monkeypatch.setattr(
+        "agent_foundry.compile.authority.compute_compiled_authority",
+        lambda *_args, **_kwargs: forged,
+    )
+
+    with pytest.raises(CompileAuthorityError, match=message):
+        validate_execution_bundle_authority(forged, *args)
+
+
+def test_validator_independent_layer_is_load_bearing(monkeypatch: pytest.MonkeyPatch):
+    """A no-op replacement of the validator must not go unnoticed."""
+    import agent_foundry.compile.authority as authority_module
+
+    forged, args = _forge_bundle_authority(
+        external_effect=ExternalEffectClass.READ_ONLY,
+        write_scope=["docs"],
+        forbidden_scopes=[],
+    )
+    monkeypatch.setattr(
+        authority_module,
+        "compute_compiled_authority",
+        lambda *_args, **_kwargs: forged,
+    )
+    monkeypatch.setattr(
+        authority_module,
+        "validate_execution_bundle_authority",
+        lambda *_args, **_kwargs: None,
+    )
+    # The no-op accepts what the real validator rejects — proving the checks bite.
+    assert authority_module.validate_execution_bundle_authority(forged, *args) is None
+    with pytest.raises(CompileAuthorityError):
+        validate_execution_bundle_authority(forged, *args)
+
+
+# --- Progressive disclosure holds across input scales (B6) ------------------
+
+
+def _relevant_conventions(count: int) -> list[ConventionSpec]:
+    return [
+        ConventionSpec(
+            subject=f"toolkit-resolver-src-{index:04d}",
+            pattern="pytest toolkit resolver",
+            source_ref=f"docs/toolkit-{index}.md",
+            evidence="toolkit resolver conventions in src/",
+            confidence=0.9,
+            provenance=Provenance(
+                kind=ProvenanceKind.OBSERVED,
+                source_ref=f"docs/toolkit-{index}.md",
+            ),
+        )
+        for index in range(count)
+    ]
+
+
+@pytest.mark.parametrize("scale", [5, 60, 500, 2000])
+def test_render_size_is_flat_across_input_scales(scale: int):
+    """Rendered size must not grow with the amount of available project material."""
+    manifest = _sample_manifest()
+    work_item = _sample_work_item()
+    _, lock = resolve_toolkit(manifest)
+
+    result = compile_work_item(
+        work_item,
+        manifest,
+        lock,
+        "builder",
+        f"RUN-SCALE-{scale}",
+        conventions=_relevant_conventions(scale),
+    )
+    rendered = render_execution_bundle_markdown(result.bundle)
+
+    assert len(result.bundle.selected_conventions) == 5
+    assert len(rendered.encode("utf-8")) <= _RENDER_BYTE_CEILING
+
+
+def test_render_size_does_not_grow_between_smallest_and_largest_scale():
+    manifest = _sample_manifest()
+    work_item = _sample_work_item()
+    _, lock = resolve_toolkit(manifest)
+
+    sizes = []
+    for scale in (5, 2000):
+        result = compile_work_item(
+            work_item,
+            manifest,
+            lock,
+            "builder",
+            f"RUN-FLAT-{scale}",
+            conventions=_relevant_conventions(scale),
+        )
+        sizes.append(len(render_execution_bundle_markdown(result.bundle).encode("utf-8")))
+
+    # 400x more candidate material may only shift the projection by identifier
+    # width (docs/toolkit-4.md vs docs/toolkit-1999.md), never by content volume.
+    # A linear projection would be roughly 400x larger, so the bound is decisive.
+    assert sizes[1] - sizes[0] <= 64
+    assert sizes[1] < sizes[0] * 2
+
+
+def _irrelevant_conventions(count: int) -> list[ConventionSpec]:
+    return [
+        ConventionSpec(
+            subject=f"unrelated-topic-{index:04d}",
+            pattern="zzz qqq",
+            source_ref=f"other/{index}.md",
+            evidence="nothing to do with this work",
+            confidence=0.5,
+            provenance=Provenance(
+                kind=ProvenanceKind.OBSERVED,
+                source_ref=f"other/{index}.md",
+            ),
+        )
+        for index in range(count)
+    ]
+
+
+def _bundle_bytes(conventions: list[ConventionSpec], run_id: str) -> int:
+    manifest = _sample_manifest()
+    work_item = _sample_work_item()
+    _, lock = resolve_toolkit(manifest)
+    result = compile_work_item(
+        work_item, manifest, lock, "builder", run_id, conventions=conventions
+    )
+    return len(dump_json(result.bundle))
+
+
+def test_bundle_size_does_not_grow_with_irrelevant_project_material():
+    """The canonical bundle — not only the render — must stay bounded."""
+    small = _bundle_bytes(_irrelevant_conventions(0), "RUN-IRR-0")
+    large = _bundle_bytes(_irrelevant_conventions(1000), "RUN-IRR-1000")
+    # Itemizing 1000 unrelated conventions would push this past 300KB.
+    assert large < small * 2
+    assert large < 32_000
+
+
+def test_bundle_size_does_not_grow_with_relevant_candidate_volume():
+    """Near-misses are itemized; the long tail is counted, never enumerated."""
+    small = _bundle_bytes(_relevant_conventions(5), "RUN-REL-5")
+    large = _bundle_bytes(_relevant_conventions(2000), "RUN-REL-2000")
+    assert large < small * 2
+    assert large < 32_000
+
+
+def test_bundle_provenance_accounts_for_every_candidate():
+    """Bounded provenance must still answer 'what happened to the rest?'."""
+    manifest = _sample_manifest()
+    work_item = _sample_work_item()
+    _, lock = resolve_toolkit(manifest)
+    conventions = _relevant_conventions(2000) + _irrelevant_conventions(300)
+
+    result = compile_work_item(
+        work_item, manifest, lock, "builder", "RUN-ACCOUNT", conventions=conventions
+    )
+    summaries = [
+        record
+        for record in result.bundle.provenance
+        if record.component_kind == "convention-not-selected"
+    ]
+    assert len(summaries) == 1
+    fact = summaries[0].project_fact or ""
+    # 2000 scored, 5 selected + 10 near-misses itemized -> 1985 unlisted; 300 unscored.
+    assert "unlisted_scored=1985" in fact
+    assert "unscored=300" in fact
+
+
+def test_bundle_provenance_bound_mutation_killed(monkeypatch: pytest.MonkeyPatch):
+    """Removing the itemization bound must break the size guarantee."""
+    from agent_foundry.compile import context as context_module
+
+    monkeypatch.setattr(context_module, "_MAX_REJECTED_PROVENANCE_ITEMS", 100_000)
+    small = _bundle_bytes(_relevant_conventions(5), "RUN-MUT-5")
+    large = _bundle_bytes(_relevant_conventions(2000), "RUN-MUT-2000")
+    assert large > small * 2
+
+
+def test_write_scope_sweep_never_escapes_under_independent_oracle():
+    """Cross-check the intersection against posixpath, not against itself."""
+    import itertools
+    import posixpath
+
+    role_candidates = ["src", "src/af", "docs", ".", "/", "", "src/", "./src", "src/../..", "/etc"]
+    work_candidates = [
+        "src", "src/af", "src/af/compile", "src/afx", "docs", "../etc", "src/../../etc",
+        "./src/af", "src/./af", "", "/", "infra/terraform", "src/../secrets", "/etc/passwd",
+    ]
+
+    def resolves_under(child: str, parent: str) -> bool:
+        resolved_child = posixpath.normpath(child)
+        resolved_parent = posixpath.normpath(parent)
+        if resolved_child.startswith("/") or resolved_parent.startswith("/"):
+            return False
+        if resolved_child.startswith("..") or resolved_parent.startswith(".."):
+            return False
+        return resolved_child == resolved_parent or resolved_child.startswith(
+            f"{resolved_parent}/"
+        )
+
+    role_sets = [[item] for item in role_candidates] + [
+        list(pair) for pair in itertools.combinations(role_candidates, 2)
+    ]
+    work_sets = [[item] for item in work_candidates] + [
+        list(pair) for pair in itertools.combinations(work_candidates, 2)
+    ]
+
+    escapes: list[tuple[list[str], list[str], str]] = []
+    combinations = 0
+    for role_scopes, work_scopes in itertools.product(role_sets, work_sets):
+        combinations += 1
+        for compiled in _intersect_write_scopes(role_scopes, work_scopes):
+            under_role = any(resolves_under(compiled, item) for item in role_scopes)
+            under_work = any(resolves_under(compiled, item) for item in work_scopes)
+            if not (under_role and under_work):
+                escapes.append((role_scopes, work_scopes, compiled))
+
+    assert combinations == 5775
+    assert escapes == []
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["convention_subject", "convention_source_ref", "observation_subject"],
+)
+def test_secret_in_any_field_that_reaches_the_bundle_is_refused(field: str):
+    """Every free-form field that survives into the bundle must hit the guard."""
+    manifest = _sample_manifest()
+    work_item = _sample_work_item()
+    _, lock = resolve_toolkit(manifest)
+
+    conventions: list[ConventionSpec] = []
+    observations: list[ProjectObservation] = []
+    if field == "convention_subject":
+        subject = f"toolkit resolver src {_AWS_SECRET_SAMPLE}"
+        source_ref = "docs/c.md"
+    else:
+        subject = "toolkit resolver src"
+        source_ref = f"docs/{_AWS_SECRET_SAMPLE}/c.md"
+
+    if field.startswith("convention"):
+        conventions = [
+            ConventionSpec(
+                subject=subject,
+                pattern="pytest toolkit resolver",
+                source_ref=source_ref,
+                evidence="toolkit resolver conventions in src/",
+                confidence=0.9,
+                provenance=Provenance(
+                    kind=ProvenanceKind.OBSERVED, source_ref="docs/c.md"
+                ),
+            )
+        ]
+    else:
+        observations = [
+            ProjectObservation(
+                subject=f"toolkit resolver src {_AWS_SECRET_SAMPLE}",
+                content="toolkit resolver observations in src/",
+                provenance=Provenance(
+                    kind=ProvenanceKind.OBSERVED, source_ref="docs/o.md"
+                ),
+            )
+        ]
+
+    result = compile_work_item(
+        work_item,
+        manifest,
+        lock,
+        "builder",
+        "RUN-SECRET-FIELD",
+        conventions=conventions,
+        observations=observations,
+    )
+    with pytest.raises(EmbeddedSecretError):
+        render_execution_bundle_markdown(result.bundle)
+    with pytest.raises(EmbeddedSecretError):
+        dump_json(result.bundle)
+    with pytest.raises(EmbeddedSecretError):
+        dump_yaml(result.bundle)
+
+
+def test_bounded_provenance_summary_still_reaches_the_secret_guard():
+    """Summarizing rejected candidates must not smuggle material past the guard."""
+    manifest = _sample_manifest()
+    work_item = _sample_work_item()
+    _, lock = resolve_toolkit(manifest)
+
+    conventions = _irrelevant_conventions(3) + [
+        ConventionSpec(
+            subject=f"zzz unrelated {_AWS_SECRET_SAMPLE}",
+            pattern="qqq",
+            source_ref="other/x.md",
+            evidence="unrelated",
+            confidence=0.5,
+            provenance=Provenance(kind=ProvenanceKind.OBSERVED, source_ref="other/x.md"),
+        )
+    ]
+    result = compile_work_item(
+        work_item, manifest, lock, "builder", "RUN-SUMMARY-SECRET", conventions=conventions
+    )
+    # The secret-bearing subject lands only in the bounded summary record, which is
+    # still part of the bundle and therefore still scanned.
+    with pytest.raises(EmbeddedSecretError):
+        dump_json(result.bundle)
+    with pytest.raises(EmbeddedSecretError):
+        render_execution_bundle_markdown(result.bundle)

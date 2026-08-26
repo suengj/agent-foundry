@@ -11,6 +11,9 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 - Work Item compiler (`agent_foundry.compile`) producing minimum Task Toolkit, role-specific `ExecutionBundle`, and provenance-bearing selections with authority intersection.
 - Concise Markdown renderer (`agent_foundry.render`) projecting agent-facing contracts from `ExecutionBundle` only.
 - `agent-foundry compile` CLI subcommand with `--render` for Markdown projection.
+- Compiled write scope is a true path intersection of Work Item scope and Role Contract scope: `.`, `./`, redundant separators, and `..` traversal are resolved before comparison, and any bound that resolves to the repository root, an absolute path, or above the root grants nothing.
+- `validate_execution_bundle_authority` performs structural checks that do not call the compiler, so a forged or over-broad bundle is still rejected when compilation itself is wrong.
+- `ExecutionBundle` provenance is bounded: every selected component and the highest-scoring near-misses are itemized, and the remaining candidates are accounted for by count rather than enumerated, so bundle size no longer grows with project material.
 
 - Capability registry and deterministic two-stage toolkit resolver (`agent_foundry.toolkit`) with explainable include/exclude decisions.
 - `agent-foundry resolve-toolkit` and `agent-foundry integration-check` CLI subcommands.
