@@ -105,6 +105,46 @@ class ValidationReport(FoundryModel):
         return [finding for finding in self.findings if finding.outcome not in ACCEPTING_OUTCOMES]
 
 
+class ValidatorNotRun(FoundryModel):
+    """A validator that applies to a slice but had no input to run against.
+
+    This exists so "could not check" is a recorded state rather than an absence.
+    Without it, a caller holding four passing reports cannot tell whether the other
+    ten validators passed, were exempt, or were never invoked — and a partial set read
+    as a verdict is the failure mode this type is shaped to prevent.
+    """
+
+    validator_id: str
+    reason: str
+
+
+class SliceValidation(FoundryModel):
+    """Every validator applicable to one compiled slice: what ran, and what did not."""
+
+    subject_id: str
+    reports: list[ValidationReport] = Field(default_factory=list)
+    not_run: list[ValidatorNotRun] = Field(default_factory=list)
+
+    def accepted(self) -> bool:
+        """True only when every applicable validator ran and every one accepted.
+
+        An un-run validator makes this False. That is deliberate and it is the whole
+        point of the type: a verdict over a subset of the checks is not a verdict over
+        the slice, however many of that subset passed.
+        """
+        if self.not_run:
+            return False
+        return bool(self.reports) and all(report.accepted() for report in self.reports)
+
+    def rejecting(self) -> list[ValidationFinding]:
+        return [finding for report in self.reports for finding in report.rejecting()]
+
+    def ran(self) -> list[str]:
+        return sorted(
+            {finding.validator_id for report in self.reports for finding in report.findings}
+        )
+
+
 class TrackerProjection(FoundryModel):
     """Read-only projection of tracker-held work state.
 

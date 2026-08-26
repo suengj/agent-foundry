@@ -5,9 +5,11 @@ work_class: CAPABILITY
 objective: Deliver versioned provider-neutral data contracts
 current_facts:
   - Package bootstrap exists with six passing tests
+# Scope bounds compiled write authority, so it names repository paths rather than
+# prose: a work item scoped to "models package" can be granted no write at all.
 scope:
-  - models package
-  - contract tests
+  - src/agent_foundry/models/
+  - tests/
 out_of_scope:
   - CLI changes
   - registry content

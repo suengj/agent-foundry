@@ -1,0 +1,131 @@
+changes:
+- action: KEEP
+  authority_requirement: none
+  evidence:
+    evidence_refs:
+    - .foundry/project.yaml
+    provenance:
+      confidence: null
+      kind: declared
+      source_ref: .foundry/project.yaml
+    summary: Retain authoritative owner-declared project characteristics
+    verbatim: null
+  priority: 1
+  rationale: Existing declaration is authoritative and compatible
+  status: auto-applicable
+  target: foundry-project-declaration
+- action: KEEP
+  authority_requirement: none
+  evidence:
+    evidence_refs:
+    - pyproject.toml
+    provenance:
+      confidence: null
+      kind: observed
+      source_ref: pyproject.toml
+    summary: Retain existing package and build metadata surfaces
+    verbatim: null
+  priority: 2
+  rationale: null
+  status: auto-applicable
+  target: package-metadata
+- action: HARDEN
+  authority_requirement: bounded-policy
+  evidence:
+    evidence_refs:
+    - Makefile
+    provenance:
+      confidence: null
+      kind: observed
+      source_ref: Makefile
+    summary: Strengthen deterministic checks using existing test entrypoints
+    verbatim: null
+  priority: 3
+  rationale: Tightening controls does not expand authority, but editing the test harness
+    writes repository files and needs bounded write policy
+  status: proposed
+  target: test-harness
+- action: WRAP
+  authority_requirement: explicit-authority
+  evidence:
+    evidence_refs:
+    - env.example
+    provenance:
+      confidence: null
+      kind: observed
+      source_ref: env.example
+    summary: Retain existing integration and credential surfaces behind a declared
+      Foundry integration adapter
+    verbatim: null
+  priority: 4
+  rationale: No IntegrationSpec declares how agents reach these surfaces, so credential
+    coordinates and required health are unstated; wrapping changes the access path,
+    not the surface
+  status: proposed
+  target: integration-surfaces
+- action: KEEP
+  authority_requirement: none
+  evidence:
+    evidence_refs:
+    - Dockerfile
+    provenance:
+      confidence: null
+      kind: observed
+      source_ref: Dockerfile
+    summary: Retain existing runtime and deployment surfaces
+    verbatim: null
+  priority: 4
+  rationale: null
+  status: auto-applicable
+  target: runtime-deploy
+- action: CONSOLIDATE
+  authority_requirement: explicit-authority
+  evidence:
+    evidence_refs:
+    - AGENTS.md
+    - CLAUDE.md
+    provenance:
+      confidence: 1.0
+      kind: observed
+      source_ref: AGENTS.md
+    summary: Multiple instruction surfaces mention overlapping subjects without reconciliation
+    verbatim: null
+  priority: 5
+  rationale: Consolidate deliberately; observed mentions are not normative
+  status: proposed
+  target: agent-instruction-surfaces
+- action: CONSOLIDATE
+  authority_requirement: explicit-authority
+  evidence:
+    evidence_refs: []
+    provenance:
+      confidence: 0.5
+      kind: inferred
+      source_ref: AGENTS.md
+    summary: Multiple agent instruction surfaces reference test-runner and have not
+      been reconciled
+    verbatim: null
+  priority: 6
+  rationale: Adjudicate unreconciled mentions with owner authority; do not auto-prescribe
+  status: proposed
+  target: instruction-surface-mentions
+- action: DEFER
+  authority_requirement: explicit-authority
+  evidence:
+    evidence_refs:
+    - .github/workflows/ci.yml
+    - Makefile
+    provenance:
+      confidence: 0.6
+      kind: inferred
+      source_ref: Makefile
+    summary: Defer autonomy increase to bounded-external-write until explicit owner
+      approval
+    verbatim: null
+  priority: 8
+  rationale: Inference must not silently expand autonomy scope
+  status: proposed
+  target: execution.autonomy
+intake_mode: brownfield
+project_name: orders-service
+schema_version: '0.1'

@@ -7,6 +7,7 @@ from collections import defaultdict
 from agent_foundry.models.base import WorkDecompositionError
 from agent_foundry.models.common import (
     DependencyRelation,
+    EvidenceClass,
     ExternalEffectClass,
     Reversibility,
 )
@@ -231,12 +232,20 @@ def _gap_to_unit(gap: AdoptionGap, outcome_id: str) -> CapabilityUnit:
         consequence_class=gap.consequence_class,
         rollback_boundary_id=boundary,
         write_scope_id=f"scope-{gap.id}",
-        scope=[gap.target],
+        scope=list(gap.scope) or [gap.target],
         acceptance_criteria=[
             f"{gap.action.value} applied to {gap.target}",
             "regression evidence passes",
         ],
-        required_evidence=["implementation diff", "validation output"],
+        # Typed classes, not prose. `required_evidence` is consumed by
+        # `verify.validators.validate_required_evidence`, whose vocabulary is
+        # `EvidenceClass`; an unrecognised requirement resolves to MISSING rather
+        # than passing unexamined, so "implementation diff" made every adoption item
+        # permanently unsatisfiable.
+        required_evidence=[
+            EvidenceClass.REPOSITORY_REVISION.value,
+            EvidenceClass.DETERMINISTIC_TEST.value,
+        ],
         stop_conditions=stop_conditions,
         escalation_conditions=escalation_conditions,
         current_facts=[gap.rationale],

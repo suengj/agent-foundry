@@ -187,6 +187,32 @@ def _foundry_retention_changes(intake: ProjectIntake) -> list[AdoptionChangeItem
             )
         return changes
 
+    # Nothing declares this project's characteristics, so every manifest field a
+    # toolkit decision reads is unknown and the resolved toolkit is empty. The
+    # retrofit plan has to say that out loud: without it the planner reports a clean
+    # adoption while the pipeline behind it can select nothing at all. This is keyed
+    # on the *declaration*, not on `.foundry/` being empty — a project carrying
+    # adoption notes and no `project.yaml` needs the proposal exactly as much as one
+    # carrying no `.foundry/` at all.
+    changes.append(
+        _change(
+            target="foundry-project-declaration",
+            action=AdoptionAction.MIGRATE,
+            summary=(
+                "Declare project characteristics in .foundry/project.yaml; "
+                "undeclared characteristics resolve to an empty toolkit"
+            ),
+            kind=ProvenanceKind.INFERRED,
+            authority_requirement=AuthorityRequirement.BOUNDED_POLICY,
+            status=AdoptionChangeStatus.PROPOSED,
+            rationale=(
+                "Toolkit, role and authority selection read declared project "
+                "characteristics; inference may not supply them"
+            ),
+            priority=1,
+        )
+    )
+
     artifact_observations = [
         observation
         for observation in intake.observations
@@ -261,6 +287,37 @@ def _brownfield_retrofit_changes(intake: ProjectIntake) -> list[AdoptionChangeIt
                     "harness writes repository files and needs bounded write policy"
                 ),
                 priority=3,
+            )
+        )
+
+    # WRAP, per docs/foundry/02 §7: "existing tool/runtime retained behind a Foundry
+    # adapter". A credential or integration surface the repository already carries is
+    # exactly that — the tool stays, and what changes is that agent access reaches it
+    # through a declared `IntegrationSpec` whose credential positions are `SecretRef`
+    # coordinates, instead of through whatever the surface exposes directly. The
+    # surface itself is not consolidated, hardened, or moved, which is what
+    # distinguishes this from its sibling actions.
+    if "integration-config" in subjects and "foundry-integration" not in subjects:
+        refs = _observation_refs(intake, "integration-config")
+        changes.append(
+            _change(
+                target="integration-surfaces",
+                action=AdoptionAction.WRAP,
+                summary=(
+                    "Retain existing integration and credential surfaces behind a "
+                    "declared Foundry integration adapter"
+                ),
+                kind=ProvenanceKind.OBSERVED,
+                authority_requirement=AuthorityRequirement.EXPLICIT_AUTHORITY,
+                status=AdoptionChangeStatus.PROPOSED,
+                source_ref=_primary_ref(refs),
+                evidence_refs=refs,
+                rationale=(
+                    "No IntegrationSpec declares how agents reach these surfaces, so "
+                    "credential coordinates and required health are unstated; wrapping "
+                    "changes the access path, not the surface"
+                ),
+                priority=4,
             )
         )
 
@@ -374,6 +431,7 @@ def _authority_proposal_changes(
             kind=ProvenanceKind.INFERRED,
             authority_requirement=AuthorityRequirement.EXPLICIT_AUTHORITY,
             status=AdoptionChangeStatus.PROPOSED,
+            source_ref=_primary_ref([*test_refs, *ci_refs]),
             evidence_refs=[*test_refs, *ci_refs],
             confidence=0.6,
             rationale="Inference must not silently expand autonomy scope",

@@ -9,6 +9,7 @@ from agent_foundry.models.project import ProjectIntake, TraversalLimits, Travers
 from agent_foundry.inspect.classification import propose_classification_findings
 from agent_foundry.inspect.collectors import (
     collect_agent_rule_observations,
+    collect_nested_project_observations,
     collect_config_schema_observations,
     collect_foundry_observations,
     collect_integration_observations,
@@ -27,7 +28,9 @@ from agent_foundry.inspect.traversal import (
     DEFAULT_MAX_ENTRIES,
     DEFAULT_MAX_FILE_BYTES,
     SKIP_DIR_NAMES,
+    entries_outside,
     git_head_revision,
+    nested_project_roots,
     walk_repository,
 )
 
@@ -47,31 +50,40 @@ def inspect_project(
     traversal = walk_repository(root, max_depth=max_depth, max_entries=max_entries)
     revision = git_head_revision(root)
 
+    # One target, one project. A directory below the root carrying its own project
+    # manifest belongs to somebody else, and every collector below reads `owned`
+    # rather than the full walk so that its files are not attributed here. The
+    # boundaries themselves are recorded, so the exclusion is a stated fact rather
+    # than an absence.
+    boundaries = nested_project_roots(root, traversal.entries)
+    owned = entries_outside(traversal.entries, boundaries)
+
     observations: list = []
-    observations.extend(collect_structure_observations(root, traversal.entries))
+    observations.extend(collect_structure_observations(root, owned))
     observations.extend(collect_revision_observation(root, revision))
-    observations.extend(collect_metadata_observations(root, traversal.entries))
-    observations.extend(collect_agent_rule_observations(root, traversal.entries))
+    observations.extend(collect_nested_project_observations(boundaries))
+    observations.extend(collect_metadata_observations(root, owned))
+    observations.extend(collect_agent_rule_observations(root, owned))
     observations.extend(
         collect_test_lint_ci_observations(
             root,
-            traversal.entries,
+            owned,
             max_file_bytes=max_file_bytes,
         )
     )
-    observations.extend(collect_config_schema_observations(root, traversal.entries))
-    observations.extend(collect_runtime_deploy_observations(root, traversal.entries))
-    observations.extend(collect_integration_observations(root, traversal.entries))
+    observations.extend(collect_config_schema_observations(root, owned))
+    observations.extend(collect_runtime_deploy_observations(root, owned))
+    observations.extend(collect_integration_observations(root, owned))
     observations.extend(
         collect_foundry_observations(
             root,
-            traversal.entries,
+            owned,
             max_file_bytes=max_file_bytes,
         )
     )
     observations.extend(
         collect_unread_file_observations(
-            traversal.entries,
+            owned,
             max_file_bytes=max_file_bytes,
         )
     )
@@ -81,13 +93,13 @@ def inspect_project(
 
     classification_findings = propose_classification_findings(
         root,
-        traversal.entries,
+        owned,
         observations,
         max_file_bytes=max_file_bytes,
     )
     conventions = discover_conventions(
         root,
-        traversal.entries,
+        owned,
         observations,
         max_file_bytes=max_file_bytes,
     )

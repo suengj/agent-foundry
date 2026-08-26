@@ -7,6 +7,7 @@ from agent_foundry.models.common import (
     AssuranceMode,
     AuthorityRequirement,
     ConsequenceClass,
+    EvidenceClass,
     ExternalEffectClass,
     PrimaryArtifactState,
     PrimaryWorkMode,
@@ -134,6 +135,7 @@ def _skill(
     external_write: bool = False,
     inputs: list[str] = [],
     outputs: list[str] = [],
+    produces_evidence: list[EvidenceClass] = [],
 ) -> SkillSpec:
     return SkillSpec(
         schema_version=FOUNDRY_SCHEMA_VERSION,
@@ -147,6 +149,7 @@ def _skill(
         permissions=SkillPermissions(external_write=external_write),
         inputs=inputs,
         outputs=outputs,
+        produces_evidence=list(produces_evidence),
     )
 
 
@@ -245,10 +248,17 @@ def build_default_registry() -> CapabilityRegistry:
         _role("manager", "Coordinate work and authority boundaries"),
         _role("explorer", "Read-only discovery", allowed_capabilities=["repository.read", "inspection.read"]),
         _role(
+            # No `write_scope` here, deliberately. It used to be `["src/", "tests/"]`,
+            # which is a project-shape assumption living in core: compiled write
+            # authority is the intersection of the declared bounds with the Work Item
+            # scope, so every project whose changes land elsewhere — an instruction
+            # surface, a build file, a CI config — intersected to nothing and compiled
+            # to a bundle authorizing no change it could make. The bound now comes from
+            # the project's own `authority.write_scope` declaration, and a role in a
+            # project-supplied registry may narrow it further.
             "builder",
             "Primary implementation role",
             allowed_capabilities=["repository.read", "repository.write"],
-            write_scope=["src/", "tests/"],
         ),
         _role("validator", "Run deterministic validation", allowed_capabilities=["validation.test"]),
         _role("reviewer", "Independent review role", allowed_capabilities=["validation.review"]),
@@ -275,6 +285,10 @@ def build_default_registry() -> CapabilityRegistry:
             roles=SkillRoleConstraint(allowed=["explorer", "manager"]),
             inputs=["repository-root"],
             outputs=["inspection-evidence"],
+            # Inspection evidence describes a repository; it closes no evidence class a
+            # Work Item can require. This skill is selected as a read baseline or by a
+            # workflow, never because an item asked for what it produces.
+            produces_evidence=[],
         ),
         _skill(
             "bounded-change",
@@ -284,7 +298,14 @@ def build_default_registry() -> CapabilityRegistry:
             triggers=SkillTriggers(
                 artifact_types=["source-code"],
                 work_modes=[PrimaryWorkMode.BUILD, PrimaryWorkMode.OPERATE],
+                # ADOPTION is here because adoption is repository-writing work: the
+                # planner marks its own HARDEN/CONSOLIDATE/MIGRATE changes
+                # `bounded-policy` precisely because applying them edits files. Without
+                # it, the only work class the adoption planner emits was the one class
+                # no write-bearing skill would accept, so a retrofit plan compiled to a
+                # read-only bundle that could not carry it out.
                 work_classes=[
+                    WorkClass.ADOPTION,
                     WorkClass.CAPABILITY,
                     WorkClass.BASELINE,
                     WorkClass.INCIDENT,
@@ -295,6 +316,7 @@ def build_default_registry() -> CapabilityRegistry:
             external_write=True,
             inputs=["changed-scope"],
             outputs=["implementation-diff"],
+            produces_evidence=[EvidenceClass.REPOSITORY_REVISION],
         ),
         _skill(
             "deterministic-test",
@@ -304,7 +326,11 @@ def build_default_registry() -> CapabilityRegistry:
             triggers=SkillTriggers(
                 artifact_types=["source-code"],
                 work_modes=[PrimaryWorkMode.BUILD, PrimaryWorkMode.OPERATE],
+                # Adoption units carry "regression evidence passes" as an acceptance
+                # criterion, so the class that has to produce that evidence must be
+                # able to select the skill that produces it.
                 work_classes=[
+                    WorkClass.ADOPTION,
                     WorkClass.CAPABILITY,
                     WorkClass.BASELINE,
                     WorkClass.INCIDENT,
@@ -314,6 +340,7 @@ def build_default_registry() -> CapabilityRegistry:
             roles=SkillRoleConstraint(allowed=["builder", "validator"]),
             inputs=["changed-scope"],
             outputs=["test-evidence"],
+            produces_evidence=[EvidenceClass.DETERMINISTIC_TEST],
         ),
         _skill(
             "independent-review",
@@ -321,7 +348,10 @@ def build_default_registry() -> CapabilityRegistry:
             provides=["validation.review"],
             required_capabilities=["validation.review"],
             triggers=SkillTriggers(
+                # An adoption change the planner marks `explicit-authority` is exactly
+                # the kind an independent-review assurance requirement is for.
                 work_classes=[
+                    WorkClass.ADOPTION,
                     WorkClass.CAPABILITY,
                     WorkClass.RESIDUAL_HARDENING,
                     WorkClass.CONTRACT_AMENDMENT,
@@ -330,6 +360,7 @@ def build_default_registry() -> CapabilityRegistry:
             roles=SkillRoleConstraint(allowed=["reviewer"]),
             inputs=["implementation-diff", "test-evidence"],
             outputs=["review-decision"],
+            produces_evidence=[EvidenceClass.INDEPENDENT_REVIEW],
         ),
     ]
 

@@ -99,6 +99,11 @@ def _sample_manifest(**overrides: object) -> ProjectManifest:
         },
         "assurance": {"required": ["deterministic-tests"]},
         "access": {"sensitivity": "internal"},
+        # Compiled write authority is the intersection of this declared envelope with
+        # the Work Item scope, so a test that scopes work elsewhere must widen this
+        # deliberately. `forbidden-area` is never in it: it is what the envelope tests
+        # use to stand outside the bound.
+        "authority": {"write_scope": ["src/", "tests/"]},
     }
     base.update(overrides)
     return ProjectManifest.model_validate(base)
@@ -123,6 +128,18 @@ def _sample_work_item(**overrides: object) -> WorkItemContract:
     }
     base.update(overrides)
     return WorkItemContract.model_validate(base)
+
+
+def _manifest_permitting(*paths: str) -> ProjectManifest:
+    """A sample manifest whose declared write envelope covers *paths*.
+
+    Compilation refuses a repository-write Work Item whose scope falls outside every
+    declared bound, so a test that scopes work to an unusual path has to say the
+    project permits writing there. Widening the shared default instead would make the
+    rendered forbidden-scope list — and therefore the rendered contract size — a
+    property of this file's other tests.
+    """
+    return _sample_manifest(authority={"write_scope": ["src/", "tests/", *paths]})
 
 
 def _compile_sample(**manifest_overrides: object) -> tuple[bytes, bytes]:
@@ -257,6 +274,12 @@ def test_read_only_work_item_compiles_on_repository_write_project():
 
 
 def test_read_only_work_item_compiles_on_publication_project():
+    """A read-only item stays read-only however much authority the project has.
+
+    The role is `explorer`: a discovery item selects no skill that a reviewer may
+    exercise, so the reviewer is not staffed for it. That the project pins a reviewer
+    for other work does not make one available here -- see the sibling test below.
+    """
     manifest = _sample_manifest(
         impact={
             "external_effect": "publication",
@@ -266,9 +289,34 @@ def test_read_only_work_item_compiles_on_publication_project():
     )
     work_item = _read_only_discovery_work_item()
     _, lock = resolve_toolkit(manifest)
-    result = compile_work_item(work_item, manifest, lock, "reviewer", "RUN-RO-PUB")
+    result = compile_work_item(work_item, manifest, lock, "explorer", "RUN-RO-PUB")
     assert result.bundle.authority.external_effect == ExternalEffectClass.READ_ONLY
     assert "builder" not in result.task_toolkit.role_ids
+
+
+def test_project_pinned_role_is_not_available_to_an_unrelated_work_item():
+    """A role in the Project Toolkit is not thereby staffed on every Work Item.
+
+    A discovery item triggers no skill the reviewer is allowed to exercise, and the
+    workflow that would require a reviewer needs skills this work class cannot carry.
+    Compiling for the reviewer anyway must fail rather than hand back a bundle naming
+    a role the task toolkit never resolved.
+    """
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "publication",
+            "reversibility": "versioned",
+            "consequence": "high",
+        }
+    )
+    _, lock = resolve_toolkit(manifest)
+    assert "reviewer" in lock.role_ids
+
+    with pytest.raises(CompileError) as excinfo:
+        compile_work_item(
+            _read_only_discovery_work_item(), manifest, lock, "reviewer", "RUN-RO-PUB-REVIEW"
+        )
+    assert "reviewer" in str(excinfo.value)
 
 
 def test_repository_write_work_item_compiles_as_control():
@@ -516,7 +564,7 @@ def test_validate_execution_bundle_authority_rejects_forged_write_scope(
     monkeypatch: pytest.MonkeyPatch,
 ):
     work_item = _sample_work_item(scope=["docs/", "infra/terraform"])
-    manifest = _sample_manifest()
+    manifest = _manifest_permitting("docs/", "infra/")
     _, lock = resolve_toolkit(manifest)
     result = compile_work_item(work_item, manifest, lock, "builder", "RUN-FORGE")
     assert result.bundle.authority is not None
@@ -582,6 +630,7 @@ def test_read_only_explorer_markdown_advertises_no_write_scope():
 def test_convention_provenance_reports_fields_that_drove_selection():
     manifest = _sample_manifest()
     work_item = _sample_work_item(scope=["alpha-topic"])
+    manifest = _manifest_permitting("alpha-topic")
     _, lock = resolve_toolkit(manifest)
     convention = ConventionSpec(
         subject="zzz-unrelated-alpha",
@@ -1125,7 +1174,7 @@ def test_scope_containment_rejects_traversal_outside_bound():
 def _forge_bundle_authority(**update: object):
     """Compile a real bundle, then hand back a forged authority plus validator args."""
     work_item = _sample_work_item(scope=["docs/", "infra/terraform"])
-    manifest = _sample_manifest()
+    manifest = _manifest_permitting("docs/", "infra/")
     _, lock = resolve_toolkit(manifest)
     result = compile_work_item(work_item, manifest, lock, "builder", "RUN-FORGE-IND")
     assert result.bundle.authority is not None
@@ -1496,32 +1545,72 @@ def test_platform_absolute_scopes_grant_nothing(scope: str):
     assert _intersect_write_scopes(["src"], [scope]) == []
 
 
-def test_validator_rejects_write_scope_when_role_grants_none(
+def test_validator_rejects_write_scope_outside_the_declared_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """An empty role write scope authorizes nothing — not 'skip the check'."""
-    work_item = _sample_work_item(scope=["src"])
+    """A grant must lie inside every declared bound, not merely inside the Work Item."""
+    work_item = _sample_work_item(scope=["src", "forbidden-area"])
     manifest = _sample_manifest()
     _, lock = resolve_toolkit(manifest)
-    result = compile_work_item(work_item, manifest, lock, "builder", "RUN-EMPTY-ROLE")
+    result = compile_work_item(work_item, manifest, lock, "builder", "RUN-OUTSIDE-ENVELOPE")
     reg = default_registry()
-    role = next(item for item in reg.roles if item.id == "builder").model_copy(
-        update={"write_scope": []}
-    )
+    role = next(item for item in reg.roles if item.id == "builder")
     profiles = build_default_registry_permission_profiles()
     task_profile = next(
         profile for profile in profiles if profile.id == lock.permission_profile_ids[0]
     )
     assert result.bundle.authority is not None
+    # Inside the Work Item scope, outside the declared envelope.
+    assert "forbidden-area" not in manifest.authority.write_scope
+    assert result.bundle.write_scope == ["src"]
     forged = result.bundle.authority.model_copy(
-        update={"write_scope": ["src"], "forbidden_scopes": []}
+        update={"write_scope": ["forbidden-area"], "forbidden_scopes": []}
     )
 
     monkeypatch.setattr(
         "agent_foundry.compile.authority.compute_compiled_authority",
         lambda *_args, **_kwargs: forged,
     )
-    with pytest.raises(CompileAuthorityError, match="not contained in role write_scope"):
+    with pytest.raises(CompileAuthorityError, match="not contained in declared"):
+        validate_execution_bundle_authority(
+            forged, work_item, manifest, result.task_toolkit, role, task_profile, reg
+        )
+
+
+def test_validator_rejects_a_write_grant_when_nothing_declares_a_bound(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """No declared envelope and no role scope authorizes nothing — not 'skip the check'."""
+    work_item = _sample_work_item(scope=["src"])
+    undeclared = _sample_manifest(authority={"write_scope": []})
+    _, lock = resolve_toolkit(undeclared)
+
+    # Compilation refuses outright: repository-write with nothing it may write is a
+    # contract that authorizes no change it could make.
+    with pytest.raises(CompileError, match="no write path"):
+        compile_work_item(work_item, undeclared, lock, "builder", "RUN-NO-BOUND")
+
+    # The independent validator must reject the same thing when a forged bundle
+    # reaches it anyway, so build one through a manifest that does declare a bound and
+    # then check it against the manifest that does not.
+    declared = _sample_manifest()
+    result = compile_work_item(work_item, declared, lock, "builder", "RUN-NO-BOUND")
+    manifest = undeclared
+
+    reg = default_registry()
+    role = next(item for item in reg.roles if item.id == "builder")
+    profiles = build_default_registry_permission_profiles()
+    task_profile = next(
+        profile for profile in profiles if profile.id == lock.permission_profile_ids[0]
+    )
+    forged = result.bundle.authority.model_copy(
+        update={"write_scope": ["src"], "forbidden_scopes": []}
+    )
+    monkeypatch.setattr(
+        "agent_foundry.compile.authority.compute_compiled_authority",
+        lambda *_args, **_kwargs: forged,
+    )
+    with pytest.raises(CompileAuthorityError, match="declares any write bound"):
         validate_execution_bundle_authority(
             forged, work_item, manifest, result.task_toolkit, role, task_profile, reg
         )
@@ -1535,6 +1624,7 @@ def test_rationale_names_the_work_item_field_that_actually_matched():
         objective="implement rareobjectiveonly token",
         title="ordinary title",
     )
+    manifest = _manifest_permitting("unrelated-area")
     _, lock = resolve_toolkit(manifest)
     convention = ConventionSpec(
         subject="rareobjectiveonly convention",
@@ -1566,6 +1656,7 @@ def test_rationale_names_scope_when_scope_is_the_actual_cause():
         objective="do the thing",
         title="ordinary title",
     )
+    manifest = _manifest_permitting("rarescopeonly")
     _, lock = resolve_toolkit(manifest)
     convention = ConventionSpec(
         subject="rarescopeonly convention",

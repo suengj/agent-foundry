@@ -389,6 +389,16 @@ Toolkit Requirements
 
 This becomes the bridge between observed project facts and policy/toolkit resolution.
 
+**Precedence over §4.2.** Read alone, this section suggests that synthesis derives
+profile values from observation. It does not. §4.2's conservative authority rule
+governs: an authority-bearing characteristic reaches the profile only when an
+authority declared it, and inference stays beside the profile as evidence. AF8
+measured what that costs — across 12 repositories the median synthesized manifest
+carried 1 of 14 fields, and 11 of 12 resolved an empty toolkit — and the answer is
+still §4.2, because the alternative is inference silently granting authority. What
+synthesis owes instead is to *say* the characteristics are undeclared and to propose
+declaring them, which is where `MIGRATE foundry-project-declaration` comes from.
+
 ### 4.2 Confidence and provenance
 
 Material classifications should be explainable:
@@ -554,6 +564,10 @@ AF8 End-to-end
 → measure manifest correction, convention quality, toolkit over/under-selection,
   prompt additions, integration failures, evidence completeness
 ```
+
+The end-to-end measurements taken against this checklist, and every gap classified
+against it, are recorded in [`v0.1-readiness-report.md`](v0.1-readiness-report.md).
+Work status for the issues above lives in the tracker, not here.
 
 If active implementation has already frozen an interface, do not inject broad scope mid-issue. Record a bounded follow-up or incorporate only truly foundational omissions before merge.
 

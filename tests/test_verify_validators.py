@@ -12,6 +12,7 @@ from datetime import timedelta
 import pytest
 
 from agent_foundry.models import (
+    ProjectAuthority,
     DependencyRelation,
     DependencySpec,
     EvidenceClass,
@@ -313,8 +314,25 @@ def test_write_scope_containment_accepts_a_compiled_scope():
         artifacts["bundle"].authority,
         work_item=artifacts["work_item"],
         role=artifacts["role"],
+        manifest=artifacts["manifest"],
     )
     assert report.accepted(), _messages(report)
+
+
+def test_write_scope_containment_rejects_a_path_outside_the_manifest_envelope():
+    """The project's declared envelope bounds the grant, not just the role's."""
+    artifacts = compiled()
+    narrowed = artifacts["manifest"].model_copy(
+        update={"authority": ProjectAuthority(write_scope=["docs/"])}
+    )
+    report = validate_write_scope_containment(
+        artifacts["bundle"].authority,
+        work_item=artifacts["work_item"],
+        role=artifacts["role"],
+        manifest=narrowed,
+    )
+    assert not report.accepted()
+    assert "project manifest authority.write_scope" in _messages(report)
 
 
 @pytest.mark.parametrize(
@@ -350,12 +368,36 @@ def test_write_scope_containment_rejects_a_path_both_granted_and_forbidden():
     assert "both granted and forbidden" in _messages(report)
 
 
-def test_write_scope_containment_without_a_role_is_missing_not_pass():
+def test_write_scope_containment_without_any_declared_bound_is_missing_not_pass():
+    """No authority declared which paths may be written, so nothing may be checked.
+
+    A role still bounds the grant when the manifest does not, and the manifest still
+    bounds it when the role does not. What must never pass is a granted path with
+    *neither*: there is nothing to contain it, and an unchecked grant is not a
+    verified one.
+    """
     artifacts = compiled()
+    undeclared = artifacts["manifest"].model_copy(update={"authority": ProjectAuthority()})
     report = validate_write_scope_containment(
-        artifacts["bundle"].authority, work_item=artifacts["work_item"], role=None
+        artifacts["bundle"].authority,
+        work_item=artifacts["work_item"],
+        role=None,
+        manifest=undeclared,
     )
     assert report.outcome() == ValidationOutcome.MISSING
+
+
+def test_write_scope_containment_uses_the_role_bound_when_the_manifest_declares_none():
+    artifacts = compiled()
+    undeclared = artifacts["manifest"].model_copy(update={"authority": ProjectAuthority()})
+    role = artifacts["role"].model_copy(update={"write_scope": ["src/", "tests/"]})
+    report = validate_write_scope_containment(
+        artifacts["bundle"].authority,
+        work_item=artifacts["work_item"],
+        role=role,
+        manifest=undeclared,
+    )
+    assert report.accepted(), _messages(report)
 
 
 # --- role separation ------------------------------------------------------------

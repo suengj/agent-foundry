@@ -911,8 +911,16 @@ def validate_write_scope_containment(
     *,
     work_item: WorkItemContract,
     role: RoleContract | None,
+    manifest: ProjectManifest | None = None,
 ) -> ValidationReport:
-    """Check every granted path resolves, and lies inside both declared bounds.
+    """Check every granted path resolves, and lies inside every declared bound.
+
+    A write bound is *declared*, never assumed. Two authorities can declare one: the
+    project, through `manifest.authority.write_scope`, and the role, when the registry
+    that supplied it narrows things further. A granted path must lie inside the Work
+    Item scope and inside each bound that exists — and if no authority declared any
+    bound at all, a granted path is BLOCKED rather than passed, because silence is not
+    permission.
 
     Path resolution is re-derived in `verify.independent` on top of
     `posixpath.normpath`. Replacing the compiler's normalizer with the identity
@@ -923,13 +931,25 @@ def validate_write_scope_containment(
         validator_id,
         "compiled-authority",
         work_item.id,
-        {"authority": authority, "work_item": work_item, "role": role},
+        {
+            "authority": authority,
+            "work_item": work_item,
+            "role": role,
+            "manifest": manifest,
+        },
     )
     if malformed is not None:
         return malformed
     findings: list[ValidationFinding] = []
 
-    role_scope = list(role.write_scope) if role is not None else []
+    # (source name, declared paths) for every authority that bounded this write.
+    declared_bounds: list[tuple[str, list[str]]] = []
+    if manifest is not None and manifest.authority.write_scope:
+        declared_bounds.append(
+            ("project manifest authority.write_scope", list(manifest.authority.write_scope))
+        )
+    if role is not None and role.write_scope:
+        declared_bounds.append((f"role {role.id!r} write scope", list(role.write_scope)))
 
     for raw in sorted(authority.write_scope):
         resolved = normalize_repository_path(raw)
@@ -954,26 +974,28 @@ def validate_write_scope_containment(
                     f"{sorted(work_item.scope)!r}",
                 )
             )
-        if role is None:
+        if not declared_bounds:
             findings.append(
                 _finding(
                     validator_id,
                     ValidationOutcome.MISSING,
                     raw,
-                    f"granted write path {resolved!r} has no role contract to be "
-                    "checked against",
+                    f"granted write path {resolved!r} has no declared write bound to "
+                    "be checked against; neither a project manifest nor a role "
+                    "contract states which paths may be written",
                 )
             )
-        elif not contained_in_any(resolved, role_scope):
-            findings.append(
-                _finding(
-                    validator_id,
-                    ValidationOutcome.BLOCKED,
-                    raw,
-                    f"granted write path {resolved!r} is not inside the role write "
-                    f"scope {sorted(role_scope)!r}",
+        for source, bound in declared_bounds:
+            if not contained_in_any(resolved, bound):
+                findings.append(
+                    _finding(
+                        validator_id,
+                        ValidationOutcome.BLOCKED,
+                        raw,
+                        f"granted write path {resolved!r} is not inside the "
+                        f"{source} {sorted(bound)!r}",
+                    )
                 )
-            )
 
     granted_resolved = {
         resolved
@@ -1023,7 +1045,7 @@ def validate_write_scope_containment(
         pass_subject=f"work-item:{work_item.id}",
         pass_message=(
             f"{len(granted_resolved)} granted write path(s) resolve and lie inside "
-            "both the work item and role bounds"
+            f"the work item scope and all {len(declared_bounds)} declared write bound(s)"
         ),
     )
 
@@ -1863,6 +1885,25 @@ def validate_execution_bundle_completeness(bundle: ExecutionBundle) -> Validatio
                     subject,
                     f"bundle write_scope {bundle_scope!r} disagrees with compiled "
                     f"authority write_scope {authority_scope!r}",
+                )
+            )
+        # Repository-write authority *is* the set of repository paths it may touch.
+        # Granted with none, the bundle presents as write-authorized and authorizes
+        # nothing: every capability check passes, every containment check passes,
+        # and an executor holding it cannot change a single file. A contract that
+        # is internally consistent and operationally empty is the failure mode this
+        # finding exists to name, so it is reported rather than passed.
+        if (
+            authority.get("external_effect") == ExternalEffectClass.REPOSITORY_WRITE.value
+            and not bundle_scope
+        ):
+            findings.append(
+                _finding(
+                    validator_id,
+                    ValidationOutcome.BLOCKED,
+                    subject,
+                    "compiled authority is repository-write but the bundle grants no "
+                    "write path, so the bundle authorizes no change it could make",
                 )
             )
 

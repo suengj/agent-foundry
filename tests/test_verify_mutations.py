@@ -640,14 +640,14 @@ def test_decision_explainability_survives_a_neutralized_authority_guard(monkeypa
     artifacts = compiled()
     inferred_only = [
         ClassificationFinding(
-            dimension="External effect",
+            dimension="impact.external_effect",
             value="repository-write",
             provenance=Provenance(
                 kind=ProvenanceKind.INFERRED, confidence=0.6, source_ref="pyproject.toml"
             ),
         ),
         ClassificationFinding(
-            dimension="Autonomy",
+            dimension="execution.autonomy",
             value="bounded-external-write",
             provenance=Provenance(
                 kind=ProvenanceKind.INFERRED, confidence=0.5, source_ref="pyproject.toml"

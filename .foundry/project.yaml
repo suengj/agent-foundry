@@ -1,0 +1,48 @@
+# Owner-declared project characteristics for Agent Foundry itself.
+#
+# Written as the applied output of this repository's own adoption plan: `agent-foundry
+# adopt .` proposes `MIGRATE foundry-project-declaration` because nothing here declared
+# these, and every toolkit, role, and authority decision downstream reads them. Values
+# are declarations, not inferences — inspection may not supply any of them.
+schema_version: "0.1"
+project:
+  name: agent-foundry
+  intake_mode: brownfield
+  work_modes:
+    primary: build
+    secondary:
+      - analyze
+  primary_artifact: code
+state:
+  # No process outlives a command; contracts are files in the repository.
+  persistence: local
+  temporal_mode: one-shot
+impact:
+  # Every published entry point reads; the writes are to this repository.
+  external_effect: repository-write
+  reversibility: versioned
+  consequence: medium
+execution:
+  autonomy: bounded-external-write
+  ambiguity: bounded-judgment
+  concurrency: single-writer
+assurance:
+  required:
+    - deterministic-tests
+    - independent-review
+access:
+  sensitivity: public
+authority:
+  # Repository paths agents may write in this project. Compiled write authority is the
+  # intersection of this envelope with the Work Item scope, so anything absent here is
+  # never granted — including `LICENSE` and `.gitignore`, deliberately.
+  write_scope:
+    - .foundry/
+    - AGENTS.md
+    - CHANGELOG.md
+    - README.md
+    - docs/
+    - examples/
+    - pyproject.toml
+    - src/
+    - tests/

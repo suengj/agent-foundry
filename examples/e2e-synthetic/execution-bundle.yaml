@@ -1,0 +1,576 @@
+acceptance_criteria:
+- HARDEN applied to test-harness
+- regression evidence passes
+allowed_capabilities:
+- repository.read
+- repository.write
+authority:
+  external_effect: repository-write
+  forbidden_scopes:
+  - .foundry/
+  - AGENTS.md
+  - docs/
+  - src/
+  - tests/
+  write_scope:
+  - Makefile
+budget_profile_id: default
+context_refs: []
+escalation_conditions: []
+forbidden_capabilities:
+- validation.review
+- validation.test
+integration_ids:
+- work-tracker
+interaction_outputs:
+- implementation-diff
+- review-decision
+- structured-handoff
+max_parallel_runs: 4
+max_retry_budget: 2
+objective: Apply the planned adoption change set so agent execution in this repository
+  is bounded, evidenced, and reviewable.
+out_of_scope: []
+policy_ids: []
+project_name: orders-service
+provenance:
+- component_id: default
+  component_kind: budget-profile
+  evidence_refs: []
+  policy_id: null
+  project_fact: task_toolkit.budget_profile_ids[0]='default'
+  rationale: budget profile selected by task toolkit resolution
+  selected: true
+  source: work-item
+- component_id: inspection.read
+  component_kind: capability
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: not required for this work item
+  selected: false
+  source: work-item
+- component_id: repository.read
+  component_kind: capability
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: required by selected task skills
+  selected: true
+  source: work-item
+- component_id: repository.write
+  component_kind: capability
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: required by selected task skills
+  selected: true
+  source: work-item
+- component_id: validation.review
+  component_kind: capability
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: required by selected task skills
+  selected: true
+  source: work-item
+- component_id: validation.test
+  component_kind: capability
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: required by selected task skills
+  selected: true
+  source: work-item
+- component_id: git-policy
+  component_kind: convention
+  evidence_refs:
+  - AGENTS.md
+  policy_id: null
+  project_fact: matching_fields=['evidence']; work_item_fields=['objective']; selection_score=0.05
+  rationale: convention selected because its evidence shares tokens with the work
+    item objective (selection score=0.05)
+  selected: true
+  source: project-fact
+- component_id: test-invocation
+  component_kind: convention
+  evidence_refs:
+  - Makefile
+  policy_id: null
+  project_fact: matching_fields=['subject', 'pattern']; work_item_fields=['scope',
+    'title']; selection_score=0.05
+  rationale: convention selected because its subject, pattern shares tokens with the
+    work item scope, title (selection score=0.05)
+  selected: true
+  source: project-fact
+- component_id: test-runner
+  component_kind: convention
+  evidence_refs:
+  - AGENTS.md
+  policy_id: null
+  project_fact: matching_fields=['subject', 'evidence']; work_item_fields=['objective',
+    'title']; selection_score=0.07
+  rationale: convention selected because its subject, evidence shares tokens with
+    the work item objective, title (selection score=0.07)
+  selected: true
+  source: project-fact
+- component_id: test-runner
+  component_kind: convention
+  evidence_refs:
+  - CLAUDE.md
+  policy_id: null
+  project_fact: matching_fields=['subject', 'evidence']; work_item_fields=['objective',
+    'title']; selection_score=0.07
+  rationale: convention selected because its subject, evidence shares tokens with
+    the work item objective, title (selection score=0.07)
+  selected: true
+  source: project-fact
+- component_id: convention:remainder
+  component_kind: convention-not-selected
+  evidence_refs: []
+  policy_id: null
+  project_fact: unlisted_scored=0; unscored=1; sample=[ci-checkout]
+  rationale: 'convention candidates not selected: 1 candidate(s) shared no token with
+    the work item scope, objective, or title and never competed for a slot'
+  selected: false
+  source: project-fact
+- component_id: work-tracker
+  component_kind: integration
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.authority_class=repository-write; task ceiling repository-write
+  rationale: integration preflight health authorized meets required authorized within
+    work item authority
+  selected: true
+  source: work-item
+- component_id: work-tracker
+  component_kind: integration
+  evidence_refs: []
+  policy_id: null
+  project_fact: integration health state=authorized
+  rationale: integration required by task toolkit with observed health
+  selected: true
+  source: project-fact
+- component_id: implementation-diff
+  component_kind: interaction-output
+  evidence_refs: []
+  policy_id: null
+  project_fact: role_id='builder'
+  rationale: interaction output required for compiled role
+  selected: true
+  source: work-item
+- component_id: review-decision
+  component_kind: interaction-output
+  evidence_refs: []
+  policy_id: null
+  project_fact: role_id='builder'
+  rationale: interaction output required for compiled role
+  selected: true
+  source: work-item
+- component_id: structured-handoff
+  component_kind: interaction-output
+  evidence_refs: []
+  policy_id: null
+  project_fact: role_id='builder'
+  rationale: interaction output required for compiled role
+  selected: true
+  source: work-item
+- component_id: agent-instruction-surface
+  component_kind: observation
+  evidence_refs:
+  - AGENTS.md
+  policy_id: null
+  project_fact: matching_fields=['subject']; work_item_fields=['objective']; selection_score=0.05
+  rationale: observation selected because its subject shares tokens with the work
+    item objective (selection score=0.05)
+  selected: true
+  source: project-fact
+- component_id: agent-instruction-surface
+  component_kind: observation
+  evidence_refs:
+  - CLAUDE.md
+  policy_id: null
+  project_fact: matching_fields=['subject']; work_item_fields=['objective']; selection_score=0.05
+  rationale: observation selected because its subject shares tokens with the work
+    item objective (selection score=0.05)
+  selected: true
+  source: project-fact
+- component_id: lint-entrypoint
+  component_kind: observation
+  evidence_refs:
+  - Makefile
+  policy_id: null
+  project_fact: matching_fields=['evidence']; work_item_fields=['scope']; selection_score=0.05
+  rationale: observation selected because its evidence shares tokens with the work
+    item scope (selection score=0.05)
+  selected: true
+  source: project-fact
+- component_id: repository-revision
+  component_kind: observation
+  evidence_refs:
+  - .
+  policy_id: null
+  project_fact: matching_fields=['subject']; work_item_fields=['objective']; selection_score=0.05
+  rationale: observation shares no token with the work item scope, objective, or title
+    (selection score=0.05)
+  selected: false
+  source: project-fact
+- component_id: repository-structure
+  component_kind: observation
+  evidence_refs:
+  - .
+  policy_id: null
+  project_fact: matching_fields=['subject']; work_item_fields=['objective']; selection_score=0.05
+  rationale: observation selected because its subject shares tokens with the work
+    item objective (selection score=0.05)
+  selected: true
+  source: project-fact
+- component_id: repository-structure
+  component_kind: observation
+  evidence_refs:
+  - .
+  policy_id: null
+  project_fact: matching_fields=['subject', 'evidence']; work_item_fields=['objective'];
+    selection_score=0.10
+  rationale: observation selected because its subject, evidence shares tokens with
+    the work item objective (selection score=0.10)
+  selected: true
+  source: project-fact
+- component_id: test-entrypoint
+  component_kind: observation
+  evidence_refs:
+  - Makefile
+  policy_id: null
+  project_fact: matching_fields=['subject', 'evidence']; work_item_fields=['scope',
+    'title']; selection_score=0.10
+  rationale: observation selected because its subject, evidence shares tokens with
+    the work item scope, title (selection score=0.10)
+  selected: true
+  source: project-fact
+- component_id: observation:remainder
+  component_kind: observation-not-selected
+  evidence_refs: []
+  policy_id: null
+  project_fact: unlisted_scored=0; unscored=6; sample=[ci-entrypoint, foundry-artifact,
+    foundry-declaration, integration-config, package-metadata, runtime-deploy-hint]
+  rationale: 'observation candidates not selected: 6 candidate(s) shared no token
+    with the work item scope, objective, or title and never competed for a slot'
+  selected: false
+  source: project-fact
+- component_id: deterministic-test
+  component_kind: required-evidence
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.required_evidence includes 'deterministic-test'
+  rationale: work item names required evidence artifact
+  selected: true
+  source: work-item
+- component_id: repository-revision
+  component_kind: required-evidence
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.required_evidence includes 'repository-revision'
+  rationale: work item names required evidence artifact
+  selected: true
+  source: work-item
+- component_id: builder
+  component_kind: role
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: required by selected task workflow or skills
+  selected: true
+  source: work-item
+- component_id: explorer
+  component_kind: role
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: not required for this work item
+  selected: false
+  source: work-item
+- component_id: reviewer
+  component_kind: role
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: required by selected task workflow or skills
+  selected: true
+  source: work-item
+- component_id: bounded-change
+  component_kind: skill
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: skill included in task toolkit for work item class
+  selected: true
+  source: work-item
+- component_id: bounded-change
+  component_kind: skill
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION; work_item.required_evidence=['deterministic-test',
+    'repository-revision']
+  rationale: workflow 'builder-reviewer' requires this skill
+  selected: true
+  source: work-item
+- component_id: deterministic-test
+  component_kind: skill
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: skill included in task toolkit for work item class
+  selected: true
+  source: work-item
+- component_id: deterministic-test
+  component_kind: skill
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION; work_item.required_evidence=['deterministic-test',
+    'repository-revision']
+  rationale: workflow 'builder-reviewer' requires this skill
+  selected: true
+  source: work-item
+- component_id: independent-review
+  component_kind: skill
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: skill included in task toolkit for work item class
+  selected: true
+  source: work-item
+- component_id: independent-review
+  component_kind: skill
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION; work_item.required_evidence=['deterministic-test',
+    'repository-revision']
+  rationale: workflow 'builder-reviewer' requires this skill
+  selected: true
+  source: work-item
+- component_id: repository-inspection
+  component_kind: skill
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.required_evidence=['deterministic-test', 'repository-revision'];
+    task_toolkit.workflow_id='builder-reviewer'
+  rationale: permitted for this work class, but the work item requires neither the
+    evidence it produces nor the workflow that needs it
+  selected: false
+  source: work-item
+- component_id: repository-inspection
+  component_kind: skill
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: skill not selected in task toolkit
+  selected: false
+  source: work-item
+- component_id: blocked adoption path cannot be resolved within scope
+  component_kind: stop-condition
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.stop_conditions includes 'blocked adoption path cannot be
+    resolved within scope'
+  rationale: work item stop condition carried into execution bundle
+  selected: true
+  source: work-item
+- component_id: evidence-contract
+  component_kind: validator
+  evidence_refs: []
+  policy_id: null
+  project_fact: task_toolkit.validator_ids includes 'evidence-contract'
+  rationale: validator required by resolved task toolkit
+  selected: true
+  source: work-item
+- component_id: schema-compat
+  component_kind: validator
+  evidence_refs: []
+  policy_id: null
+  project_fact: task_toolkit.validator_ids includes 'schema-compat'
+  rationale: validator required by resolved task toolkit
+  selected: true
+  source: work-item
+- component_id: builder-reviewer
+  component_kind: workflow
+  evidence_refs: []
+  policy_id: null
+  project_fact: work_item.work_class=ADOPTION
+  rationale: work item class ADOPTION selects workflow
+  selected: true
+  source: work-item
+- component_id: Makefile
+  component_kind: write-scope
+  evidence_refs: []
+  policy_id: null
+  project_fact: authority.write_scope includes 'Makefile'
+  rationale: compiled write scope after role/work item intersection
+  selected: true
+  source: work-item
+required_evidence:
+- deterministic-test
+- repository-revision
+role_id: builder
+run_id: RUN-EXAMPLE-001
+schema_version: '0.1'
+scope:
+- Makefile
+selected_conventions:
+- git-policy
+- test-invocation
+- test-runner
+- test-runner
+selected_observations:
+- agent-instruction-surface
+- agent-instruction-surface
+- lint-entrypoint
+- repository-structure
+- test-entrypoint
+skill_summaries:
+- description: Make bounded code changes with tests
+  relevance: work_class=ADOPTION
+  skill_id: bounded-change
+- description: Run project-approved deterministic tests and return normalized evidence
+  relevance: work_class=ADOPTION
+  skill_id: deterministic-test
+- description: Perform independent review without implementation authority
+  relevance: work_class=ADOPTION
+  skill_id: independent-review
+stop_conditions:
+- blocked adoption path cannot be resolved within scope
+task_toolkit:
+  budget_profile_ids:
+  - default
+  capability_ids:
+  - repository.read
+  - repository.write
+  - validation.review
+  - validation.test
+  decisions:
+  - action: exclude
+    component_id: inspection.read
+    component_kind: capability
+    policy_id: null
+    project_fact: work_item.work_class=ADOPTION
+    rationale: not required for this work item
+    source: work-item
+  - action: exclude
+    component_id: explorer
+    component_kind: role
+    policy_id: null
+    project_fact: work_item.work_class=ADOPTION
+    rationale: not required for this work item
+    source: work-item
+  - action: exclude
+    component_id: repository-inspection
+    component_kind: skill
+    policy_id: null
+    project_fact: work_item.required_evidence=['deterministic-test', 'repository-revision'];
+      task_toolkit.workflow_id='builder-reviewer'
+    rationale: permitted for this work class, but the work item requires neither the
+      evidence it produces nor the workflow that needs it
+    source: work-item
+  - action: include
+    component_id: repository.read
+    component_kind: capability
+    policy_id: null
+    project_fact: work_item.work_class=ADOPTION
+    rationale: required by selected task skills
+    source: work-item
+  - action: include
+    component_id: repository.write
+    component_kind: capability
+    policy_id: null
+    project_fact: work_item.work_class=ADOPTION
+    rationale: required by selected task skills
+    source: work-item
+  - action: include
+    component_id: validation.review
+    component_kind: capability
+    policy_id: null
+    project_fact: work_item.work_class=ADOPTION
+    rationale: required by selected task skills
+    source: work-item
+  - action: include
+    component_id: validation.test
+    component_kind: capability
+    policy_id: null
+    project_fact: work_item.work_class=ADOPTION
+    rationale: required by selected task skills
+    source: work-item
+  - action: include
+    component_id: work-tracker
+    component_kind: integration
+    policy_id: null
+    project_fact: work_item.authority_class=repository-write; task ceiling repository-write
+    rationale: integration preflight health authorized meets required authorized within
+      work item authority
+    source: work-item
+  - action: include
+    component_id: builder
+    component_kind: role
+    policy_id: null
+    project_fact: work_item.work_class=ADOPTION
+    rationale: required by selected task workflow or skills
+    source: work-item
+  - action: include
+    component_id: reviewer
+    component_kind: role
+    policy_id: null
+    project_fact: work_item.work_class=ADOPTION
+    rationale: required by selected task workflow or skills
+    source: work-item
+  - action: include
+    component_id: bounded-change
+    component_kind: skill
+    policy_id: null
+    project_fact: work_item.work_class=ADOPTION; work_item.required_evidence=['deterministic-test',
+      'repository-revision']
+    rationale: workflow 'builder-reviewer' requires this skill
+    source: work-item
+  - action: include
+    component_id: deterministic-test
+    component_kind: skill
+    policy_id: null
+    project_fact: work_item.work_class=ADOPTION; work_item.required_evidence=['deterministic-test',
+      'repository-revision']
+    rationale: workflow 'builder-reviewer' requires this skill
+    source: work-item
+  - action: include
+    component_id: independent-review
+    component_kind: skill
+    policy_id: null
+    project_fact: work_item.work_class=ADOPTION; work_item.required_evidence=['deterministic-test',
+      'repository-revision']
+    rationale: workflow 'builder-reviewer' requires this skill
+    source: work-item
+  - action: include
+    component_id: builder-reviewer
+    component_kind: workflow
+    policy_id: null
+    project_fact: work_item.work_class=ADOPTION
+    rationale: work item class ADOPTION selects workflow
+    source: work-item
+  integration_ids:
+  - work-tracker
+  permission_profile_ids:
+  - repository-write-bounded
+  role_ids:
+  - builder
+  - reviewer
+  schema_version: '0.1'
+  skill_ids:
+  - bounded-change
+  - deterministic-test
+  - independent-review
+  validator_ids:
+  - evidence-contract
+  - schema-compat
+  work_item_id: wi-dcc714550913
+  workflow_id: builder-reviewer
+validator_ids:
+- evidence-contract
+- schema-compat
+work_item_id: wi-dcc714550913
+write_scope:
+- Makefile

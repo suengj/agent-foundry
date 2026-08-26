@@ -62,6 +62,91 @@ PACKAGE_METADATA_FILES: frozenset[str] = frozenset(
     }
 )
 
+# Files that declare "this directory is a project in its own right". Deliberately
+# narrower than PACKAGE_METADATA_FILES: a lock file or a requirements list travels with
+# a project, it does not constitute one, and treating either as a boundary would split
+# an ordinary repository into pieces.
+NESTED_PROJECT_MARKERS: frozenset[str] = frozenset(
+    {
+        ".git",
+        "pyproject.toml",
+        "package.json",
+        "Cargo.toml",
+        "go.mod",
+        "setup.py",
+    }
+)
+
+
+def nested_project_roots(root: Path, entries: list[RepoEntry]) -> list[str]:
+    """Directories below the root that declare themselves separate projects.
+
+    Foundry inspects one target. A directory carrying its own project manifest is a
+    distinct unit of ownership, and its `Dockerfile` is not the target's deployment,
+    its `env.example` is not the target's credential surface, and its `pyproject.toml`
+    is not the target's build metadata. Attributing them to the target produces a
+    diagnosis of a project that does not exist — measured on Agent Foundry itself,
+    where seven fixture repositories under `tests/fixtures/projects/` supplied 22 of 25
+    adoption evidence references, two wrong readiness findings, and a compiled write
+    scope over seven files nobody wanted changed.
+
+    The repository root is never a nested project: it is the target. Only the outermost
+    boundary is returned for any path, so a project inside a project inside the target
+    is excluded once rather than twice.
+    """
+    boundaries: set[str] = set()
+    for entry in entries:
+        if entry.is_dir:
+            continue
+        parent, _, name = entry.relative_path.rpartition("/")
+        if not parent:
+            # A marker at the repository root describes the target itself.
+            continue
+        if name in NESTED_PROJECT_MARKERS:
+            boundaries.add(parent)
+    # A `.git` entry never appears in the walk at all — `.git` is a skipped directory
+    # name, so nothing inside it and nothing named it is ever recorded. A separate
+    # repository is the least ambiguous nested project there is, so each visited
+    # directory is probed for one directly. One stat per directory, bounded by the same
+    # traversal limits as everything else.
+    for entry in entries:
+        if not entry.is_dir:
+            continue
+        try:
+            if (root / entry.relative_path / ".git").exists():
+                boundaries.add(entry.relative_path)
+        except OSError:
+            continue
+
+    outermost: list[str] = []
+    for candidate in sorted(boundaries):
+        if any(_is_within(candidate, other) for other in boundaries if other != candidate):
+            continue
+        outermost.append(candidate)
+    return outermost
+
+
+def _is_within(path: str, bound: str) -> bool:
+    return path == bound or path.startswith(bound + "/")
+
+
+def entries_outside(entries: list[RepoEntry], boundaries: list[str]) -> list[RepoEntry]:
+    """Entries belonging to the target project rather than to a nested one.
+
+    The boundary directory itself is kept: that a nested project exists is a fact about
+    the target, and dropping it would make the exclusion invisible.
+    """
+    if not boundaries:
+        return list(entries)
+    return [
+        entry
+        for entry in entries
+        if not any(
+            entry.relative_path.startswith(bound + "/") for bound in boundaries
+        )
+    ]
+
+
 CI_WORKFLOW_PREFIX = ".github/workflows/"
 FOUNDRY_DIR_PREFIX = ".foundry/"
 CURSOR_RULES_PREFIX = ".cursor/rules/"
@@ -127,6 +212,24 @@ class TraversalResult:
         self.unobservable.append(
             UnobservablePath(relative_path=relative_path, is_dir=is_dir, reason=reason)
         )
+
+
+# The file a Python virtual environment always carries at its root, whatever the
+# directory is called. Name matching alone missed `.venv-lane`, `env`, `.direnv/python*`
+# and every other local convention, and a virtualenv holds thousands of files: the
+# traversal budget was spent inside it before the repository's own source was reached,
+# and inspection then reported "no test entrypoints observed" about a repository with
+# a full test suite. Absence of evidence produced by a truncated walk reads exactly
+# like evidence of absence, so the walk must not be truncated by an environment.
+VENV_MARKER_FILENAME = "pyvenv.cfg"
+
+
+def _is_virtualenv_dir(path: Path) -> bool:
+    """True when *path* is a Python virtual environment root, by its marker file."""
+    try:
+        return (path / VENV_MARKER_FILENAME).is_file()
+    except OSError:
+        return False
 
 
 def _should_skip_dir(name: str) -> bool:
@@ -220,7 +323,7 @@ def walk_repository(
                 result.skip_refused()
                 continue
 
-            if is_dir and _should_skip_dir(child.name):
+            if is_dir and (_should_skip_dir(child.name) or _is_virtualenv_dir(resolved)):
                 result.skip_ignored_dir()
                 continue
 

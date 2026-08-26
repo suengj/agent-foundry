@@ -18,6 +18,7 @@ from agent_foundry.verify.receipt import (
     receipt_artifacts,
 )
 from agent_foundry.verify.reconcile import reconcile_work_item
+from agent_foundry.verify.slice import CompiledSlice, validate_compiled_slice
 from agent_foundry.verify.validators import (
     validate_authority_ceiling,
     validate_evidence_bundle_completeness,
@@ -36,6 +37,7 @@ from agent_foundry.verify.validators import (
 
 __all__ = [
     "CLAIMS_BY_ID",
+    "CompiledSlice",
     "VALIDATOR_CLAIMS",
     "VALIDATOR_IDS",
     "artifact_digest",
@@ -46,6 +48,7 @@ __all__ = [
     "classify_repeated_failures",
     "receipt_artifacts",
     "reconcile_work_item",
+    "validate_compiled_slice",
     "validate_authority_ceiling",
     "validate_decision_explainability",
     "validate_evidence_bundle_completeness",

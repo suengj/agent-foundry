@@ -1,0 +1,174 @@
+budget_profile_ids:
+- default
+budget_profile_version: 1.0.0
+capability_ids:
+- inspection.read
+- repository.read
+- repository.write
+- validation.review
+- validation.test
+decisions:
+- action: include
+  component_id: default
+  component_kind: budget-profile
+  policy_id: null
+  project_fact: impact.consequence=medium
+  rationale: selected by consequence and registry defaults
+  source: project-fact
+- action: include
+  component_id: inspection.read
+  component_kind: capability
+  policy_id: null
+  project_fact: null
+  rationale: required by skill repository-inspection
+  source: registry
+- action: include
+  component_id: repository.read
+  component_kind: capability
+  policy_id: null
+  project_fact: project.primary_artifact=code or work_modes.primary=build
+  rationale: code-centric project requires repository read
+  source: project-fact
+- action: include
+  component_id: repository.write
+  component_kind: capability
+  policy_id: null
+  project_fact: null
+  rationale: required by skill bounded-change
+  source: registry
+- action: include
+  component_id: validation.review
+  component_kind: capability
+  policy_id: null
+  project_fact: null
+  rationale: required by skill independent-review
+  source: registry
+- action: include
+  component_id: validation.test
+  component_kind: capability
+  policy_id: deterministic-tests-assurance
+  project_fact: null
+  rationale: policy deterministic-tests-assurance requires capability
+  source: policy
+- action: include
+  component_id: work-tracker
+  component_kind: integration
+  policy_id: null
+  project_fact: null
+  rationale: explicitly requested integration
+  source: registry
+- action: include
+  component_id: repository-write-bounded
+  component_kind: permission-profile
+  policy_id: null
+  project_fact: impact.external_effect=repository-write
+  rationale: selected for external effect repository-write
+  source: project-fact
+- action: include
+  component_id: builder
+  component_kind: role
+  policy_id: null
+  project_fact: impact.external_effect=repository-write
+  rationale: code-centric project with repository-write authority requires builder
+    role
+  source: project-fact
+- action: include
+  component_id: explorer
+  component_kind: role
+  policy_id: null
+  project_fact: project.primary_artifact=code or work_modes.primary=build
+  rationale: code-centric project requires explorer for inspection baseline
+  source: project-fact
+- action: include
+  component_id: reviewer
+  component_kind: role
+  policy_id: independent-review-assurance-repository-write
+  project_fact: null
+  rationale: policy independent-review-assurance-repository-write requires role
+  source: policy
+- action: include
+  component_id: bounded-change
+  component_kind: skill
+  policy_id: null
+  project_fact: impact.external_effect=repository-write
+  rationale: code-centric project with repository-write authority requires bounded
+    change
+  source: project-fact
+- action: include
+  component_id: deterministic-test
+  component_kind: skill
+  policy_id: deterministic-tests-assurance
+  project_fact: null
+  rationale: policy deterministic-tests-assurance requires skill
+  source: policy
+- action: include
+  component_id: independent-review
+  component_kind: skill
+  policy_id: independent-review-assurance-repository-write
+  project_fact: null
+  rationale: policy independent-review-assurance-repository-write requires skill
+  source: policy
+- action: include
+  component_id: repository-inspection
+  component_kind: skill
+  policy_id: null
+  project_fact: project.primary_artifact=code or work_modes.primary=build
+  rationale: code-centric project requires read-only inspection baseline
+  source: project-fact
+- action: include
+  component_id: evidence-contract
+  component_kind: validator
+  policy_id: null
+  project_fact: assurance.required
+  rationale: validator required by assurance or consequence policy
+  source: project-fact
+- action: include
+  component_id: schema-compat
+  component_kind: validator
+  policy_id: null
+  project_fact: null
+  rationale: baseline schema contract validation
+  source: registry
+- action: include
+  component_id: builder-reviewer
+  component_kind: workflow
+  policy_id: independent-review-assurance-repository-write
+  project_fact: null
+  rationale: policy independent-review-assurance-repository-write requires workflow
+  source: policy
+declared_external_effect: repository-write
+foundry_compat: '>=0.1,<0.2'
+integration_adapter_versions:
+  work-tracker: adapter-v1
+integration_ids:
+- work-tracker
+permission_external_effect: repository-write
+permission_profile_ids:
+- repository-write-bounded
+permission_profile_version: 1.0.0
+project_name: orders-service
+role_ids:
+- builder
+- explorer
+- reviewer
+schema_version: '0.1'
+skill_ids:
+- bounded-change
+- deterministic-test
+- independent-review
+- repository-inspection
+skill_versions:
+  bounded-change: 1.0.0
+  deterministic-test: 1.0.0
+  independent-review: 1.0.0
+  repository-inspection: 1.0.0
+validator_ids:
+- evidence-contract
+- schema-compat
+validator_versions:
+  evidence-contract: 1.0.0
+  schema-compat: 1.0.0
+workflow_ids:
+- builder-reviewer
+workflow_versions:
+  builder-reviewer: 1.0.0

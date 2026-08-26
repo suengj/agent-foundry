@@ -11,15 +11,60 @@ from agent_foundry.models.project import ClassificationFinding, ProjectObservati
 from agent_foundry.inspect.traversal import FOUNDRY_DIR_PREFIX, RepoEntry, file_path_set, read_entry_text
 
 
+# Every ProjectManifest field an owner can declare, keyed by the dotted path the
+# declaration file uses. A dimension absent from this tuple cannot reach the
+# manifest at all, so growing the manifest without growing this tuple silently
+# drops an owner's declaration — which is what AF8 found for eleven of them.
 CLASSIFICATION_DIMENSIONS: tuple[str, ...] = (
     "intake_mode",
+    "project.name",
     "primary_work_mode",
+    "secondary_work_modes",
     "primary_artifact",
     "state.persistence",
+    "state.temporal_mode",
     "impact.external_effect",
+    "impact.reversibility",
+    "impact.consequence",
     "execution.autonomy",
+    "execution.ambiguity",
+    "execution.concurrency",
+    "assurance.required",
     "access.sensitivity",
+    "authority.write_scope",
 )
+
+# Where each dimension is read from inside `.foundry/project.yaml`. The path is the
+# nesting the file uses; the manifest field it lands in is decided in
+# `adopt.manifest`, which is the only place that promotes a finding to a value.
+_DECLARED_PATHS: dict[str, tuple[str, ...]] = {
+    "intake_mode": ("project", "intake_mode"),
+    "project.name": ("project", "name"),
+    "primary_work_mode": ("project", "work_modes", "primary"),
+    "secondary_work_modes": ("project", "work_modes", "secondary"),
+    "primary_artifact": ("project", "primary_artifact"),
+    "state.persistence": ("state", "persistence"),
+    "state.temporal_mode": ("state", "temporal_mode"),
+    "impact.external_effect": ("impact", "external_effect"),
+    "impact.reversibility": ("impact", "reversibility"),
+    "impact.consequence": ("impact", "consequence"),
+    "execution.autonomy": ("execution", "autonomy"),
+    "execution.ambiguity": ("execution", "ambiguity"),
+    "execution.concurrency": ("execution", "concurrency"),
+    "assurance.required": ("assurance", "required"),
+    "access.sensitivity": ("access", "sensitivity"),
+    "authority.write_scope": ("authority", "write_scope"),
+}
+
+# Dimensions whose declared value is a list of scalars rather than one scalar.
+_LIST_DIMENSIONS: frozenset[str] = frozenset(
+    {"secondary_work_modes", "assurance.required", "authority.write_scope"}
+)
+
+# Declared list values are carried as one finding whose `value` is this separator
+# joined — a ClassificationFinding holds a single string by contract, and AF8 is
+# not the place to widen that contract.
+DECLARED_LIST_SEPARATOR = ","
 
 
 def _finding(
@@ -67,48 +112,126 @@ def _unknown(dimension: str, *, reason: str, source_ref: str = ".") -> Classific
     )
 
 
-def _declared_intake_mode(
+def _declaration_relpath(entries: list[RepoEntry]) -> str | None:
+    """Repo-relative path of the owner declaration, or None when there is none."""
+    rel_paths = file_path_set(entries)
+    for candidate in (".foundry/project.yaml", ".foundry/project.yml"):
+        if candidate in rel_paths:
+            return candidate
+    return None
+
+
+def _read_declaration(
     root: Path,
     entries: list[RepoEntry],
     *,
     max_file_bytes: int,
-) -> ClassificationFinding | None:
-    rel_paths = file_path_set(entries)
-    project_yaml = ".foundry/project.yaml"
-    project_yml = ".foundry/project.yml"
-    rel = project_yaml if project_yaml in rel_paths else project_yml if project_yml in rel_paths else None
+) -> tuple[str | None, dict[str, object] | None]:
+    """Return the declaration path and its parsed mapping.
+
+    A path with no readable mapping returns `(rel, None)`: the file exists and the
+    owner meant something by it, so the dimensions it should carry are reported as
+    undeclared *at that path* rather than as if no declaration existed at all.
+    """
+    rel = _declaration_relpath(entries)
     if rel is None:
-        return None
+        return None, None
     entry = next(e for e in entries if e.relative_path == rel)
     content = read_entry_text(root, entry, max_bytes=max_file_bytes)
     if not content:
-        return None
+        return rel, None
     try:
         parsed = yaml.safe_load(content)
     except yaml.YAMLError:
-        return None
+        return rel, None
     if not isinstance(parsed, dict):
+        return rel, None
+    return rel, parsed
+
+
+def _declared_at(declaration: dict[str, object], path: tuple[str, ...]) -> object | None:
+    """Follow a dotted path into the declaration; None when any hop is absent."""
+    node: object = declaration
+    for key in path:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+        if node is None:
+            return None
+    return node
+
+
+def _declared_scalar(value: object) -> str | None:
+    """Render a declared scalar as the string a vocabulary lookup will see.
+
+    Booleans and mappings are not scalars any manifest dimension accepts; they are
+    reported as an unusable declaration rather than coerced into a plausible string.
+    """
+    if isinstance(value, (bool, dict, list)):
         return None
-    project = parsed.get("project")
-    if not isinstance(project, dict):
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    if isinstance(value, (int, float)):
+        return str(value)
+    return None
+
+
+def _declared_list(value: object) -> str | None:
+    """Render a declared list as a separator-joined string, or None when unusable."""
+    if not isinstance(value, list):
         return None
-    intake_mode = project.get("intake_mode")
-    if intake_mode is None:
-        return _finding(
-            "intake_mode",
-            None,
-            kind=ProvenanceKind.DECLARED,
-            source_ref=rel,
-            evidence_refs=[rel],
-            reason="intake_mode not declared in project.yaml",
+    rendered: list[str] = []
+    for item in value:
+        scalar = _declared_scalar(item)
+        if scalar is None or DECLARED_LIST_SEPARATOR in scalar:
+            return None
+        rendered.append(scalar)
+    return DECLARED_LIST_SEPARATOR.join(rendered)
+
+
+def declared_classification_findings(
+    root: Path,
+    entries: list[RepoEntry],
+    *,
+    max_file_bytes: int,
+) -> tuple[str | None, list[ClassificationFinding]]:
+    """Read every manifest dimension an owner declared in `.foundry/project.yaml`.
+
+    Every dimension in `CLASSIFICATION_DIMENSIONS` gets a finding whenever a
+    declaration file exists, so a dimension the owner left out is recorded as
+    declared-and-absent rather than silently missing. The value is not validated
+    here: an unrecognised vocabulary member is carried through as a DECLARED
+    finding so that `adopt.manifest` can report it as an invalid declaration
+    instead of this layer discarding it without saying so.
+    """
+    rel, declaration = _read_declaration(root, entries, max_file_bytes=max_file_bytes)
+    if rel is None:
+        return None, []
+
+    findings: list[ClassificationFinding] = []
+    for dimension in CLASSIFICATION_DIMENSIONS:
+        raw = None if declaration is None else _declared_at(declaration, _DECLARED_PATHS[dimension])
+        if dimension in _LIST_DIMENSIONS:
+            value = None if raw is None else _declared_list(raw)
+        else:
+            value = None if raw is None else _declared_scalar(raw)
+        reason = None
+        if raw is None:
+            reason = f"{dimension} not declared in {rel}"
+        elif value is None:
+            reason = f"{dimension} declaration in {rel} is not a usable value"
+        findings.append(
+            _finding(
+                dimension,
+                value,
+                kind=ProvenanceKind.DECLARED,
+                source_ref=rel,
+                evidence_refs=[rel],
+                reason=reason,
+            )
         )
-    return _finding(
-        "intake_mode",
-        str(intake_mode),
-        kind=ProvenanceKind.DECLARED,
-        source_ref=rel,
-        evidence_refs=[rel],
-    )
+    return rel, findings
 
 
 def propose_classification_findings(
@@ -120,10 +243,13 @@ def propose_classification_findings(
 ) -> list[ClassificationFinding]:
     findings: list[ClassificationFinding] = []
 
-    declared_intake = _declared_intake_mode(root, entries, max_file_bytes=max_file_bytes)
-    if declared_intake is not None:
-        findings.append(declared_intake)
-    else:
+    declared_rel, declared_findings = declared_classification_findings(
+        root, entries, max_file_bytes=max_file_bytes
+    )
+    findings.extend(declared_findings)
+    declared_dimensions = {finding.dimension for finding in declared_findings}
+
+    if "intake_mode" not in declared_dimensions:
         code_dirs = {"src", "lib", "app", "internal", "pkg"}
         code_files = [
             e
@@ -218,32 +344,20 @@ def propose_classification_findings(
             )
         )
 
-    declared_project_rel = None
-    rel_paths = file_path_set(entries)
-    if ".foundry/project.yaml" in rel_paths:
-        declared_project_rel = ".foundry/project.yaml"
-    elif ".foundry/project.yml" in rel_paths:
-        declared_project_rel = ".foundry/project.yml"
-
+    # A dimension the declaration already answered is not re-reported as unknown:
+    # an owner declaration is the highest-precedence evidence there is, and two
+    # findings for one dimension would put a 0.0-confidence guess beside it.
     for dimension in CLASSIFICATION_DIMENSIONS:
+        if dimension in declared_dimensions:
+            continue
         if dimension == "intake_mode":
             continue
-        if dimension == "primary_work_mode":
-            if declared_project_rel is not None:
-                findings.append(
-                    _finding(
-                        dimension,
-                        None,
-                        kind=ProvenanceKind.DECLARED,
-                        source_ref=declared_project_rel,
-                        evidence_refs=[declared_project_rel],
-                        reason="work_modes not parsed in AF2",
-                    )
-                )
-            else:
-                findings.append(_unknown(dimension, reason="no declared project manifest"))
-            continue
-        findings.append(_unknown(dimension, reason="not observable from repository inventory alone"))
+        reason = (
+            "no declared project manifest"
+            if declared_rel is None
+            else f"{dimension} not readable from {declared_rel}"
+        )
+        findings.append(_unknown(dimension, reason=reason))
 
     findings.sort(key=lambda f: (f.dimension, f.value or "", tuple(f.evidence_refs)))
     return findings

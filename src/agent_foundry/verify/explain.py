@@ -59,9 +59,15 @@ non-widening merely because nothing was declared to compare it against.
 
 # Manifest axes that define the authority envelope, and the classification dimension
 # that feeds each. Dimension labels match the intake documentation's table.
+# Manifest axis -> the `ClassificationFinding.dimension` that can support a baseline
+# for it. These were once an axis paired with a human label ("External effect"), which
+# matched no finding: the baseline was therefore always empty and every declared
+# manifest was reported as widened by inference. Nothing exposed it while
+# classification could not produce a value on either axis; an owner declaration can,
+# so the two names have to be the same name.
 AUTHORITY_AXES: tuple[tuple[str, str], ...] = (
-    ("impact.external_effect", "External effect"),
-    ("execution.autonomy", "Autonomy"),
+    ("impact.external_effect", "impact.external_effect"),
+    ("execution.autonomy", "execution.autonomy"),
 )
 
 _AXIS_ORDERS: dict[str, tuple[str, ...]] = {

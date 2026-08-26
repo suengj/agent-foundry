@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -776,7 +777,14 @@ def test_malformed_foundry_compat_rejected() -> None:
         resolve_toolkit(_sample_manifest(), registry=bad_registry)
 
 
-def test_resolve_toolkit_on_repo_explains_empty_manifest() -> None:
+def test_resolve_toolkit_on_repo_reads_the_declared_manifest() -> None:
+    """This repository declares its own characteristics, and the resolver uses them.
+
+    Before AF8 the declaration was read for `intake_mode` and nothing else, so this
+    same command returned an empty toolkit and the test asserted that emptiness. What
+    it should pin is the opposite property: a declared project resolves components,
+    and every decision still names the fact that caused it.
+    """
     result = subprocess.run(
         [
             sys.executable,
@@ -794,10 +802,43 @@ def test_resolve_toolkit_on_repo_explains_empty_manifest() -> None:
         check=False,
     )
     assert result.returncode == 0
-    assert '"decisions"' in result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["project_name"] == "agent-foundry"
+    assert payload["capability_ids"], "declared manifest must resolve capabilities"
+    assert "builder" in payload["role_ids"]
+    assert payload["declared_external_effect"] == "repository-write"
+    # No integration is declared, and an undeclared integration is never selected.
+    assert payload["integration_ids"] == []
+    assert all(
+        decision["project_fact"] or decision["policy_id"] or decision["source"] == "registry"
+        for decision in payload["decisions"]
+    )
+
+
+def test_resolve_toolkit_on_undeclared_project_explains_every_exclusion(tmp_path: Path) -> None:
+    """A project that declares nothing resolves nothing, and says why for each part."""
+    project = tmp_path / "undeclared"
+    (project / "src").mkdir(parents=True)
+    for name in ("a", "b", "c", "d", "e", "f", "g", "h"):
+        (project / "src" / f"{name}.py").write_text("x = 1\n", encoding="utf-8")
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "undeclared"\nversion = "0.1.0"\n', encoding="utf-8"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "agent_foundry", "resolve-toolkit", str(project), "--format", "json"],
+        capture_output=True,
+        text=True,
+        env=_subprocess_env(),
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["capability_ids"] == []
+    assert payload["role_ids"] == []
+    assert payload["integration_ids"] == []
     assert "unknown" in result.stdout.lower()
-    assert '"capability_ids":[]' in result.stdout.replace(" ", "") or '"capability_ids": []' in result.stdout
-    assert '"integration_ids":[]' in result.stdout.replace(" ", "") or '"integration_ids": []' in result.stdout
     assert "no integration declared" in result.stdout
 
 

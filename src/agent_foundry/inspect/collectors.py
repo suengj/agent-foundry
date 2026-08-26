@@ -333,6 +333,28 @@ def collect_foundry_observations(
     return observations
 
 
+def collect_nested_project_observations(boundaries: list[str]) -> list[ProjectObservation]:
+    """Record every nested project boundary the walk found.
+
+    The exclusion has to be visible. A nested project whose files are simply absent
+    from the evidence is indistinguishable from one that was never there, and "we did
+    not attribute this" would then read exactly like "there was nothing here" — the
+    same confusion that made a truncated traversal report a repository as having no
+    tests.
+    """
+    return [
+        _observed(
+            "nested-project",
+            (
+                f"nested project boundary: {boundary} declares its own project manifest; "
+                "its contents are not evidence about this project"
+            ),
+            boundary,
+        )
+        for boundary in sorted(boundaries)
+    ]
+
+
 def collect_unread_file_observations(
     entries: list[RepoEntry],
     *,

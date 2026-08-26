@@ -6,6 +6,15 @@ from agent_foundry.models.execution import ExecutionBundle
 from agent_foundry.secrets import raise_on_embedded_secrets
 
 
+# How many selection records the rendered summary shows. The bundle is canonical;
+# this is a projection, and a projection that grew without bound would stop being a
+# concise agent-facing contract.
+_PROVENANCE_SUMMARY_LIMIT = 10
+
+# How many withheld write bounds the rendered contract names before summarizing.
+_SCOPE_SUMMARY_LIMIT = 6
+
+
 def _bullet_lines(items: list[str]) -> list[str]:
     return [f"- {item}" for item in sorted(items)]
 
@@ -58,8 +67,20 @@ def render_execution_bundle_markdown(bundle: ExecutionBundle) -> str:
         lines.append("")
 
     if bundle.authority is not None and bundle.authority.forbidden_scopes:
+        forbidden = sorted(bundle.authority.forbidden_scopes)
         lines.append("## Forbidden scopes")
-        lines.extend(_bullet_lines(bundle.authority.forbidden_scopes))
+        lines.extend(_bullet_lines(forbidden[:_SCOPE_SUMMARY_LIMIT]))
+        # Forbidden scopes grow with the project's declared envelope, not with the
+        # work, so an unbounded list makes the contract's size a property of the
+        # project rather than of the task. The grant above is the authority; this
+        # section names bounds that were withheld, and says when it stopped listing.
+        omitted = len(forbidden) - _SCOPE_SUMMARY_LIMIT
+        if omitted > 0:
+            lines.append(
+                f"- ... and {omitted} further withheld bound(s). Only the write scope "
+                "above is granted; every path outside it is denied whether or not it "
+                "is listed here."
+            )
         lines.append("")
 
     if bundle.skill_summaries:
@@ -133,9 +154,18 @@ def render_execution_bundle_markdown(bundle: ExecutionBundle) -> str:
     ]
     if selected_provenance:
         lines.append("## Selection provenance (summary)")
-        for record in selected_provenance[:10]:
+        for record in selected_provenance[:_PROVENANCE_SUMMARY_LIMIT]:
             lines.append(
                 f"- {record.component_kind}/{record.component_id}: {record.rationale}"
+            )
+        # A summary that stops without saying so reads as the complete list. The
+        # bundle is the canonical record; this says how much of it is shown and where
+        # the rest is, rather than quietly dropping it.
+        omitted = len(selected_provenance) - _PROVENANCE_SUMMARY_LIMIT
+        if omitted > 0:
+            lines.append(
+                f"- ... and {omitted} further selection record(s); the ExecutionBundle "
+                "`provenance` field carries all of them"
             )
         lines.append("")
 

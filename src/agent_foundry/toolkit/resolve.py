@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 from agent_foundry.models.base import FOUNDRY_SCHEMA_VERSION, SchemaCompatibilityError
 from agent_foundry.models.common import (
     AssuranceMode,
@@ -1227,6 +1229,99 @@ def _work_item_skill_relevance(work_item: WorkItemContract, skill_id: str, skill
     return True
 
 
+# Why a skill was included in a Task Toolkit, or the reason it was not. `None` means
+# the skill is permitted for this work item but nothing about the item needs it.
+def _policy_required_skills(project_lock: ToolkitLock) -> dict[str, str]:
+    """Skills the Project Toolkit pinned because a policy demanded them, by policy id.
+
+    A project assurance policy is not optional per Work Item: if `independent-review`
+    assurance put the reviewer skill in the lock, every item the policy covers needs it.
+    Reading it off the lock's own decision record keeps the rule where the policy
+    engine already made it, rather than re-deciding policy here.
+    """
+    return {
+        decision.component_id: decision.policy_id
+        for decision in project_lock.decisions
+        if decision.component_kind == "skill"
+        and decision.action == ResolutionAction.INCLUDE
+        and decision.policy_id
+    }
+
+
+def _skill_need_for_work_item(
+    work_item: WorkItemContract,
+    skill_id: str,
+    skills: dict[str, object],
+    workflow: object | None,
+    policy_required: dict[str, str],
+) -> str | None:
+    """Why this Work Item needs this skill, or None when nothing about it does.
+
+    Permission and need are different questions, and the Task Toolkit is the answer to
+    the second. `_skill_allowed_for_work_item` says the item *may* carry a skill; this
+    says the item cannot be closed without it. Before this existed only the permission
+    filter ran, so every skill sharing a work class with the item was handed to it and
+    the Task Toolkit was the Project Toolkit — which is not the minimum subset
+    docs/foundry/04 §4 specifies, and least capability is a safety property, not a
+    tidiness one.
+
+    Two needs, both read off declared contracts rather than guessed:
+
+    * the selected workflow names the skill as required, so the collaboration this item
+      runs under cannot be staffed without it;
+    * a project policy put the skill in the Project Toolkit, so it is not optional for
+      the items that policy covers;
+    * the skill produces a typed evidence class the Work Item requires, so the item
+      cannot reach closure without something that produces it.
+
+    A third arm lives in the caller: a Work Item must be able to read the scope it
+    operates on, so if nothing needed provides read access the cheapest skill that does
+    is added as the read baseline. That one is a property of the selected *set*, not of
+    any single skill, which is why it is not decided here.
+    """
+    from agent_foundry.models.registry import SkillSpec, WorkflowSpec
+
+    skill = skills.get(skill_id)
+    if not isinstance(skill, SkillSpec):
+        return None
+
+    if isinstance(workflow, WorkflowSpec) and skill_id in workflow.required_skills:
+        return f"workflow {workflow.id!r} requires this skill"
+
+    policy_id = policy_required.get(skill_id)
+    if policy_id:
+        return f"project policy {policy_id!r} requires this skill"
+
+    required_evidence = set(work_item.required_evidence)
+    produced = sorted(
+        evidence_class.value
+        for evidence_class in skill.produces_evidence
+        if evidence_class.value in required_evidence
+    )
+    if produced:
+        return "produces required evidence " + ", ".join(produced)
+
+    return None
+
+
+_READ_CAPABILITY_IDS: frozenset[str] = frozenset({"repository.read", "inspection.read"})
+"""Capabilities that let a run read the scope it operates on.
+
+Every Work Item needs at least one of these: a contract that authorizes changing a
+path but not looking at it cannot be carried out. This is the one need that is a
+property of the selected set rather than of any single skill.
+"""
+
+
+def _provides_read_access(skill_id: str, skills: dict[str, object]) -> bool:
+    from agent_foundry.models.registry import SkillSpec
+
+    skill = skills.get(skill_id)
+    if not isinstance(skill, SkillSpec):
+        return False
+    return bool(_READ_CAPABILITY_IDS & set(skill.required_capabilities))
+
+
 def _skill_allowed_for_work_item(
     work_item: WorkItemContract,
     skill_id: str,
@@ -1434,7 +1529,17 @@ def _select_task_integrations(
 def _work_item_workflow_for_item(
     work_item: WorkItemContract,
     available_workflow_ids: list[str],
+    is_satisfiable: Callable[[str], bool] = lambda _workflow_id: True,
 ) -> str | None:
+    """Pick the pinned workflow this item can actually run, or None.
+
+    A workflow names the skills its shape depends on. Pinning one whose skills this
+    work item may not carry produces a Task Toolkit that declares a collaboration it
+    cannot staff — coherent-looking, and rejected downstream by toolkit-coherence
+    validation. Both the preference order and the fallback are filtered by
+    `is_satisfiable`, so "no suitable workflow" resolves to no workflow rather than
+    to whichever id sorts first.
+    """
     if not available_workflow_ids:
         return None
 
@@ -1456,11 +1561,13 @@ def _work_item_workflow_for_item(
     elif work_item.work_class == WorkClass.ADOPTION:
         preference = ["investigator-synthesis"]
 
-    available = set(available_workflow_ids)
+    available = {
+        workflow_id for workflow_id in available_workflow_ids if is_satisfiable(workflow_id)
+    }
     for workflow_id in preference:
         if workflow_id in available:
             return workflow_id
-    return sorted(available_workflow_ids)[0]
+    return sorted(available)[0] if available else None
 
 
 def resolve_task_toolkit(
@@ -1484,17 +1591,41 @@ def resolve_task_toolkit(
     selected_capabilities: set[str] = set()
     decisions: list[ResolutionDecision] = []
 
-    workflow_id = _work_item_workflow_for_item(work_item, project_lock.workflow_ids)
-    if workflow_id is not None:
-        workflow = index["workflows"].get(workflow_id)
-        from agent_foundry.models.registry import WorkflowSpec
+    from agent_foundry.models.registry import WorkflowSpec
 
-        if isinstance(workflow, WorkflowSpec):
-            for skill_id in workflow.required_skills:
-                if skill_id in project_lock.skill_ids and _skill_allowed_for_work_item(
-                    work_item, skill_id, skills
-                ):
-                    selected_skills.add(skill_id)
+    def _workflow_satisfiable(candidate_id: str) -> bool:
+        candidate = index["workflows"].get(candidate_id)
+        if not isinstance(candidate, WorkflowSpec):
+            return False
+        return all(
+            skill_id in project_lock.skill_ids
+            and _skill_allowed_for_work_item(work_item, skill_id, skills)
+            for skill_id in candidate.required_skills
+        )
+
+    workflow_id = _work_item_workflow_for_item(
+        work_item, project_lock.workflow_ids, _workflow_satisfiable
+    )
+    if workflow_id is None and project_lock.workflow_ids:
+        decisions.append(
+            _decision(
+                ResolutionAction.EXCLUDE,
+                "workflow",
+                sorted(project_lock.workflow_ids)[0],
+                "no pinned workflow's required skills are available to this work item",
+                ResolutionSource.WORK_ITEM,
+                project_fact=(
+                    f"work_item.work_class={work_item.work_class.value}; "
+                    f"work_item.authority_class={work_item.authority_class.value}"
+                ),
+            )
+        )
+    selected_workflow = (
+        index["workflows"].get(workflow_id) if workflow_id is not None else None
+    )
+    if workflow_id is not None:
+        if isinstance(selected_workflow, WorkflowSpec):
+            workflow = selected_workflow
             for role_id in workflow.required_roles:
                 if role_id in project_lock.role_ids and _role_allowed_for_work_item(
                     work_item,
@@ -1514,20 +1645,14 @@ def resolve_task_toolkit(
                 )
             )
 
+    # Two filters, in order, and both are recorded. `allowed` is permission: may this
+    # work item carry the skill at all. `needed` is relevance: is there something about
+    # this item that cannot be done without it. The Task Toolkit is the minimum subset,
+    # so a permitted-but-unneeded skill is subtracted and says why.
+    policy_required = _policy_required_skills(project_lock)
+    permitted: list[str] = []
     for skill_id in project_lock.skill_ids:
-        if _skill_allowed_for_work_item(work_item, skill_id, skills):
-            selected_skills.add(skill_id)
-            decisions.append(
-                _decision(
-                    ResolutionAction.INCLUDE,
-                    "skill",
-                    skill_id,
-                    "skill triggers match work item class",
-                    ResolutionSource.WORK_ITEM,
-                    project_fact=f"work_item.work_class={work_item.work_class.value}",
-                )
-            )
-        else:
+        if not _skill_allowed_for_work_item(work_item, skill_id, skills):
             reason = "skill triggers do not match work item class"
             skill = skills.get(skill_id)
             from agent_foundry.models.registry import SkillSpec
@@ -1547,6 +1672,64 @@ def resolve_task_toolkit(
                     project_fact=f"work_item.work_class={work_item.work_class.value}",
                 )
             )
+            continue
+
+        permitted.append(skill_id)
+        need = _skill_need_for_work_item(
+            work_item, skill_id, skills, selected_workflow, policy_required
+        )
+        if need is not None:
+            selected_skills.add(skill_id)
+            decisions.append(
+                _decision(
+                    ResolutionAction.INCLUDE,
+                    "skill",
+                    skill_id,
+                    need,
+                    ResolutionSource.WORK_ITEM,
+                    project_fact=(
+                        f"work_item.work_class={work_item.work_class.value}; "
+                        f"work_item.required_evidence={sorted(work_item.required_evidence)!r}"
+                    ),
+                )
+            )
+
+    # Read baseline: a run that may not look at its own scope cannot carry out the
+    # contract. If nothing needed provides read access, the lowest-id permitted skill
+    # that does is added, and the decision says that is why it is there.
+    if not any(_provides_read_access(skill_id, skills) for skill_id in selected_skills):
+        for skill_id in sorted(permitted):
+            if not _provides_read_access(skill_id, skills):
+                continue
+            selected_skills.add(skill_id)
+            decisions.append(
+                _decision(
+                    ResolutionAction.INCLUDE,
+                    "skill",
+                    skill_id,
+                    "read baseline: no otherwise-required skill grants read access to "
+                    "the work item scope",
+                    ResolutionSource.WORK_ITEM,
+                    project_fact=f"work_item.scope={sorted(work_item.scope)!r}",
+                )
+            )
+            break
+
+    for skill_id in sorted(set(permitted) - selected_skills):
+        decisions.append(
+            _decision(
+                ResolutionAction.EXCLUDE,
+                "skill",
+                skill_id,
+                "permitted for this work class, but the work item requires neither the "
+                "evidence it produces nor the workflow that needs it",
+                ResolutionSource.WORK_ITEM,
+                project_fact=(
+                    f"work_item.required_evidence={sorted(work_item.required_evidence)!r}; "
+                    f"task_toolkit.workflow_id={workflow_id!r}"
+                ),
+            )
+        )
 
     selected_roles.update(
         _derive_roles_from_selected_skills(

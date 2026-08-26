@@ -1,0 +1,199 @@
+{
+  "not_run": [],
+  "reports": [
+    {
+      "findings": [
+        {
+          "evidence_refs": [],
+          "message": "8 contract(s) declare a supported schema version",
+          "outcome": "PASS",
+          "subject": "contract-set",
+          "validator_id": "contract-schema-compatibility"
+        }
+      ],
+      "subject_id": "schema",
+      "subject_kind": "contract-set"
+    },
+    {
+      "findings": [
+        {
+          "evidence_refs": [],
+          "message": "4 work item(s) form an acyclic graph with no dangling, self, or mutually blocking dependencies",
+          "outcome": "PASS",
+          "subject": "work-plan",
+          "validator_id": "work-dependency-graph"
+        }
+      ],
+      "subject_id": "dependency-graph",
+      "subject_kind": "work-plan"
+    },
+    {
+      "findings": [
+        {
+          "evidence_refs": [],
+          "message": "task toolkit is contained in the pinned project lock, resolves in the registry, and satisfies its skill and workflow requirements",
+          "outcome": "PASS",
+          "subject": "task-toolkit:wi-dcc714550913",
+          "validator_id": "toolkit-coherence"
+        }
+      ],
+      "subject_id": "wi-dcc714550913",
+      "subject_kind": "task-toolkit"
+    },
+    {
+      "findings": [
+        {
+          "evidence_refs": [],
+          "message": "granted repository-write is at or below every declared bound (manifest, work item, permission profile, role, capabilities)",
+          "outcome": "PASS",
+          "subject": "work-item:wi-dcc714550913",
+          "validator_id": "authority-ceiling"
+        }
+      ],
+      "subject_id": "wi-dcc714550913",
+      "subject_kind": "compiled-authority"
+    },
+    {
+      "findings": [
+        {
+          "evidence_refs": [],
+          "message": "1 granted write path(s) resolve and lie inside the work item scope and all 1 declared write bound(s)",
+          "outcome": "PASS",
+          "subject": "work-item:wi-dcc714550913",
+          "validator_id": "write-scope-containment"
+        }
+      ],
+      "subject_id": "wi-dcc714550913",
+      "subject_kind": "compiled-authority"
+    },
+    {
+      "findings": [
+        {
+          "evidence_refs": [],
+          "message": "1 bundle(s) grant no overlapping write scope across roles and no review-only role holds write authority",
+          "outcome": "PASS",
+          "subject": "execution-bundle-set",
+          "validator_id": "role-separation"
+        }
+      ],
+      "subject_id": "role-separation",
+      "subject_kind": "execution-bundle-set"
+    },
+    {
+      "findings": [
+        {
+          "evidence_refs": [],
+          "message": "1 required integration(s) are declared and carry fresh observations meeting their auth and health requirements",
+          "outcome": "PASS",
+          "subject": "integration-set",
+          "validator_id": "integration-preflight"
+        }
+      ],
+      "subject_id": "preflight",
+      "subject_kind": "integration-set"
+    },
+    {
+      "findings": [
+        {
+          "evidence_refs": [],
+          "message": "execution bundle names work, run and role, carries authority, toolkit, acceptance criteria, required evidence and stop conditions, and its capability sets are consistent",
+          "outcome": "PASS",
+          "subject": "wi-dcc714550913",
+          "validator_id": "execution-bundle-completeness"
+        }
+      ],
+      "subject_id": "wi-dcc714550913",
+      "subject_kind": "execution-bundle"
+    },
+    {
+      "findings": [
+        {
+          "evidence_refs": [],
+          "message": "0 provenance envelope(s) and 56 selection record(s) name a kind, a source, and a cause",
+          "outcome": "PASS",
+          "subject": "wi-dcc714550913",
+          "validator_id": "provenance-completeness"
+        }
+      ],
+      "subject_id": "wi-dcc714550913",
+      "subject_kind": "ExecutionBundle"
+    },
+    {
+      "findings": [
+        {
+          "evidence_refs": [],
+          "message": "19 material decision(s) name a cause, inferred facts did not widen authority, and the three lifecycles are traceable",
+          "outcome": "PASS",
+          "subject": "wi-dcc714550913/RUN-EXAMPLE-001",
+          "validator_id": "decision-explainability"
+        }
+      ],
+      "subject_id": "wi-dcc714550913/RUN-EXAMPLE-001",
+      "subject_kind": "execution-bundle"
+    },
+    {
+      "findings": [
+        {
+          "evidence_refs": [
+            "artifacts/deterministic-test.log"
+          ],
+          "message": "class deterministic-test satisfied by passing evidence naming a revision",
+          "outcome": "PASS",
+          "subject": "deterministic-test",
+          "validator_id": "required-evidence"
+        },
+        {
+          "evidence_refs": [
+            "artifacts/repository-revision.log"
+          ],
+          "message": "class repository-revision satisfied by passing evidence naming a revision",
+          "outcome": "PASS",
+          "subject": "repository-revision",
+          "validator_id": "required-evidence"
+        }
+      ],
+      "subject_id": "wi-dcc714550913",
+      "subject_kind": "evidence-bundle"
+    },
+    {
+      "findings": [
+        {
+          "evidence_refs": [],
+          "message": "evidence bundle names its identity, carries 2 typed item(s), and every unresolved finding meets its disposition's obligation",
+          "outcome": "PASS",
+          "subject": "wi-dcc714550913",
+          "validator_id": "evidence-bundle-completeness"
+        }
+      ],
+      "subject_id": "wi-dcc714550913",
+      "subject_kind": "evidence-bundle"
+    },
+    {
+      "findings": [
+        {
+          "evidence_refs": [],
+          "message": "receipt names exact work, run, role, revision, profile and artifact identities, and records its findings and limitations",
+          "outcome": "PASS",
+          "subject": "wi-dcc714550913/RUN-EXAMPLE-001",
+          "validator_id": "receipt-completeness"
+        }
+      ],
+      "subject_id": "wi-dcc714550913/RUN-EXAMPLE-001",
+      "subject_kind": "execution-receipt"
+    },
+    {
+      "findings": [
+        {
+          "evidence_refs": [],
+          "message": "work lifecycle, execution state, and evidence states are recorded separately and do not contradict each other",
+          "outcome": "PASS",
+          "subject": "wi-dcc714550913/RUN-EXAMPLE-001",
+          "validator_id": "lifecycle-separation"
+        }
+      ],
+      "subject_id": "wi-dcc714550913/RUN-EXAMPLE-001",
+      "subject_kind": "execution-receipt"
+    }
+  ],
+  "subject_id": "wi-dcc714550913/RUN-EXAMPLE-001"
+}
