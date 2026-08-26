@@ -78,6 +78,12 @@ def makefile_recipe_lines(content: str, target: str) -> list[str]:
     Needed to justify an adjacency claim: "the Makefile mentions pytest" and "the
     Makefile's test target runs pytest" are different facts, and only the second one
     survives a Makefile where pytest appears in an unrelated comment or recipe.
+
+    Recognises tab-prefixed recipes only — a `.RECIPEPREFIX` override is not
+    followed — and returns physical lines without joining backslash continuations.
+    Recipe syntax this does not recognise yields no recipe line and therefore no
+    convention: unrecognised syntax fails closed by design, dropping a claim
+    rather than making an unsupported one.
     """
     recipe: list[str] = []
     in_target = False

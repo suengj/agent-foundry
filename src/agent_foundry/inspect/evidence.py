@@ -153,19 +153,23 @@ def _basename(word: str) -> str:
 
 
 def _command_of(segment: list[ShellWord]) -> tuple[str | None, list[ShellWord]]:
-    """The command a segment runs and its arguments, or ``None`` when unclear."""
+    """The command a segment runs and its arguments, or ``None`` when unclear.
+
+    Quoting is stripped from the head: a shell runs ``"pytest" -q`` exactly as it
+    runs ``pytest -q``. Quoting still matters everywhere else — a quoted word in
+    an argument position is data being handed to the head, so ``sh -c "pytest"``
+    remains an invocation of ``sh``. Redirections and assignments are only those
+    when unquoted; ``"VAR=x"`` is a command name, not an assignment.
+    """
     index = 0
     while index < len(segment):
         word = segment[index]
-        if word.quoted:
-            # A quoted head is data being handed to something else, not a command
-            # this line runs. `sh -c "pytest"` is deliberately not claimed.
-            return None, []
-        if word.text.startswith(("<", ">")):
-            return None, []
-        if _ASSIGNMENT.match(word.text) or _basename(word.text) in _ENV_WRAPPERS:
-            index += 1
-            continue
+        if not word.quoted:
+            if word.text.startswith(("<", ">")):
+                return None, []
+            if _ASSIGNMENT.match(word.text) or _basename(word.text) in _ENV_WRAPPERS:
+                index += 1
+                continue
         return word.text, segment[index + 1 :]
     return None, []
 
@@ -202,6 +206,11 @@ def recipe_lines_invoking(content: str, target: str, command: str) -> list[str]:
 
     Each returned line is both the finding and its own evidence: the line is
     included precisely because *command* stood in a command position on it.
+
+    Known residual, fail-closed by design: physical lines are examined one at a
+    time, so a command name split across lines by a shell line continuation
+    (``py\\`` / ``test -q``) is not recognised. That drops a convention rather
+    than asserting a false one, which is the direction this module errs in.
     """
     invoking: list[str] = []
     for recipe_line in makefile_recipe_lines(content, target):
@@ -225,16 +234,37 @@ def _mapping_get(node: object, key: str) -> object | None:
     return None
 
 
+def _written_within(node: yaml.Node, container: yaml.Node) -> bool:
+    """Whether *node* is written inside *container*'s own source range."""
+    return container.start_mark.line <= node.start_mark.line <= container.end_mark.line
+
+
 def _workflow_step_nodes(root: object) -> list[yaml.MappingNode]:
+    """Steps whose own source text is the step — never a copy of another one.
+
+    A YAML alias resolves to the anchored node, source marks included, so an
+    aliased step (``- *checkout``) is the very same object as the step it copies.
+    Taking it at face value emits a second finding carrying the first step's
+    source line as its evidence, which that line does not support. Its own text
+    does not say what it uses either, so it is not accepted: a step counts once,
+    where it is actually written, inside its own steps sequence.
+    """
     jobs = _mapping_get(root, "jobs")
     if not isinstance(jobs, yaml.MappingNode):
         return []
     steps: list[yaml.MappingNode] = []
+    seen: set[int] = set()
     for _, job in jobs.value:
         step_list = _mapping_get(job, "steps")
         if not isinstance(step_list, yaml.SequenceNode):
             continue
-        steps.extend(step for step in step_list.value if isinstance(step, yaml.MappingNode))
+        for step in step_list.value:
+            if not isinstance(step, yaml.MappingNode):
+                continue
+            if id(step) in seen or not _written_within(step, step_list):
+                continue
+            seen.add(id(step))
+            steps.append(step)
     return steps
 
 

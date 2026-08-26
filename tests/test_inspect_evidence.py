@@ -325,15 +325,15 @@ RECIPE_CASES = [
     (".venv/bin/pytest -q", True),
     ('echo "step # 1" && pytest -q', True),
     ("true && pytest", True),
+    # A shell runs a quoted command name exactly as it runs a bare one.
+    ('"pytest" -q', True),
+    ("'pytest'", True),
     # Data, not a command in any of these.
     ('echo "# pytest -q"', False),
     ("echo word#pytest", False),
     ("echo pytest", False),
     ('sh -c "pytest -q"', False),
     ('echo "pytest"', False),
-    # A quoted head would run, but quoting is how data is handed around; the
-    # conservative reading costs a rare true case and never invents a false one.
-    ('"pytest" -q', False),
     # A shell syntax error runs nothing, so it cannot establish an invocation.
     ('pytest -q "unterminated', False),
     # A separator inside a comment does not start a new command.
@@ -416,7 +416,44 @@ def test_ordinary_checkout_step_still_emits(tmp_path: Path) -> None:
     ]
 
 
+STEP_ALIAS_WORKFLOW = """jobs:
+  build:
+    steps:
+      - &checkout
+        uses: actions/checkout@v4
+      - *checkout
+"""
+
+OUTSIDE_ANCHOR_WORKFLOW = """defaults: &step
+  uses: actions/checkout@v4
+jobs:
+  build:
+    steps:
+      - *step
+"""
+
+
+def test_aliased_step_does_not_duplicate_another_steps_evidence(tmp_path: Path) -> None:
+    """An aliased step IS the anchored node, marks included.
+
+    Taken at face value the loop sees the same mapping twice and emits a second
+    finding carrying the first step's source line, which that line does not
+    support. The step counts once, where it is written.
+    """
+    repo = _workflow_repo(tmp_path, "step-alias", STEP_ALIAS_WORKFLOW)
+    found = _conventions(inspect_project(repo), "ci-checkout")
+    assert [c.evidence for c in found] == ["uses: actions/checkout@v4"]
+
+
+def test_step_anchored_outside_its_steps_sequence_is_not_evidenced(tmp_path: Path) -> None:
+    """Same defect class: the anchor's line is not this step's own text."""
+    repo = _workflow_repo(tmp_path, "outside-anchor", OUTSIDE_ANCHOR_WORKFLOW)
+    assert _conventions(inspect_project(repo), "ci-checkout") == []
+
+
 WORKFLOW_CORPUS = [
+    STEP_ALIAS_WORKFLOW,
+    OUTSIDE_ANCHOR_WORKFLOW,
     LIVE_WORKFLOW,
     FOLDED_WORKFLOW,
     ALIAS_WORKFLOW,
