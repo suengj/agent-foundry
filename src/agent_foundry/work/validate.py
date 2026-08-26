@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from collections.abc import Iterator
 
 from agent_foundry.models.base import DependencyGraphError
 from agent_foundry.models.common import DependencyRelation
@@ -94,29 +95,44 @@ def validate_dependency_graph(work_items: list[WorkItemContract]) -> None:
 
 
 def _find_cycle_path(graph: dict[str, list[str]], known_ids: set[str]) -> list[str]:
+    """Name one cycle, as `a -> b -> a`, using an explicit stack.
+
+    Reached only after Kahn's algorithm has already proven a cycle exists, so
+    this runs on the failing path. A recursive walk here recursed once per node
+    and hit `RecursionError` on graphs the cycle detector itself handles, which
+    replaced the actionable "circular dependency: ..." diagnostic with a stack
+    overflow. Depth now lives on the heap, so the reported error is the one the
+    caller can act on however large the graph is.
+
+    Node visit order and the returned path match the previous recursive walk:
+    roots in sorted id order, neighbours in the order `_build_dependency_graph`
+    sorted them.
+    """
     visiting: set[str] = set()
     visited: set[str] = set()
-    stack: list[str] = []
-    cycle: list[str] = []
 
-    def dfs(node: str) -> bool:
-        if node in visiting:
-            start = stack.index(node)
-            cycle.extend(stack[start:] + [node])
-            return True
-        if node in visited:
-            return False
-        visiting.add(node)
-        stack.append(node)
-        for neighbor in graph[node]:
-            if dfs(neighbor):
-                return True
-        stack.pop()
-        visiting.remove(node)
-        visited.add(node)
-        return False
+    for root in sorted(known_ids):
+        if root in visited:
+            continue
+        # Each frame is the node plus its not-yet-followed neighbours.
+        stack: list[tuple[str, Iterator[str]]] = [(root, iter(graph[root]))]
+        visiting.add(root)
+        while stack:
+            node, neighbors = stack[-1]
+            descended = False
+            for neighbor in neighbors:
+                if neighbor in visiting:
+                    path = [frame[0] for frame in stack]
+                    return path[path.index(neighbor):] + [neighbor]
+                if neighbor in visited:
+                    continue
+                visiting.add(neighbor)
+                stack.append((neighbor, iter(graph[neighbor])))
+                descended = True
+                break
+            if not descended:
+                stack.pop()
+                visiting.discard(node)
+                visited.add(node)
 
-    for node in sorted(known_ids):
-        if node not in visited and dfs(node):
-            return cycle
     return sorted(known_ids)

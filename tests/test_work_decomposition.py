@@ -25,6 +25,7 @@ from agent_foundry.models.work import (
     AdoptionGap,
     CapabilityUnit,
     DecompositionInput,
+    DecompositionQualityFlag,
     EvidenceStateSnapshot,
     ExecutionRunRef,
     WorkItemContract,
@@ -634,3 +635,346 @@ print(dump_json(decompose_work(DecompositionInput(objective=objective, outcomes=
             )
             outputs.append(result.stdout)
     assert len(set(outputs)) == 1
+
+
+# --- SUE-336: failures on the failing path stay legible ---------------------
+
+CYCLE_GRAPH_SIZE = 3000
+
+
+def _chain_with_cycle(size: int) -> list[WorkItemContract]:
+    """`wi-0000 -> wi-0001 -> ... -> wi-(size-1) -> wi-0000`, one long cycle."""
+    ids = [f"wi-{index:04d}" for index in range(size)]
+    return [
+        WorkItemContract(
+            schema_version="0.1",
+            id=item_id,
+            title=item_id,
+            work_class=WorkClass.CAPABILITY,
+            objective="obj",
+            current_facts=[],
+            scope=[],
+            out_of_scope=[],
+            acceptance_criteria=["done"],
+            dependencies=[
+                {"relation": "requires", "target_id": ids[(index + 1) % size]}
+            ],
+            authority_class=ExternalEffectClass.READ_ONLY,
+            consequence_class=ConsequenceClass.LOW,
+            required_evidence=["evidence"],
+            stop_conditions=["stop"],
+        )
+        for index, item_id in enumerate(ids)
+    ]
+
+
+def test_large_cycle_reports_circular_dependency_not_recursion_error() -> None:
+    """Path reconstruction must survive graphs the cycle detector already handles."""
+    items = _chain_with_cycle(CYCLE_GRAPH_SIZE)
+
+    with pytest.raises(DependencyGraphError) as exc:
+        validate_dependency_graph(items)
+
+    assert "circular dependency" in str(exc.value).lower()
+    path = exc.value.cycle_path
+    assert path, "a detected cycle must be named"
+    assert path[0] == path[-1], f"cycle path must close: {path[:3]}...{path[-3:]}"
+    assert len(path) == CYCLE_GRAPH_SIZE + 1
+    assert len(set(path)) == CYCLE_GRAPH_SIZE
+    for current, following in zip(path, path[1:]):
+        assert following in {
+            dep.target_id for item in items if item.id == current for dep in item.dependencies
+        }, f"{current} -> {following} is not a real edge"
+
+
+def test_large_acyclic_graph_validates_without_recursion_error() -> None:
+    items = _chain_with_cycle(CYCLE_GRAPH_SIZE)
+    acyclic = [item for item in items if item.id != f"wi-{CYCLE_GRAPH_SIZE - 1:04d}"] + [
+        WorkItemContract(
+            schema_version="0.1",
+            id=f"wi-{CYCLE_GRAPH_SIZE - 1:04d}",
+            title="tail",
+            work_class=WorkClass.CAPABILITY,
+            objective="obj",
+            current_facts=[],
+            scope=[],
+            out_of_scope=[],
+            acceptance_criteria=["done"],
+            authority_class=ExternalEffectClass.READ_ONLY,
+            consequence_class=ConsequenceClass.LOW,
+            required_evidence=["evidence"],
+            stop_conditions=["stop"],
+        )
+    ]
+    validate_dependency_graph(acyclic)
+
+
+def test_cycle_path_is_unchanged_for_the_small_case() -> None:
+    """The iterative walk reports the same path the recursive one did."""
+    items = _chain_with_cycle(2)
+    with pytest.raises(DependencyGraphError) as exc:
+        validate_dependency_graph(items)
+    assert exc.value.cycle_path == ["wi-0000", "wi-0001", "wi-0000"]
+
+
+# --- SUE-336: the Work Item contract is genuinely immutable ----------------
+
+
+def _contract() -> WorkItemContract:
+    plan = decompose_work(
+        DecompositionInput(
+            objective=_objective(),
+            outcomes=[_outcome()],
+            capability_units=_single_causal_capability_units(),
+        )
+    )
+    return plan.work_items[0]
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "scope",
+        "out_of_scope",
+        "acceptance_criteria",
+        "required_evidence",
+        "stop_conditions",
+        "escalation_conditions",
+        "current_facts",
+        "implementation_references",
+        "dependencies",
+    ],
+)
+def test_work_item_contract_sequence_fields_reject_in_place_edits(field: str) -> None:
+    """`frozen=True` blocks rebinding; a list field would still accept .append()."""
+    contract = _contract()
+    before = dump_json(contract)
+    with pytest.raises(AttributeError):
+        getattr(contract, field).append("SMUGGLED")
+    assert dump_json(contract) == before
+
+
+def test_attached_contract_cannot_be_widened_through_the_execution_context() -> None:
+    """Scope bounds compiled write authority; in-place widening must be impossible."""
+    context = WorkItemExecutionContext(contract=_contract())
+    before = dump_json(context.contract)
+    with pytest.raises(AttributeError):
+        context.contract.scope.append("SMUGGLED")
+    with pytest.raises(AttributeError):
+        context.runs.append(ExecutionRunRef(id="run-x", work_item_id=context.contract.id))
+    assert dump_json(context.contract) == before
+    assert "SMUGGLED" not in dump_json(context.contract).decode("utf-8")
+
+
+# --- SUE-336: execution runs are a truthful attempt history ----------------
+
+
+def test_attach_execution_run_rejects_a_duplicate_run_id() -> None:
+    context = WorkItemExecutionContext(contract=_contract())
+    context = attach_execution_run(context, run_id="run-000")
+    with pytest.raises(WorkDecompositionError, match="already attached"):
+        attach_execution_run(context, run_id="run-000")
+    assert len(context.runs) == 1
+
+
+def test_attach_execution_run_keeps_attach_order_not_lexical_order() -> None:
+    context = WorkItemExecutionContext(contract=_contract())
+    for run_id in ("run-9", "run-049", "run-1000"):
+        context = attach_execution_run(context, run_id=run_id)
+    assert [run.id for run in context.runs] == ["run-9", "run-049", "run-1000"]
+
+
+def test_attaching_fifty_distinct_runs_yields_fifty_runs() -> None:
+    context = WorkItemExecutionContext(contract=_contract())
+    for index in range(50):
+        context = attach_execution_run(context, run_id=f"run-{index:03d}")
+    assert len(context.runs) == 50
+    assert len({run.id for run in context.runs}) == 50
+
+
+# --- SUE-336: the external validation requirement carries information ------
+
+
+def test_read_only_discovery_item_declares_no_external_validation() -> None:
+    units = [
+        _make_unit(
+            "unit-discover",
+            "Survey the current state",
+            authority_class=ExternalEffectClass.READ_ONLY,
+            discovery_only=True,
+        )
+    ]
+    plan = decompose_work(
+        DecompositionInput(
+            objective=_objective(),
+            outcomes=[_outcome()],
+            capability_units=units,
+        )
+    )
+    item = plan.work_items[0]
+    assert item.authority_class == ExternalEffectClass.READ_ONLY
+    assert item.runtime_external_validation_requirement is None
+
+
+def test_runtime_mutating_item_declares_external_read_back() -> None:
+    units = [
+        _make_unit(
+            "unit-apply",
+            "Apply the runtime change",
+            authority_class=ExternalEffectClass.RUNTIME_MUTATION,
+            mutates_external=True,
+            required_evidence=["runtime read-back"],
+        )
+    ]
+    plan = decompose_work(
+        DecompositionInput(
+            objective=_objective(),
+            outcomes=[_outcome()],
+            capability_units=units,
+        )
+    )
+    requirement = plan.work_items[0].runtime_external_validation_requirement
+    assert requirement is not None
+    assert "runtime" in requirement
+    assert "runtime read-back" in requirement
+
+
+def test_external_validation_requirement_differs_by_authority_class() -> None:
+    """A constant would read identically for every item; a derived one must not."""
+    outcomes = [_outcome("out-shared", "Shared outcome")]
+    units = _pair_units(
+        "unit-read",
+        "unit-write",
+        left_overrides={
+            "authority_class": ExternalEffectClass.READ_ONLY,
+            "outcome_id": "out-shared",
+        },
+        right_overrides={
+            "authority_class": ExternalEffectClass.REPOSITORY_WRITE,
+            "outcome_id": "out-shared",
+        },
+    )
+    plan = decompose_work(
+        DecompositionInput(
+            objective=_objective(), outcomes=outcomes, capability_units=units
+        )
+    )
+    requirements = {
+        item.authority_class: item.runtime_external_validation_requirement
+        for item in plan.work_items
+    }
+    assert requirements[ExternalEffectClass.READ_ONLY] is None
+    assert requirements[ExternalEffectClass.REPOSITORY_WRITE] is not None
+    assert len(set(requirements.values())) == 2
+
+
+# --- SUE-336: quality diagnostics say what happened and are self-contained --
+
+
+def test_cross_outcome_collision_flag_names_units_not_outcomes() -> None:
+    """The engine splits these units and produces no mega item; the flag says so."""
+    units = _pair_units(
+        "unit-auth",
+        "unit-billing",
+        left_overrides={"outcome_id": "out-one"},
+        right_overrides={"outcome_id": "out-two"},
+    )
+    plan = decompose_work(
+        DecompositionInput(
+            objective=_objective(),
+            outcomes=[_outcome("out-one"), _outcome("out-two", "Billing")],
+            capability_units=units,
+        )
+    )
+    flags = {issue.flag.value for issue in plan.quality_issues}
+    assert "cross-outcome-identity-collision" in flags
+    assert "mega-item" not in flags
+
+    issue = next(
+        issue
+        for issue in plan.quality_issues
+        if issue.flag is DecompositionQualityFlag.CROSS_OUTCOME_IDENTITY_COLLISION
+    )
+    unit_ids = {unit.id for unit in units}
+    assert set(issue.related_ids) == unit_ids
+    assert issue.work_item_id is None
+    # No mega item is produced: the units land in two separate work items.
+    assert len(plan.work_items) == 2
+
+
+def test_mixed_work_class_flag_relates_unit_ids_not_class_names() -> None:
+    shared = _base_unit_fields()
+    shared.pop("work_class")
+    units = [
+        CapabilityUnit(
+            id="unit-amend",
+            title="Amend the contract",
+            description="Amend the contract",
+            work_class=WorkClass.CONTRACT_AMENDMENT,
+            **shared,
+        ),
+        CapabilityUnit(
+            id="unit-capability",
+            title="Wire authoritative consumer",
+            description="Wire authoritative consumer",
+            work_class=WorkClass.CAPABILITY,
+            **shared,
+        ),
+    ]
+    plan = decompose_work(
+        DecompositionInput(
+            objective=_objective(), outcomes=[_outcome()], capability_units=units
+        )
+    )
+    issue = next(
+        issue
+        for issue in plan.quality_issues
+        if issue.flag is DecompositionQualityFlag.MIXED_WORK_CLASS
+    )
+    assert set(issue.related_ids) == {"unit-amend", "unit-capability"}
+    assert issue.work_item_id == plan.work_items[0].id
+    # The class names stay in the message, where they explain the choice.
+    assert "CONTRACT_AMENDMENT" in issue.message
+    assert "CAPABILITY" in issue.message
+
+
+def test_every_quality_flag_relates_ids_that_resolve_within_the_plan() -> None:
+    """A diagnostic that names nothing addressable cannot be acted on."""
+    units = _pair_units(
+        "unit-auth",
+        "unit-billing",
+        left_overrides={"outcome_id": "out-one"},
+        right_overrides={"outcome_id": "out-two"},
+    )
+    plan = decompose_work(
+        DecompositionInput(
+            objective=_objective(),
+            outcomes=[_outcome("out-one"), _outcome("out-two", "Billing")],
+            capability_units=units,
+        )
+    )
+    addressable = (
+        {unit.id for unit in units}
+        | {item.id for item in plan.work_items}
+        | {
+            criterion
+            for item in plan.work_items
+            for criterion in item.acceptance_criteria
+        }
+    )
+    for issue in plan.quality_issues:
+        unresolved = sorted(set(issue.related_ids) - addressable)
+        assert unresolved == [], f"{issue.flag.value} relates unresolvable ids: {unresolved}"
+
+
+# --- SUE-336: the orphan-outcome check has exactly one site ----------------
+
+
+def test_undeclared_outcome_check_is_not_duplicated_in_the_source() -> None:
+    source = (REPO_ROOT / "src" / "agent_foundry" / "work" / "decompose.py").read_text(
+        encoding="utf-8"
+    )
+    assert source.count("reference undeclared outcomes") == 1, (
+        "the undeclared-outcome check had an identical unreachable copy inside "
+        "_packages_for_outcomes; one check site, one message"
+    )

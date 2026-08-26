@@ -65,10 +65,15 @@ def check_capability_units_pre_grouping(
         if len(outcomes) > 1:
             issues.append(
                 DecompositionQualityIssue(
-                    flag=DecompositionQualityFlag.MEGA_ITEM,
+                    flag=DecompositionQualityFlag.CROSS_OUTCOME_IDENTITY_COLLISION,
                     work_item_id=None,
-                    message="capability units span multiple outcomes on identical causal dimensions",
-                    related_ids=sorted(outcomes),
+                    message=(
+                        "capability units span multiple outcomes on identical causal "
+                        "dimensions ("
+                        + ", ".join(sorted(outcomes))
+                        + "); outcome_id is what keeps them separate work items"
+                    ),
+                    related_ids=sorted(unit.id for unit in group_units),
                 )
             )
 
@@ -156,13 +161,21 @@ def work_class_merge_issue(
     work_item_id: str,
     chosen: str,
 ) -> DecompositionQualityIssue | None:
-    """Record when merged units carried different work-class labels."""
+    """Record when merged units carried different work-class labels.
+
+    `related_ids` names the units that disagreed, matching every other flag and
+    letting a reader open them. It previously held the class names, which are
+    already in the message and point at nothing.
+    """
     classes = sorted({unit.work_class.value for unit in units})
     if len(classes) <= 1:
         return None
     return DecompositionQualityIssue(
         flag=DecompositionQualityFlag.MIXED_WORK_CLASS,
         work_item_id=work_item_id,
-        message=f"merged units carried multiple work classes; chose {chosen}",
-        related_ids=classes,
+        message=(
+            f"merged units carried multiple work classes ({', '.join(classes)}); "
+            f"chose {chosen}"
+        ),
+        related_ids=sorted(unit.id for unit in units),
     )
