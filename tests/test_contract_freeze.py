@@ -3,37 +3,58 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = REPO_ROOT / "docs" / "contracts" / "product-boundary.md"
 CONSTITUTION = REPO_ROOT / "docs" / "ai" / "PROJECT_AGENT_CONSTITUTION.md"
+OVERVIEW = REPO_ROOT / "docs" / "foundry" / "00-overview.md"
 
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_product_contract_exists_and_covers_acceptance():
+def test_product_contract_exists_and_covers_public_boundaries():
     assert CONTRACT.is_file()
     text = _read(CONTRACT)
     required = [
-        "Personal MVP first",
-        "Business toolbox second",
-        "suengj/ai-agent-dev-playbook",
+        "provider-neutral",
+        "Greenfield",
+        "Brownfield",
+        "Objective",
+        "Work Package",
+        "Work Item",
+        "Project Toolkit",
+        "Task Toolkit",
         "dry-run",
         "explicit apply",
-        "provider-neutral",
-        "planning elapsed time",
-        "manual correction rate",
-        "generated-task acceptance rate",
-        "duplicate/stale-context",
-        "authority-boundary miss rate",
+        "credential references",
+        "raw secrets",
         "evidence completeness",
     ]
     for phrase in required:
-        assert phrase in text, f"missing contract phrase: {phrase}"
+        assert phrase in text, f"missing product contract phrase: {phrase}"
 
 
-def test_constitution_pins_playbook_without_wholesale_copy():
+def test_constitution_freezes_core_agent_foundry_invariants():
     assert CONSTITUTION.is_file()
     text = _read(CONSTITUTION)
-    assert "suengj/ai-agent-dev-playbook" in text
-    assert "daa487c" in text or "playbook.ref" in text
-    assert "Linear" in text and "GitHub" in text
-    assert "do not copy" in text.lower() or "not copy" in text.lower()
+    required = [
+        "Provider-neutral core",
+        "Causal work decomposition",
+        "Brownfield is first-class",
+        "Evidence over agent self-report",
+        "Secrets are referenced, never embedded",
+        "Public contracts are self-contained",
+    ]
+    for phrase in required:
+        assert phrase in text, f"missing constitution invariant: {phrase}"
+
+
+def test_operating_model_has_no_private_dependency_language():
+    assert OVERVIEW.is_file()
+    text = _read(OVERVIEW).lower()
+    forbidden = [
+        "ai-agent-dev-playbook",
+        "trading lab",
+        "signal trading",
+        "~/developer/pjt",
+    ]
+    for phrase in forbidden:
+        assert phrase not in text, f"private/internal reference leaked: {phrase}"
