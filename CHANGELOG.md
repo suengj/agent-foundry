@@ -12,6 +12,7 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 
 ### Added
 
+- Write/render boundary embedded-secret guard: Tier A (known vendor credential formats in values and keys) hard-fails serialization; Tier B (value entropy) is advisory only and does not block.
 - Clean public architecture baseline for Agent Foundry.
 - Greenfield and brownfield project-adoption model.
 - Tracker-neutral causal work model.

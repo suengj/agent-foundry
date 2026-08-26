@@ -29,6 +29,24 @@ class RawSecretError(FoundryModelError):
     """Raised when a mapping field appears to carry raw secret material."""
 
 
+class EmbeddedSecretError(FoundryModelError):
+    """Raised when serialized output would embed credential-shaped secret material."""
+
+    def __init__(
+        self,
+        *,
+        json_path: str,
+        rule_name: str,
+        redacted_excerpt: str,
+    ) -> None:
+        self.json_path = json_path
+        self.rule_name = rule_name
+        self.redacted_excerpt = redacted_excerpt
+        super().__init__(
+            f"embedded secret at {json_path}: rule={rule_name} ({redacted_excerpt})"
+        )
+
+
 def parse_schema_version(version: str) -> tuple[int, int]:
     parts = version.split(".")
     if len(parts) != 2:

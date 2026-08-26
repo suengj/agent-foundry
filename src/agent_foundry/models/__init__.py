@@ -5,6 +5,7 @@ from agent_foundry.models.base import (
     FreeFormMapping,
     FoundryModel,
     FoundryModelError,
+    EmbeddedSecretError,
     RawSecretError,
     SchemaCompatibilityError,
     VersionedContract,
@@ -92,6 +93,11 @@ from agent_foundry.models.registry import (
     WorkflowSpec,
 )
 from agent_foundry.models.toolkit import TaskToolkit, ToolkitLock, ToolkitResolution
+from agent_foundry.secrets import (
+    ConfidenceTier,
+    SecretFinding,
+    scan_for_embedded_secrets,
+)
 from agent_foundry.models.work import (
     DependencySpec,
     WorkItemContract,
@@ -112,12 +118,14 @@ __all__ = [
     "BudgetProfile",
     "CapabilitySpec",
     "Concurrency",
+    "ConfidenceTier",
     "ConsequenceClass",
     "DependencyRelation",
     "DependencySpec",
     "EvidenceBundle",
     "EvidenceItem",
     "EvidenceState",
+    "EmbeddedSecretError",
     "ExecutionBundle",
     "ExecutionReceipt",
     "ExecutionState",
@@ -157,6 +165,7 @@ __all__ = [
     "ReviewOutcome",
     "RoleContract",
     "SchemaCompatibilityError",
+    "SecretFinding",
     "SecretProvider",
     "SecretRef",
     "SkillSpec",
@@ -183,6 +192,7 @@ __all__ = [
     "parse_json",
     "parse_schema_version",
     "parse_yaml",
+    "scan_for_embedded_secrets",
     "serialize_datetime_utc",
     "validate_schema_compatibility",
 ]
