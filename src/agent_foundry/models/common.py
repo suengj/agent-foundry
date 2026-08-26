@@ -259,3 +259,96 @@ class EvidenceState(StrEnum):
     RUNTIME_VERIFIED = "RUNTIME_VERIFIED"
     USER_ACCEPTED = "USER_ACCEPTED"
     NOT_REQUIRED = "NOT_REQUIRED"
+
+
+class EvidenceClass(StrEnum):
+    """Evidence types from docs/foundry/06 §3.
+
+    A typed class is what a required-evidence check can be satisfied by. Untyped
+    evidence (an `EvidenceItem` carrying only a free-form `kind`) deliberately
+    satisfies nothing: unrecognised is not the same as proven.
+    """
+
+    REPOSITORY_REVISION = "repository-revision"
+    DETERMINISTIC_TEST = "deterministic-test"
+    STATIC_ANALYSIS = "static-analysis"
+    CONTRACT_VALIDATION = "contract-validation"
+    REPRODUCIBLE_CALCULATION = "reproducible-calculation"
+    STATISTICAL_EVALUATION = "statistical-evaluation"
+    INDEPENDENT_REVIEW = "independent-review"
+    INTEGRATION_PROOF = "integration-proof"
+    MERGED_IDENTITY = "merged-identity"
+    RUNTIME_READBACK = "runtime-readback"
+    HUMAN_ACCEPTANCE = "human-acceptance"
+
+
+class EvidenceResult(StrEnum):
+    """Outcome an evidence artifact reports.
+
+    `NOT_OBSERVED` exists so that "we did not look" is recordable as a value rather
+    than expressed by omitting the item, which would read as a pass by default.
+    """
+
+    PASS = "pass"
+    FAIL = "fail"
+    INCONCLUSIVE = "inconclusive"
+    NOT_OBSERVED = "not-observed"
+
+
+class ValidationOutcome(StrEnum):
+    """Outcome vocabulary shared by validation and reconciliation.
+
+    There is no single boolean here on purpose. `MISSING` is what absent evidence
+    resolves to; it never collapses into `PASS`, and `NOT_REQUIRED` must be
+    declared rather than inferred from the absence of a requirement.
+    """
+
+    PASS = "PASS"
+    NOT_REQUIRED = "NOT_REQUIRED"
+    MISSING = "MISSING"
+    BLOCKED = "BLOCKED"
+    HUMAN_REQUIRED = "HUMAN_REQUIRED"
+
+
+class FindingDisposition(StrEnum):
+    """Finding disposition from docs/foundry/06 §9."""
+
+    BLOCKER = "BLOCKER"
+    RESIDUAL = "RESIDUAL"
+    HYPOTHESIS = "HYPOTHESIS"
+    HUMAN_REQUIRED = "HUMAN_REQUIRED"
+
+
+class FailureCategory(StrEnum):
+    """Repeated-failure classes for later repair logic.
+
+    `UNKNOWN` is a first-class answer. A signal that does not structurally support a
+    category returns `UNKNOWN` rather than the closest-looking guess.
+    """
+
+    CONTRACT = "contract"
+    CONTEXT = "context"
+    PERMISSION = "permission"
+    TOOL = "tool"
+    HARNESS = "harness"
+    UNKNOWN = "unknown"
+
+
+class StateAuthority(StrEnum):
+    """Which system is authoritative for a piece of state (docs/foundry/06 §7)."""
+
+    TRACKER = "tracker"
+    REPOSITORY = "repository"
+    RUNTIME = "runtime"
+    FOUNDRY = "foundry"
+
+
+class ReconciliationDimension(StrEnum):
+    """Axis along which declared intent and observed state are compared."""
+
+    IDENTITY_LINKAGE = "identity-linkage"
+    WORK_LIFECYCLE = "work-lifecycle"
+    EVIDENCE_STATE = "evidence-state"
+    INTEGRATION_STATE = "integration-state"
+    RUNTIME_STATE = "runtime-state"
+    AUTHORITY = "authority"

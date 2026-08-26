@@ -1589,6 +1589,10 @@ def resolve_task_toolkit(
                 cap,
                 "not required for this work item",
                 ResolutionSource.WORK_ITEM,
+                # The sibling role exclusion below already cites the work class that
+                # caused it. An exclusion that names no cause is unreviewable, so this
+                # one cites the same fact rather than leaving the reason to inference.
+                project_fact=f"work_item.work_class={work_item.work_class.value}",
             )
         )
 
