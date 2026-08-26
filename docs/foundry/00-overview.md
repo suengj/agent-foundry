@@ -2,66 +2,82 @@
 
 ## Purpose
 
-Agent Foundry turns reusable AI development principles into project-specific, task-specific execution contracts.
+Agent Foundry is a provider-neutral system for turning a real project into a bounded AI-native execution environment.
 
-It is not a second AI Dev Playbook and it is not a repository of giant prompts. The intended boundary is:
-
-```text
-AI Dev Playbook
-= reusable principles, governance, operating knowledge
-
-Agent Foundry
-= classify a project, resolve an approved toolkit, compile a task execution bundle,
-  enforce execution boundaries, and verify results with evidence
-
-Project
-= local constitution, technical context, selected toolkit, and task/runtime truth
-```
-
-The long-term operating loop is:
+Its core responsibility is:
 
 ```text
-Human objective
-→ Project definition
-→ Project classification
-→ Project manifest
-→ Toolkit resolution
-→ Project bootstrap
-→ Current task + current truth
-→ Task-time compilation
-→ Agent / Agent Graph execution
-→ Verification / evidence
-→ Execution receipt
-→ Audit / learning
+Inspect
+→ Classify
+→ Adopt / Retrofit
+→ Resolve capabilities
+→ Compile work
+→ Validate execution contracts
+→ Adapt to tools and agents
+→ Reconcile evidence
 ```
+
+Foundry is not intended to become a second project-management database, a secret vault, a general-purpose workflow engine, or a monolithic agent runtime. It should integrate with those systems through explicit adapters and contracts.
+
+## End-to-end lifecycle
+
+Foundry supports both new and existing projects.
+
+```text
+Human objective / existing system
+        ↓
+Project intake
+        ↓
+Project classification + readiness assessment
+        ↓
+Project Manifest
+        ↓
+Work model + Project Toolkit
+        ↓
+Work Item + fresh project truth
+        ↓
+Task Toolkit + Execution Bundle
+        ↓
+Agent / Agent Graph execution
+        ↓
+Verification / evidence / reconciliation
+        ↓
+Learning / project or Foundry improvement
+```
+
+For a new project, adoption creates the minimum operating structure. For an existing project, adoption begins with inventory, truth reconstruction, gap analysis, and progressive retrofit rather than rewriting the project around Foundry.
 
 ## Design principles
 
-1. **Source once, compile many.** Durable principles and policies have one canonical source; task prompts receive only the applicable subset.
-2. **Project first, task second.** Foundry first determines what kind of project it is operating, then resolves the capabilities appropriate for that project.
-3. **Project Toolkit is an approved universe; Task Toolkit is a minimal subset.** Do not expose every role, skill, tool, or connector to every agent.
-4. **Policy is not Skill.** Policy defines what is allowed or required; a Skill defines how to perform a repeatable procedure.
-5. **Hard rules require executable controls where possible.** Prose alone is not a permission system.
-6. **Typed boundaries reduce interpretation loss.** Agent-to-agent handoffs, evidence, state transitions, and decisions should be structured when practical.
-7. **Fresh truth beats hidden memory.** Linear, GitHub, runtime, and external-system read-back outrank agent recollection.
-8. **Role before provider.** Resolve responsibility and capability needs before selecting Claude, Codex, Cursor, or another model/provider.
-9. **Evidence controls state transition.** Agent self-report is never sufficient evidence for completion.
-10. **Pinned inheritance.** Global policies, toolkits, and adapters do not silently change project behavior.
+1. **Source once, compile many.** Durable rules and structured configuration have one canonical owner; agent-facing Markdown is a projection.
+2. **Project first, task second.** Project characteristics determine the allowed capability universe before a task selects its minimum subset.
+3. **Work is causal, not file-shaped.** Work items are split by independently testable outcomes, authority boundaries, dependencies, rollback units, and ownership surfaces—not by arbitrary file or agent boundaries.
+4. **Project Toolkit is an approved universe; Task Toolkit is least-capability.** A task receives only the capabilities it actually needs.
+5. **Policy is not Skill.** Policy defines what is allowed or required; Skills define reusable procedures.
+6. **Hard rules should become executable controls where practical.** Prose alone is not a permission system.
+7. **Typed boundaries reduce interpretation loss.** Material handoffs, evidence, state transitions, and decisions should be structured.
+8. **Fresh truth beats hidden memory.** Repository, tracker, runtime, and external-system read-back outrank agent recollection.
+9. **Role before provider.** Responsibility and capability requirements are resolved before provider/model selection.
+10. **Evidence controls state transition.** Agent self-report is never sufficient completion evidence.
+11. **Tracker state, execution state, and evidence state are distinct.** A task can be in review while a run is retrying and evidence is only partially complete.
+12. **Secrets are referenced, not stored.** Foundry configuration may point to credential providers but should not contain raw secret values.
+13. **Pinned and compatible by default.** Schemas, toolkits, adapters, and capability versions must not silently alter existing projects.
+14. **Learning is gated.** A project-local incident or workaround is not automatically promoted to a global Foundry rule.
 
 ## Canonical document map
 
 | Document | Owns |
 |---|---|
-| `docs/ai/PROJECT_AGENT_CONSTITUTION.md` | Agent Foundry's own project-local P0 rules and pinned Playbook adoption |
-| `docs/contracts/product-boundary.md` | Product / authority boundary for Agent Foundry itself |
+| `docs/ai/PROJECT_AGENT_CONSTITUTION.md` | This repository's project-local P0 rules and authority |
+| `docs/contracts/product-boundary.md` | Product scope and authority boundary |
 | `docs/ai/project-context.md` | Technical environment of this repository |
-| `docs/foundry/01-governance-and-harness.md` | Governance, policy, authority, harness and control model |
-| `docs/foundry/02-roles-and-interaction.md` | Agent roles, communication, handoff and interpretation contracts |
-| `docs/foundry/03-project-classification.md` | Domain-neutral project characterization and Project Manifest model |
-| `docs/foundry/04-toolkit-composition.md` | Capability registry, Project Toolkit, Task Toolkit and resolution rules |
-| `docs/foundry/05-workflow-and-compilation.md` | Workflow/Agent Graph model and Execution Bundle compilation |
-| `docs/foundry/06-execution-evidence-learning.md` | Verification, evidence, receipts, incidents and feedback |
-| `docs/foundry/07-implementation-direction.md` | Boundary between documentation/specification and the next code implementation phase |
+| `docs/foundry/01-governance-and-control.md` | Governance, policy, authority, trust, harness and executable controls |
+| `docs/foundry/02-project-intake-and-adoption.md` | Domain-neutral classification, greenfield bootstrap, brownfield retrofit, readiness |
+| `docs/foundry/03-work-model-and-decomposition.md` | Objective-to-work decomposition and tracker-neutral work contracts |
+| `docs/foundry/04-toolkit-and-integrations.md` | Capability registry, Project/Task Toolkit, tools, MCP/API integrations, credential references |
+| `docs/foundry/05-orchestration-and-interaction.md` | Roles, workflows, Agent Graph, communication and handoff contracts |
+| `docs/foundry/06-verification-reconciliation-learning.md` | Evidence, state reconciliation, incidents and learning feedback |
+| `docs/foundry/07-implementation-contracts.md` | Machine-readable schemas, package boundaries and implementation sequence |
 
 ## Conceptual layers
 
@@ -73,58 +89,70 @@ Rules
   Governance / Policy
       ↓
 Controls
-  Harness / permissions / gates
+  Harness / permissions / trust / budgets
       ↓
 Project interpretation
-  Classification / Manifest
+  Intake / Classification / Adoption
+      ↓
+Work control
+  Objective / Outcome / Work Package / Work Item
       ↓
 Capability composition
-  Project Toolkit
+  Project Toolkit / Integrations
       ↓
-Task coordination
-  Workflow / roles / Task Toolkit
+Coordination
+  Roles / Workflow / Task Toolkit / Interaction
       ↓
 Execution
-  Agent / tools / skills
+  Agent / Skills / Tools
       ↓
 Verification
   Evidence / review / runtime read-back
       ↓
-Learning
-  Decision / incident / amendment
+Reconciliation & Learning
+  Tracker / repository / runtime state + improvements
 ```
 
-`Interaction / Communication` is a cross-cutting plane rather than a hierarchy level. It defines how agents pass context, evidence, state and decisions across all execution stages.
+Communication is a cross-cutting protocol rather than another hierarchy level. It defines how authority, context, evidence, uncertainty, state, and requested decisions move between agents and systems.
 
-## Global versus project-local responsibility
+## Foundry-owned versus external state
 
-The upper layers are deliberately more reusable:
+Foundry should not duplicate the authoritative state of external systems.
 
 ```text
-Global / Foundry-oriented
-Constitution → Governance / Policy → Harness / Control → Protocols / Registries
+Work tracker
+= objectives, work items, priority, dependency, lifecycle state
 
-Project-dependent
-Project Classification → Project Manifest → Project Toolkit
-→ Workflow / Task Toolkit → Execution / Verification
+Repository
+= code, configuration, tests, PRs, implementation history
+
+Runtime / external systems
+= actual deployed or externally visible truth
+
+Credential provider
+= secret values and identity material
+
+Foundry
+= project manifest, toolkit resolution/lock, task execution contracts,
+  adapters, validation, and reconciliation logic
 ```
 
-Projects inherit global defaults but should normally specialize by narrowing scope, adding domain requirements, or making controls stricter. Lower-level configuration must not silently weaken a non-overridable upper-level rule.
+## Public-repository boundary
 
-## Relationship to AI Dev Playbook
+The public architecture must be self-contained. It should not depend on private repositories, private project names, personal filesystem layouts, or unpublished operating rules. Internal experiments may inform the design, but public contracts must stand on their own and use generic examples.
 
-Agent Foundry should adopt rather than duplicate the Playbook. The Playbook already provides the conceptual source for federated constitution, normative versus factual authority, static/dynamic harness, role-first provider routing, Agent Graph node/edge contracts, evidence-first completion, and provider/tool governance.
+## Documentation versus implementation
 
-Foundry's unique responsibility is to make those ideas executable:
+Human-readable Markdown owns architecture intent, semantics, and rationale. Deterministic behavior should move into structured schemas and code.
 
 ```text
-Playbook principle
-→ Foundry schema / registry / resolver / compiler
-→ project-specific configuration
-→ task-specific execution bundle
-→ runtime evidence
+Human-readable contract
+        ↓
+Machine-readable spec
+        ↓
+Resolver / Compiler / Validator
+        ↓
+Generated agent-facing Markdown
 ```
 
-## Non-goal of this documentation phase
-
-This document set freezes the operating model and implementation boundaries. It does not yet implement the toolkit registry, classifier, resolver, compiler, agent runtime, or generated Markdown artifacts. Those are the next code phase described in `07-implementation-direction.md`.
+The implementation target is described in `07-implementation-contracts.md`.
