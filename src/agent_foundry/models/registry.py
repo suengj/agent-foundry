@@ -19,7 +19,7 @@ class CapabilitySpec(VersionedContract):
     description: str
     tags: list[str] = Field(default_factory=list)
     provides: list[str] = Field(default_factory=list)
-    min_external_effect: ExternalEffectClass = ExternalEffectClass.READ_ONLY
+    min_external_effect: ExternalEffectClass = ExternalEffectClass.PUBLICATION
 
 
 class SkillTriggers(FoundryModel):

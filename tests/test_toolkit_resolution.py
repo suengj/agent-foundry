@@ -31,6 +31,7 @@ from agent_foundry.models import (
     ProjectManifest,
     ProjectState,
     ResolutionAction,
+    ResolutionSource,
     SchemaCompatibilityError,
     SecretRef,
     ToolkitResolutionError,
@@ -51,15 +52,25 @@ from agent_foundry.models.integrations import (
 )
 from agent_foundry.models.policy import BudgetProfile, PermissionProfile
 from agent_foundry.models.project import WorkModes
-from agent_foundry.models.registry import CapabilityRegistry
+from agent_foundry.models.registry import CapabilityRegistry, CapabilitySpec
 from agent_foundry.toolkit import (
     check_integrations,
     default_registry,
     resolve_task_toolkit_for_work_item,
     resolve_toolkit,
 )
-from agent_foundry.toolkit.builtin_registry import build_default_registry
-from agent_foundry.toolkit.resolve import resolve_project_toolkit, resolve_task_toolkit
+from agent_foundry.toolkit.builtin_registry import (
+    build_default_registry,
+    build_default_registry_permission_profiles,
+)
+from agent_foundry.toolkit.ceiling import EFFECT_RANK, effective_permission_ceiling
+from agent_foundry.toolkit.resolve import (
+    _decision,
+    _record_exclude,
+    _retract_include,
+    resolve_project_toolkit,
+    resolve_task_toolkit,
+)
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "valid"
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -144,7 +155,7 @@ def test_default_registry_is_small_and_inspectable() -> None:
     registry = default_registry()
     assert len(registry.roles) == 7
     assert len(registry.skills) == 4
-    assert len(registry.workflows) == 3
+    assert len(registry.workflows) == 4
     assert registry.foundry_compat == ">=0.1,<0.2"
 
 
@@ -705,7 +716,7 @@ def _assert_lock_component_coherence(lock, registry: CapabilityRegistry) -> None
         assert set(skill.required_capabilities) <= set(lock.capability_ids)
 
 
-def test_read_only_high_consequence_decisions_coherent_or_fail_closed() -> None:
+def test_read_only_high_consequence_resolves_with_readonly_review_workflow() -> None:
     manifest = _sample_manifest(
         impact={
             "external_effect": "read-only",
@@ -714,8 +725,12 @@ def test_read_only_high_consequence_decisions_coherent_or_fail_closed() -> None:
         },
         assurance={"required": ["deterministic-tests", "independent-review"]},
     )
-    with pytest.raises(PolicyViolationError, match="policy-required"):
-        resolve_toolkit(manifest)
+    _, lock = resolve_toolkit(manifest)
+    assert "independent-review-readonly" in lock.workflow_ids
+    assert "builder-reviewer" not in lock.workflow_ids
+    assert "independent-review" in lock.skill_ids
+    assert lock.declared_external_effect == ExternalEffectClass.READ_ONLY
+    assert lock.permission_external_effect == ExternalEffectClass.READ_ONLY
 
 
 @pytest.mark.parametrize(
@@ -738,3 +753,202 @@ def test_lock_coherence_invariant_across_manifests(manifest: ProjectManifest) ->
     _, lock = resolve_toolkit(manifest, registry=registry)
     _assert_lock_decisions_coherent(lock)
     _assert_lock_component_coherence(lock, registry)
+
+
+def test_capability_omitting_min_external_effect_fail_closed_at_read_only_ceiling() -> None:
+    registry = build_default_registry()
+    custom_cap = CapabilitySpec(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        id="production.deploy",
+        version="1.0.0",
+        description="Deploy to production",
+    )
+    registry = registry.model_copy(
+        update={"capabilities": [*registry.capabilities, custom_cap]}
+    )
+    registry = registry.model_copy(
+        update={
+            "policy_rules": [
+                *registry.policy_rules,
+                PolicyRule(
+                    id="test-require-production-deploy",
+                    description="test",
+                    when=PolicyPredicate(),
+                    require_capabilities=["production.deploy"],
+                ),
+            ]
+        }
+    )
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "read-only",
+            "reversibility": "trivial",
+            "consequence": "low",
+        },
+        assurance={"required": []},
+    )
+    with pytest.raises(PolicyViolationError, match="policy-required capabilities unsatisfiable"):
+        resolve_toolkit(manifest, registry=registry)
+
+
+def test_task_toolkit_respects_pinned_profile_not_declared_effect() -> None:
+    builtin_profiles = build_default_registry_permission_profiles()
+    looser_profile = PermissionProfile(
+        id="aaa-publication",
+        external_effect=ExternalEffectClass.PUBLICATION,
+        write_requires=AuthorityRequirement.EXPLICIT_AUTHORITY,
+        preview_required=True,
+        apply_requires=AuthorityRequirement.EXPLICIT_AUTHORITY,
+    )
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "publication",
+            "reversibility": "rollback-required",
+            "consequence": "medium",
+        },
+        assurance={"required": ["deterministic-tests"]},
+    )
+    _, lock = resolve_toolkit(manifest, permission_profiles=builtin_profiles)
+    assert lock.declared_external_effect == ExternalEffectClass.PUBLICATION
+    assert lock.permission_external_effect == ExternalEffectClass.RUNTIME_MUTATION
+    assert lock.permission_profile_ids[0] == "runtime-mutation-bounded"
+
+    work_item = _sample_work_item(
+        authority_class="publication",
+        consequence_class="medium",
+    )
+    task_profiles = [*builtin_profiles, looser_profile]
+    task = resolve_task_toolkit_for_work_item(
+        work_item,
+        lock,
+        permission_profiles=task_profiles,
+    )
+    task_profile = next(profile for profile in task_profiles if profile.id == task.permission_profile_ids[0])
+    assert EFFECT_RANK[task_profile.external_effect] <= EFFECT_RANK[ExternalEffectClass.RUNTIME_MUTATION]
+    assert task.permission_profile_ids[0] != "aaa-publication"
+
+
+def test_record_exclude_retracts_prior_include() -> None:
+    decisions = [
+        _decision(
+            ResolutionAction.INCLUDE,
+            "skill",
+            "bounded-change",
+            "policy requires skill",
+            ResolutionSource.POLICY,
+        ),
+    ]
+    _record_exclude(
+        decisions,
+        "skill",
+        "bounded-change",
+        "exceeds ceiling",
+        ResolutionSource.PROJECT_FACT,
+    )
+    assert not any(
+        decision.action == ResolutionAction.INCLUDE and decision.component_id == "bounded-change"
+        for decision in decisions
+    )
+    assert any(
+        decision.action == ResolutionAction.EXCLUDE and decision.component_id == "bounded-change"
+        for decision in decisions
+    )
+
+
+def test_retract_include_removes_only_matching_component() -> None:
+    decisions = [
+        _decision(
+            ResolutionAction.INCLUDE,
+            "capability",
+            "repository.write",
+            "write",
+            ResolutionSource.REGISTRY,
+        ),
+        _decision(
+            ResolutionAction.INCLUDE,
+            "capability",
+            "repository.read",
+            "read",
+            ResolutionSource.REGISTRY,
+        ),
+    ]
+    _retract_include(decisions, "capability", "repository.write")
+    assert len(decisions) == 1
+    assert decisions[0].component_id == "repository.read"
+
+
+def test_effective_permission_ceiling_is_single_manifest_source() -> None:
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "repository-write",
+            "reversibility": "versioned",
+            "consequence": "medium",
+        }
+    )
+    assert effective_permission_ceiling(manifest) == ExternalEffectClass.REPOSITORY_WRITE
+
+
+_ASSURANCE_SWEEP_SETS = [
+    [],
+    ["independent-review"],
+    ["runtime-readback"],
+    ["deterministic-tests", "independent-review", "runtime-readback"],
+]
+
+_IMPACT_COMBINATIONS = [
+    {
+        "external_effect": "read-only",
+        "reversibility": "trivial",
+        "consequence": "low",
+    },
+    {
+        "external_effect": "read-only",
+        "reversibility": "trivial",
+        "consequence": "high",
+    },
+    {
+        "external_effect": "repository-write",
+        "reversibility": "versioned",
+        "consequence": "medium",
+    },
+    {
+        "external_effect": "runtime-mutation",
+        "reversibility": "rollback-required",
+        "consequence": "high",
+    },
+    {
+        "external_effect": "publication",
+        "reversibility": "rollback-required",
+        "consequence": "critical",
+    },
+    {
+        "external_effect": "shared-service-write",
+        "reversibility": "versioned",
+        "consequence": "medium",
+    },
+]
+
+
+def test_assurance_sweep_fixture_assurance_set_resolves() -> None:
+    manifest = load_yaml(ProjectManifest, (FIXTURES / "project_manifest.yaml").read_bytes())
+    _, lock = resolve_toolkit(manifest)
+    assert lock.workflow_ids
+    assert "runtime.verify" in lock.capability_ids
+
+
+def test_assurance_sweep_refusal_counts() -> None:
+    refused_by_assurance: dict[tuple[str, ...], int] = {tuple(s): 0 for s in _ASSURANCE_SWEEP_SETS}
+    for assurance in _ASSURANCE_SWEEP_SETS:
+        for impact in _IMPACT_COMBINATIONS:
+            manifest = _sample_manifest(
+                impact=impact,
+                assurance={"required": assurance},
+            )
+            try:
+                resolve_toolkit(manifest)
+            except (PolicyViolationError, ToolkitResolutionError):
+                refused_by_assurance[tuple(assurance)] += 1
+
+    fixture_key = tuple(_ASSURANCE_SWEEP_SETS[-1])
+    assert refused_by_assurance[fixture_key] == 0
+    assert refused_by_assurance[("independent-review",)] <= 2

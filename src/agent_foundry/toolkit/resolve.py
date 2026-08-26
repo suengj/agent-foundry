@@ -32,22 +32,15 @@ from agent_foundry.toolkit.builtin_registry import (
     manifest_requires_code_capabilities,
 )
 from agent_foundry.toolkit.compat import assert_registry_compat
+from agent_foundry.toolkit.ceiling import (
+    EFFECT_RANK,
+    capability_min_external_effect,
+    effective_permission_ceiling,
+    exceeds_permission_ceiling,
+    validate_task_toolkit_against_ceiling,
+    validate_toolkit_lock_against_ceiling,
+)
 from agent_foundry.toolkit.preflight import preflight_integrations
-
-_EFFECT_RANK: dict[ExternalEffectClass, int] = {
-    ExternalEffectClass.READ_ONLY: 0,
-    ExternalEffectClass.REPOSITORY_WRITE: 1,
-    ExternalEffectClass.SHARED_SERVICE_WRITE: 2,
-    ExternalEffectClass.DATA_MUTATION: 3,
-    ExternalEffectClass.RUNTIME_MUTATION: 4,
-    ExternalEffectClass.PUBLICATION: 5,
-}
-
-def _manifest_declared_external_effect(manifest: ProjectManifest) -> ExternalEffectClass:
-    if manifest.impact.external_effect is not None:
-        return manifest.impact.external_effect
-    return ExternalEffectClass.READ_ONLY
-
 
 def _manifest_facts_unspecified(manifest: ProjectManifest) -> bool:
     artifact = manifest.project.primary_artifact
@@ -82,25 +75,15 @@ def _lookup_budget_profile(profile_id: str, profiles: list[BudgetProfile]) -> Bu
     )
 
 
-def _capability_min_external_effect(
-    capability_id: str,
-    capabilities: dict[str, object],
-) -> ExternalEffectClass:
-    from agent_foundry.models.registry import CapabilitySpec
-
-    spec = capabilities.get(capability_id)
-    if isinstance(spec, CapabilitySpec):
-        return spec.min_external_effect
-    return ExternalEffectClass.PUBLICATION
-
-
 def _capability_exceeds_ceiling(
     capability_id: str,
     ceiling: ExternalEffectClass,
     capabilities: dict[str, object],
 ) -> bool:
-    min_effect = _capability_min_external_effect(capability_id, capabilities)
-    return _EFFECT_RANK[min_effect] > _EFFECT_RANK[ceiling]
+    return exceeds_permission_ceiling(
+        capability_min_external_effect(capability_id, capabilities),
+        ceiling,
+    )
 
 
 def _select_validator_ids(manifest: ProjectManifest) -> set[str]:
@@ -199,7 +182,7 @@ def _reconcile_with_permission_ceiling(
 ) -> None:
     from agent_foundry.models.registry import RoleContract, SkillSpec, WorkflowSpec
 
-    ceiling = _manifest_declared_external_effect(manifest)
+    ceiling = effective_permission_ceiling(manifest)
     ceiling_fact = (
         f"impact.external_effect={ceiling.value}"
         if manifest.impact.external_effect is not None
@@ -226,9 +209,10 @@ def _reconcile_with_permission_ceiling(
         skill = skills_by_id.get(skill_id)
         if not isinstance(skill, SkillSpec):
             continue
-        exceeds = skill.permissions.external_write and _EFFECT_RANK[
-            ExternalEffectClass.REPOSITORY_WRITE
-        ] > _EFFECT_RANK[ceiling]
+        exceeds = skill.permissions.external_write and exceeds_permission_ceiling(
+            ExternalEffectClass.REPOSITORY_WRITE,
+            ceiling,
+        )
         if exceeds:
             skills.discard(skill_id)
             _record_exclude(
@@ -324,7 +308,7 @@ def _reconcile_integrations_against_ceiling(
     index: dict[str, dict[str, object]],
     decisions: list[ResolutionDecision],
 ) -> list[str]:
-    ceiling = _manifest_declared_external_effect(manifest)
+    ceiling = effective_permission_ceiling(manifest)
     ceiling_fact = (
         f"impact.external_effect={ceiling.value}"
         if manifest.impact.external_effect is not None
@@ -800,7 +784,7 @@ def _select_permission_profile(
     profiles: list[PermissionProfile],
     forbidden_profiles: set[str],
 ) -> PermissionProfile:
-    effect = _manifest_declared_external_effect(manifest)
+    effect = effective_permission_ceiling(manifest)
 
     allowed = [profile for profile in profiles if profile.id not in forbidden_profiles]
     if not allowed:
@@ -809,13 +793,13 @@ def _select_permission_profile(
     candidates = [
         profile
         for profile in allowed
-        if _EFFECT_RANK[profile.external_effect] <= _EFFECT_RANK[effect]
+        if EFFECT_RANK[profile.external_effect] <= EFFECT_RANK[effect]
     ]
     if not candidates:
         raise PolicyViolationError(
             f"no permission profile within project external effect {effect.value}"
         )
-    return max(candidates, key=lambda profile: (_EFFECT_RANK[profile.external_effect], profile.id))
+    return max(candidates, key=lambda profile: (EFFECT_RANK[profile.external_effect], profile.id))
 
 
 def _select_budget_profile(manifest: ProjectManifest, profiles: list[BudgetProfile]) -> BudgetProfile:
@@ -833,21 +817,21 @@ def _permission_profile_for_effect(
     candidates = [
         profile
         for profile in profiles
-        if _EFFECT_RANK[profile.external_effect] <= _EFFECT_RANK[effect]
+        if EFFECT_RANK[profile.external_effect] <= EFFECT_RANK[effect]
     ]
     if not candidates:
         raise PolicyViolationError(
             f"no permission profile within authority {effect.value}"
         )
-    return max(candidates, key=lambda profile: (_EFFECT_RANK[profile.external_effect], profile.id))
+    return max(candidates, key=lambda profile: (EFFECT_RANK[profile.external_effect], profile.id))
 
 
 def _assert_no_permission_escalation(
     manifest: ProjectManifest,
     profile: PermissionProfile,
 ) -> None:
-    effect = manifest.impact.external_effect or ExternalEffectClass.READ_ONLY
-    if _EFFECT_RANK[profile.external_effect] > _EFFECT_RANK[effect]:
+    effect = effective_permission_ceiling(manifest)
+    if EFFECT_RANK[profile.external_effect] > EFFECT_RANK[effect]:
         raise PolicyViolationError(
             f"permission escalation: profile {profile.id} allows "
             f"{profile.external_effect.value} but project impact is {effect.value}"
@@ -911,7 +895,7 @@ def resolve_project_toolkit(
 
     permission_profile = _select_permission_profile(manifest, permission_profiles, forbid["permission_profiles"])
     _assert_no_permission_escalation(manifest, permission_profile)
-    declared_effect = _manifest_declared_external_effect(manifest)
+    declared_effect = effective_permission_ceiling(manifest)
     _reconcile_with_permission_ceiling(
         manifest,
         capabilities,
@@ -1096,7 +1080,8 @@ def resolve_project_toolkit(
         workflow_versions=workflow_versions,
         integration_adapter_versions=integration_adapter_versions,
         permission_profile_version=permission_profile.version,
-        permission_external_effect=declared_effect,
+        declared_external_effect=declared_effect,
+        permission_external_effect=permission_profile.external_effect,
         budget_profile_version=budget_profile.version,
         decisions=sorted(
             decisions,
@@ -1115,6 +1100,12 @@ def resolve_project_toolkit(
         budget_profile_ids=lock.budget_profile_ids,
         decisions=lock.decisions,
         integration_health=health_results,
+    )
+    validate_toolkit_lock_against_ceiling(
+        lock,
+        registry,
+        declared_effect,
+        integrations=integrations,
     )
     return resolution, lock
 
@@ -1310,22 +1301,17 @@ def resolve_task_toolkit(
         raise ToolkitResolutionError("permission profiles required for task resolution")
 
     project_profile_id = project_lock.permission_profile_ids[0]
-    _lookup_permission_profile(project_profile_id, permission_profiles)
-
-    if project_lock.permission_external_effect is not None:
-        project_ceiling = project_lock.permission_external_effect
-    else:
-        project_profile = _lookup_permission_profile(project_profile_id, permission_profiles)
-        project_ceiling = project_profile.external_effect
+    project_profile = _lookup_permission_profile(project_profile_id, permission_profiles)
+    project_ceiling = project_profile.external_effect
 
     ceiling_rank = min(
-        _EFFECT_RANK[work_item.authority_class],
-        _EFFECT_RANK[project_ceiling],
+        EFFECT_RANK[work_item.authority_class],
+        EFFECT_RANK[project_ceiling],
     )
     candidates = [
         profile
         for profile in permission_profiles
-        if _EFFECT_RANK[profile.external_effect] <= ceiling_rank
+        if EFFECT_RANK[profile.external_effect] <= ceiling_rank
     ]
     if not candidates:
         raise PolicyViolationError(
@@ -1333,10 +1319,10 @@ def resolve_task_toolkit(
         )
     task_profile = max(
         candidates,
-        key=lambda profile: (_EFFECT_RANK[profile.external_effect], profile.id),
+        key=lambda profile: (EFFECT_RANK[profile.external_effect], profile.id),
     )
 
-    if _EFFECT_RANK[task_profile.external_effect] > _EFFECT_RANK[project_ceiling]:
+    if EFFECT_RANK[task_profile.external_effect] > EFFECT_RANK[project_ceiling]:
         raise PolicyViolationError(
             "task permission profile would loosen project toolkit controls"
         )
@@ -1366,7 +1352,7 @@ def resolve_task_toolkit(
         if integration_id == "repository"
     ]
 
-    return TaskToolkit(
+    task_toolkit = TaskToolkit(
         schema_version=FOUNDRY_SCHEMA_VERSION,
         work_item_id=work_item.id,
         capability_ids=_sorted_ids(list(selected_capabilities)),
@@ -1382,6 +1368,14 @@ def resolve_task_toolkit(
             key=lambda item: (item.action.value, item.component_kind, item.component_id, item.rationale),
         ),
     )
+    validate_task_toolkit_against_ceiling(
+        task_toolkit,
+        project_lock,
+        registry,
+        work_item,
+        permission_profiles,
+    )
+    return task_toolkit
 
 
 def assert_component_schema_supported(registry: CapabilityRegistry) -> None:

@@ -76,6 +76,7 @@ class ToolkitLock(VersionedContract):
     workflow_versions: dict[str, str] = Field(default_factory=dict)
     integration_adapter_versions: dict[str, str] = Field(default_factory=dict)
     permission_profile_version: str | None = None
+    declared_external_effect: ExternalEffectClass | None = None
     permission_external_effect: ExternalEffectClass | None = None
     budget_profile_version: str | None = None
     decisions: list[ResolutionDecision] = Field(default_factory=list)

@@ -32,6 +32,76 @@ from agent_foundry.models.registry import (
 _REGISTRY_VERSION = "1.0.0"
 _FOUNDRY_COMPAT = ">=0.1,<0.2"
 
+_WRITE_EXTERNAL_EFFECTS = [
+    ExternalEffectClass.REPOSITORY_WRITE,
+    ExternalEffectClass.SHARED_SERVICE_WRITE,
+    ExternalEffectClass.DATA_MUTATION,
+    ExternalEffectClass.RUNTIME_MUTATION,
+    ExternalEffectClass.PUBLICATION,
+]
+
+
+def _independent_review_policy_rules() -> list[PolicyRule]:
+    rules: list[PolicyRule] = []
+    for consequence in (ConsequenceClass.HIGH, ConsequenceClass.CRITICAL):
+        for effect in _WRITE_EXTERNAL_EFFECTS:
+            rules.append(
+                PolicyRule(
+                    id=f"{consequence.value}-consequence-requires-independent-review-{effect.value}",
+                    description=(
+                        f"{consequence.value} consequence requires independent review "
+                        f"for {effect.value} projects"
+                    ),
+                    when=PolicyPredicate(consequence=consequence, external_effect=effect),
+                    require_skills=["independent-review"],
+                    require_workflows=["builder-reviewer"],
+                    require_roles=["reviewer"],
+                )
+            )
+        rules.append(
+            PolicyRule(
+                id=f"{consequence.value}-consequence-requires-independent-review-read-only",
+                description=(
+                    f"{consequence.value} consequence read-only projects require "
+                    "read-only independent review workflow"
+                ),
+                when=PolicyPredicate(
+                    consequence=consequence,
+                    external_effect=ExternalEffectClass.READ_ONLY,
+                ),
+                require_skills=["independent-review"],
+                require_workflows=["independent-review-readonly"],
+                require_roles=["reviewer"],
+            )
+        )
+    for effect in _WRITE_EXTERNAL_EFFECTS:
+        rules.append(
+            PolicyRule(
+                id=f"independent-review-assurance-{effect.value}",
+                description=f"Projects requiring independent review assurance ({effect.value})",
+                when=PolicyPredicate(
+                    assurance=AssuranceMode.INDEPENDENT_REVIEW,
+                    external_effect=effect,
+                ),
+                require_skills=["independent-review"],
+                require_workflows=["builder-reviewer"],
+            )
+        )
+    rules.append(
+        PolicyRule(
+            id="independent-review-assurance-read-only",
+            description="Read-only projects requiring independent review assurance",
+            when=PolicyPredicate(
+                assurance=AssuranceMode.INDEPENDENT_REVIEW,
+                external_effect=ExternalEffectClass.READ_ONLY,
+            ),
+            require_skills=["independent-review"],
+            require_workflows=["independent-review-readonly"],
+            require_roles=["reviewer"],
+        )
+    )
+    return rules
+
 
 def _cap(
     id: str,
@@ -144,7 +214,7 @@ def build_default_registry() -> CapabilityRegistry:
             "runtime.verify",
             "Verify runtime or external read-back",
             tags=["runtime"],
-            min_external_effect=ExternalEffectClass.RUNTIME_MUTATION,
+            min_external_effect=ExternalEffectClass.READ_ONLY,
         ),
     ]
 
@@ -243,6 +313,13 @@ def build_default_registry() -> CapabilityRegistry:
             required_roles=["explorer", "manager"],
             required_skills=["repository-inspection"],
         ),
+        _workflow(
+            "independent-review-readonly",
+            "Independent reviewer without implementation authority",
+            node_ids=["reviewer"],
+            required_roles=["reviewer"],
+            required_skills=["independent-review"],
+        ),
     ]
 
     tools = [
@@ -332,35 +409,13 @@ def build_default_registry() -> CapabilityRegistry:
     ]
 
     policy_rules = [
-        PolicyRule(
-            id="high-consequence-requires-independent-review",
-            description="High or critical consequence requires independent review skill and workflow",
-            when=PolicyPredicate(consequence=ConsequenceClass.HIGH),
-            require_skills=["independent-review"],
-            require_workflows=["builder-reviewer"],
-            require_roles=["reviewer"],
-        ),
-        PolicyRule(
-            id="critical-consequence-requires-independent-review",
-            description="Critical consequence requires independent review",
-            when=PolicyPredicate(consequence=ConsequenceClass.CRITICAL),
-            require_skills=["independent-review"],
-            require_workflows=["builder-reviewer"],
-            require_roles=["reviewer"],
-        ),
+        * _independent_review_policy_rules(),
         PolicyRule(
             id="deterministic-tests-assurance",
             description="Projects requiring deterministic tests must include test skill",
             when=PolicyPredicate(assurance=AssuranceMode.DETERMINISTIC_TESTS),
             require_skills=["deterministic-test"],
             require_capabilities=["validation.test"],
-        ),
-        PolicyRule(
-            id="independent-review-assurance",
-            description="Projects requiring independent review assurance",
-            when=PolicyPredicate(assurance=AssuranceMode.INDEPENDENT_REVIEW),
-            require_skills=["independent-review"],
-            require_workflows=["builder-reviewer"],
         ),
         PolicyRule(
             id="runtime-readback-assurance",
