@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 from agent_foundry.models.common import IntakeMode, Provenance, ProvenanceKind
 from agent_foundry.models.project import ClassificationFinding, ProjectObservation
-from agent_foundry.inspect.traversal import FOUNDRY_DIR_NAME, RepoEntry, read_text_bounded
+from agent_foundry.inspect.traversal import FOUNDRY_DIR_PREFIX, RepoEntry, file_path_set, read_entry_text
 
 
 CLASSIFICATION_DIMENSIONS: tuple[str, ...] = (
@@ -44,7 +46,50 @@ def _unknown(dimension: str, *, reason: str, source_ref: str = ".") -> Classific
         kind=ProvenanceKind.INFERRED,
         source_ref=source_ref,
         confidence=0.0,
-        evidence_refs=[source_ref] if source_ref != "." else [],
+        evidence_refs=[f"reason:{reason}"],
+    )
+
+
+def _declared_intake_mode(
+    root: Path,
+    entries: list[RepoEntry],
+    *,
+    max_file_bytes: int,
+) -> ClassificationFinding | None:
+    rel_paths = file_path_set(entries)
+    project_yaml = ".foundry/project.yaml"
+    project_yml = ".foundry/project.yml"
+    rel = project_yaml if project_yaml in rel_paths else project_yml if project_yml in rel_paths else None
+    if rel is None:
+        return None
+    entry = next(e for e in entries if e.relative_path == rel)
+    content = read_entry_text(root, entry, max_bytes=max_file_bytes)
+    if not content:
+        return None
+    try:
+        parsed = yaml.safe_load(content)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    project = parsed.get("project")
+    if not isinstance(project, dict):
+        return None
+    intake_mode = project.get("intake_mode")
+    if intake_mode is None:
+        return _finding(
+            "intake_mode",
+            None,
+            kind=ProvenanceKind.DECLARED,
+            source_ref=rel,
+            evidence_refs=[rel, "reason:intake_mode not declared in project.yaml"],
+        )
+    return _finding(
+        "intake_mode",
+        str(intake_mode),
+        kind=ProvenanceKind.DECLARED,
+        source_ref=rel,
+        evidence_refs=[rel],
     )
 
 
@@ -52,20 +97,14 @@ def propose_classification_findings(
     root: Path,
     entries: list[RepoEntry],
     observations: list[ProjectObservation],
+    *,
+    max_file_bytes: int,
 ) -> list[ClassificationFinding]:
     findings: list[ClassificationFinding] = []
 
-    declared_project = root / FOUNDRY_DIR_NAME / "project.yaml"
-    if declared_project.is_file():
-        findings.append(
-            _finding(
-                "intake_mode",
-                None,
-                kind=ProvenanceKind.DECLARED,
-                source_ref=".foundry/project.yaml",
-                evidence_refs=[".foundry/project.yaml"],
-            )
-        )
+    declared_intake = _declared_intake_mode(root, entries, max_file_bytes=max_file_bytes)
+    if declared_intake is not None:
+        findings.append(declared_intake)
     else:
         code_dirs = {"src", "lib", "app", "internal", "pkg"}
         code_files = [
@@ -75,12 +114,37 @@ def propose_classification_findings(
         ]
         has_code_tree = any(e.relative_path.split("/")[0] in code_dirs for e in entries if e.is_dir)
         has_ci = any(e.relative_path.startswith(".github/workflows/") for e in entries if not e.is_dir)
-        has_foundry = any(e.relative_path.startswith(".foundry/") for e in entries if not e.is_dir)
+        has_foundry = any(e.relative_path.startswith(FOUNDRY_DIR_PREFIX) for e in entries if not e.is_dir)
         has_deploy = any(
             Path(e.relative_path).name in {"Dockerfile", "docker-compose.yml", "docker-compose.yaml"}
             for e in entries
             if not e.is_dir
         )
+        evidence_refs: list[str] = []
+        if has_code_tree and len(code_files) >= 3:
+            evidence_refs.extend(sorted(e.relative_path for e in code_files[:5]))
+        if has_ci:
+            evidence_refs.extend(
+                sorted(
+                    e.relative_path
+                    for e in entries
+                    if not e.is_dir and e.relative_path.startswith(".github/workflows/")
+                )[:3]
+            )
+        if has_foundry:
+            evidence_refs.extend(
+                sorted(e.relative_path for e in entries if e.relative_path.startswith(FOUNDRY_DIR_PREFIX))[:3]
+            )
+        if has_deploy:
+            evidence_refs.extend(
+                sorted(
+                    e.relative_path
+                    for e in entries
+                    if not e.is_dir
+                    and Path(e.relative_path).name
+                    in {"Dockerfile", "docker-compose.yml", "docker-compose.yaml"}
+                )
+            )
         brownfield_signals = sum(
             [
                 has_code_tree and len(code_files) >= 3,
@@ -97,8 +161,8 @@ def propose_classification_findings(
                     IntakeMode.BROWNFIELD.value,
                     kind=ProvenanceKind.INFERRED,
                     source_ref=".",
-                    confidence=0.7,
-                    evidence_refs=sorted({e.relative_path for e in code_files[:5]}),
+                    confidence=0.7 if evidence_refs else 0.5,
+                    evidence_refs=sorted(set(evidence_refs)),
                 )
             )
         else:
@@ -129,18 +193,25 @@ def propose_classification_findings(
             )
         )
 
+    declared_project_rel = None
+    rel_paths = file_path_set(entries)
+    if ".foundry/project.yaml" in rel_paths:
+        declared_project_rel = ".foundry/project.yaml"
+    elif ".foundry/project.yml" in rel_paths:
+        declared_project_rel = ".foundry/project.yml"
+
     for dimension in CLASSIFICATION_DIMENSIONS:
         if dimension == "intake_mode":
             continue
         if dimension == "primary_work_mode":
-            if declared_project.is_file() and read_text_bounded(declared_project):
+            if declared_project_rel is not None:
                 findings.append(
                     _finding(
                         dimension,
                         None,
                         kind=ProvenanceKind.DECLARED,
-                        source_ref=".foundry/project.yaml",
-                        evidence_refs=[".foundry/project.yaml"],
+                        source_ref=declared_project_rel,
+                        evidence_refs=[declared_project_rel, "reason:work_modes not parsed in AF2"],
                     )
                 )
             else:

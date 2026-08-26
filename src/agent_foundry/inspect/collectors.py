@@ -2,19 +2,30 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from agent_foundry.models.common import Provenance, ProvenanceKind
 from agent_foundry.models.project import ProjectObservation
 from agent_foundry.inspect.traversal import (
     AGENT_RULE_RELATIVE_PATHS,
-    CI_WORKFLOW_GLOB_PARTS,
-    FOUNDRY_DIR_NAME,
+    CI_WORKFLOW_PREFIX,
+    CURSOR_RULES_PREFIX,
+    DOCS_AI_PREFIX,
+    FOUNDRY_DIR_PREFIX,
     PACKAGE_METADATA_FILES,
     RepoEntry,
-    read_text_bounded,
-    relative_posix,
+    file_entries,
+    file_path_set,
+    read_entry_text,
 )
+
+_MAKEFILE_TARGET_SUBJECTS: dict[str, str] = {
+    "test": "test-entrypoint",
+    "lint": "lint-entrypoint",
+    "typecheck": "typecheck-entrypoint",
+    "ci": "ci-entrypoint",
+}
 
 
 def _observed(subject: str, content: str, source_ref: str, *, confidence: float = 1.0) -> ProjectObservation:
@@ -38,6 +49,25 @@ def _declared(subject: str, content: str, source_ref: str) -> ProjectObservation
             source_ref=source_ref,
         ),
     )
+
+
+def _matching_paths(rel_paths: set[str], marker: str) -> list[str]:
+    if marker in rel_paths:
+        return [marker]
+    suffix = f"/{marker}"
+    return sorted(path for path in rel_paths if path.endswith(suffix))
+
+
+def _makefile_declared_targets(content: str) -> set[str]:
+    declared: set[str] = set()
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        for target in _MAKEFILE_TARGET_SUBJECTS:
+            if re.match(rf"^{re.escape(target)}\s*:", stripped):
+                declared.add(target)
+    return declared
 
 
 def collect_structure_observations(
@@ -68,9 +98,7 @@ def collect_structure_observations(
 
 def collect_metadata_observations(root: Path, entries: list[RepoEntry]) -> list[ProjectObservation]:
     observations: list[ProjectObservation] = []
-    for entry in entries:
-        if entry.is_dir:
-            continue
+    for entry in file_entries(entries):
         name = Path(entry.relative_path).name
         if name not in PACKAGE_METADATA_FILES:
             continue
@@ -84,44 +112,47 @@ def collect_metadata_observations(root: Path, entries: list[RepoEntry]) -> list[
     return observations
 
 
-def collect_agent_rule_observations(root: Path) -> list[ProjectObservation]:
+def collect_agent_rule_observations(root: Path, entries: list[RepoEntry]) -> list[ProjectObservation]:
     observations: list[ProjectObservation] = []
-    for rel in AGENT_RULE_RELATIVE_PATHS:
-        path = root / rel
-        if path.is_file():
-            observations.append(
-                _observed(
-                    "agent-instruction-surface",
-                    f"instruction file present: {rel}",
-                    rel,
-                )
-            )
+    rel_paths = file_path_set(entries)
 
-    cursor_rules = root / ".cursor" / "rules"
-    if cursor_rules.is_dir():
-        rule_files = sorted(
-            p for p in cursor_rules.rglob("*") if p.is_file() and p.suffix in {".md", ".mdc"}
-        )
-        for rule_path in rule_files:
-            rel = relative_posix(root, rule_path)
-            observations.append(
-                _observed(
-                    "agent-instruction-surface",
-                    f"cursor rule file present: {rel}",
-                    rel,
-                )
+    for rel in AGENT_RULE_RELATIVE_PATHS:
+        if rel not in rel_paths:
+            continue
+        observations.append(
+            _observed(
+                "agent-instruction-surface",
+                f"instruction file present: {rel}",
+                rel,
             )
+        )
+
+    for entry in file_entries(entries):
+        rel = entry.relative_path
+        if not rel.startswith(CURSOR_RULES_PREFIX):
+            continue
+        if Path(rel).suffix not in {".md", ".mdc"}:
+            continue
+        observations.append(
+            _observed(
+                "agent-instruction-surface",
+                f"cursor rule file present: {rel}",
+                rel,
+            )
+        )
     return observations
 
 
-def collect_test_lint_ci_observations(root: Path, entries: list[RepoEntry]) -> list[ProjectObservation]:
+def collect_test_lint_ci_observations(
+    root: Path,
+    entries: list[RepoEntry],
+    *,
+    max_file_bytes: int,
+) -> list[ProjectObservation]:
     observations: list[ProjectObservation] = []
-    test_markers = {
-        "pytest.ini",
-        "tox.ini",
-        "conftest.py",
-        ".coveragerc",
-    }
+    rel_paths = file_path_set(entries)
+
+    test_markers = {"pytest.ini", "tox.ini", "conftest.py", ".coveragerc"}
     lint_type_markers = {
         "ruff.toml",
         ".ruff.toml",
@@ -134,37 +165,36 @@ def collect_test_lint_ci_observations(root: Path, entries: list[RepoEntry]) -> l
         "eslint.config.js",
     }
 
-    rel_paths = {e.relative_path for e in entries if not e.is_dir}
     for marker in sorted(test_markers):
-        if marker in rel_paths or any(p.endswith(f"/{marker}") for p in rel_paths):
+        for rel in _matching_paths(rel_paths, marker):
             observations.append(
-                _observed("test-entrypoint", f"test harness marker present: {marker}", marker)
+                _observed("test-entrypoint", f"test harness marker present: {marker}", rel)
             )
 
     for marker in sorted(lint_type_markers):
-        if marker in rel_paths:
-            observations.append(
-                _observed("lint-type-entrypoint", f"lint/type marker present: {marker}", marker)
-            )
+        if marker not in rel_paths:
+            continue
+        observations.append(
+            _observed("lint-type-entrypoint", f"lint/type marker present: {marker}", marker)
+        )
 
-    workflow_dir = root.joinpath(*CI_WORKFLOW_GLOB_PARTS)
-    if workflow_dir.is_dir():
-        workflows = sorted(p for p in workflow_dir.iterdir() if p.suffix in {".yml", ".yaml"})
-        for wf in workflows:
-            rel = relative_posix(root, wf)
-            observations.append(
-                _observed("ci-entrypoint", f"CI workflow present: {rel}", rel)
-            )
+    for entry in file_entries(entries):
+        rel = entry.relative_path
+        if not rel.startswith(CI_WORKFLOW_PREFIX):
+            continue
+        if Path(rel).suffix not in {".yml", ".yaml"}:
+            continue
+        observations.append(_observed("ci-entrypoint", f"CI workflow present: {rel}", rel))
 
-    makefile = root / "Makefile"
-    if makefile.is_file():
-        content = read_text_bounded(makefile)
+    makefile_entry = next((e for e in file_entries(entries) if e.relative_path == "Makefile"), None)
+    if makefile_entry is not None:
+        content = read_entry_text(root, makefile_entry, max_bytes=max_file_bytes)
         if content:
-            for target in ("test", "lint", "typecheck", "ci"):
-                if f"{target}:" in content:
+            for target, subject in sorted(_MAKEFILE_TARGET_SUBJECTS.items()):
+                if target in _makefile_declared_targets(content):
                     observations.append(
                         _observed(
-                            "test-entrypoint",
+                            subject,
                             f"Makefile declares '{target}' target",
                             "Makefile",
                         )
@@ -175,9 +205,7 @@ def collect_test_lint_ci_observations(root: Path, entries: list[RepoEntry]) -> l
 def collect_config_schema_observations(root: Path, entries: list[RepoEntry]) -> list[ProjectObservation]:
     observations: list[ProjectObservation] = []
     schema_suffixes = (".schema.json", ".schema.yaml", ".schema.yml")
-    for entry in entries:
-        if entry.is_dir:
-            continue
+    for entry in file_entries(entries):
         if entry.relative_path.endswith(schema_suffixes):
             observations.append(
                 _observed(
@@ -186,12 +214,13 @@ def collect_config_schema_observations(root: Path, entries: list[RepoEntry]) -> 
                     entry.relative_path,
                 )
             )
-    docs_ai = root / "docs" / "ai"
-    if docs_ai.is_dir():
-        for doc in sorted(docs_ai.glob("*.md")):
-            rel = relative_posix(root, doc)
+        if entry.relative_path.startswith(DOCS_AI_PREFIX) and entry.relative_path.endswith(".md"):
             observations.append(
-                _observed("project-docs", f"project AI doc present: {rel}", rel)
+                _observed(
+                    "project-docs",
+                    f"project AI doc present: {entry.relative_path}",
+                    entry.relative_path,
+                )
             )
     return observations
 
@@ -212,7 +241,7 @@ def collect_runtime_deploy_observations(root: Path, entries: list[RepoEntry]) ->
         "kubernetes",
         "helm",
     }
-    for entry in entries:
+    for entry in file_entries(entries):
         name = Path(entry.relative_path).name
         if name in deploy_markers or entry.relative_path.startswith("deploy/"):
             observations.append(
@@ -230,10 +259,11 @@ def collect_integration_observations(root: Path, entries: list[RepoEntry]) -> li
     integration_markers = {
         ".env.example",
         ".env.sample",
+        "env.example",
         "integrations.yaml",
         "integrations.yml",
     }
-    for entry in entries:
+    for entry in file_entries(entries):
         name = Path(entry.relative_path).name
         if name in integration_markers:
             observations.append(
@@ -246,20 +276,22 @@ def collect_integration_observations(root: Path, entries: list[RepoEntry]) -> li
     return observations
 
 
-def collect_foundry_observations(root: Path) -> list[ProjectObservation]:
+def collect_foundry_observations(
+    root: Path,
+    entries: list[RepoEntry],
+    *,
+    max_file_bytes: int,
+) -> list[ProjectObservation]:
     observations: list[ProjectObservation] = []
-    foundry_dir = root / FOUNDRY_DIR_NAME
-    if not foundry_dir.is_dir():
-        return observations
-    for path in sorted(foundry_dir.rglob("*")):
-        if not path.is_file():
+    for entry in file_entries(entries):
+        rel = entry.relative_path
+        if not rel.startswith(FOUNDRY_DIR_PREFIX):
             continue
-        rel = relative_posix(root, path)
         observations.append(
             _observed("foundry-artifact", f"foundry artifact present: {rel}", rel)
         )
-        if path.name in {"project.yaml", "project.yml"}:
-            content = read_text_bounded(path)
+        if Path(rel).name in {"project.yaml", "project.yml"}:
+            content = read_entry_text(root, entry, max_bytes=max_file_bytes)
             if content:
                 observations.append(
                     _declared(

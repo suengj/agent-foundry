@@ -5,8 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent_foundry.models.common import ConsequenceClass, Provenance, ProvenanceKind
-from agent_foundry.models.project import ProjectObservation, ReadinessFinding
-from agent_foundry.inspect.traversal import FOUNDRY_DIR_NAME
+from agent_foundry.models.project import ConventionSpec, ProjectObservation, ReadinessFinding
 
 
 def _finding(
@@ -31,8 +30,10 @@ def _finding(
 def assess_readiness(
     root: Path,
     observations: list[ProjectObservation],
+    conventions: list[ConventionSpec] | None = None,
 ) -> list[ReadinessFinding]:
     findings: list[ReadinessFinding] = []
+    conventions = conventions or []
     subjects = {obs.subject for obs in observations}
     source_refs = {
         obs.provenance.source_ref
@@ -62,7 +63,7 @@ def assess_readiness(
         )
 
     has_metadata = any(obs.subject == "package-metadata" for obs in observations)
-    has_foundry = (root / FOUNDRY_DIR_NAME).is_dir()
+    has_foundry = any(obs.subject == "foundry-artifact" for obs in observations)
     if has_metadata or has_foundry:
         findings.append(
             _finding(
@@ -180,7 +181,22 @@ def assess_readiness(
     agent_surfaces = sorted(
         ref for ref in source_refs if ref and ("AGENTS" in ref or "CLAUDE" in ref or ".cursor" in ref)
     )
-    if len(agent_surfaces) >= 2:
+    test_runner_conflicts = [c for c in conventions if c.subject == "test-runner-disagreement"]
+    if test_runner_conflicts:
+        findings.append(
+            _finding(
+                "fragmented-agent-rule-surfaces",
+                ConsequenceClass.HIGH,
+                (
+                    "Agent instruction surfaces disagree on test-runner conventions; "
+                    "observed conflict must not be treated as normative without consolidation"
+                ),
+                kind=ProvenanceKind.OBSERVED,
+                confidence=1.0,
+                source_ref=test_runner_conflicts[0].source_ref,
+            )
+        )
+    elif len(agent_surfaces) >= 2:
         findings.append(
             _finding(
                 "fragmented-agent-rule-surfaces",

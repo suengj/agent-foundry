@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-
-import pytest
 
 from agent_foundry.inspect import inspect_project
 from agent_foundry.models import ProvenanceKind, dump_json
@@ -18,6 +17,10 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures" / "projects"
 GREENFIELD = FIXTURES / "greenfield-minimal"
 BROWNFIELD = FIXTURES / "brownfield-sample"
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _subprocess_env() -> dict[str, str]:
+    return {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
 
 
 def _tree_digest(root: Path) -> dict[str, str]:
@@ -42,9 +45,18 @@ def test_inspect_brownfield_fixture_is_deterministic() -> None:
     assert first == second
 
 
-def test_inspect_does_not_mutate_fixture_tree(tmp_path: Path) -> None:
+def test_inspect_does_not_mutate_greenfield_fixture_tree(tmp_path: Path) -> None:
     target = tmp_path / "project"
     shutil.copytree(GREENFIELD, target)
+    before = _tree_digest(target)
+    inspect_project(target)
+    after = _tree_digest(target)
+    assert before == after
+
+
+def test_inspect_does_not_mutate_brownfield_fixture_tree(tmp_path: Path) -> None:
+    target = tmp_path / "project"
+    shutil.copytree(BROWNFIELD, target)
     before = _tree_digest(target)
     inspect_project(target)
     after = _tree_digest(target)
@@ -60,7 +72,10 @@ def test_inspect_brownfield_detects_conflicting_agent_surfaces() -> None:
         f for f in intake.readiness_findings if f.dimension == "fragmented-agent-rule-surfaces"
     ]
     assert fragmentation
-    assert any("must not be treated as normative" in f.message for f in fragmentation)
+    assert any(
+        "must not be treated as normative" in f.message or "disagree" in f.message.lower()
+        for f in fragmentation
+    )
 
     classification = [f for f in intake.classification_findings if f.dimension == "agent-rule-fragmentation"]
     assert classification
@@ -96,13 +111,13 @@ def test_greenfield_intake_mode_inferred() -> None:
     assert modes[0].value == IntakeMode.GREENFIELD.value
 
 
-def test_brownfield_intake_mode_inferred_or_declared() -> None:
+def test_brownfield_intake_mode_declared_from_foundry() -> None:
     intake = inspect_project(BROWNFIELD)
     modes = [f for f in intake.classification_findings if f.dimension == "intake_mode"]
     assert modes
     declared = [m for m in modes if m.provenance.kind == ProvenanceKind.DECLARED]
-    inferred = [m for m in modes if m.provenance.kind == ProvenanceKind.INFERRED]
-    assert declared or inferred
+    assert declared
+    assert declared[0].value == IntakeMode.BROWNFIELD.value
 
 
 def test_traversal_bounds_enforced(tmp_path: Path) -> None:
@@ -136,6 +151,7 @@ def test_cli_inspect_json(tmp_path: Path) -> None:
     result = subprocess.run(
         [sys.executable, "-m", "agent_foundry", "inspect", str(target), "--format", "json"],
         cwd=REPO_ROOT,
+        env=_subprocess_env(),
         capture_output=True,
         check=False,
     )
@@ -147,6 +163,7 @@ def test_cli_help_lists_inspect() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "agent_foundry", "--help"],
         cwd=REPO_ROOT,
+        env=_subprocess_env(),
         capture_output=True,
         text=True,
         check=False,

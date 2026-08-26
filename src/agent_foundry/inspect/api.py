@@ -49,18 +49,40 @@ def inspect_project(
     observations.extend(collect_structure_observations(root, traversal.entries))
     observations.extend(collect_revision_observation(root, revision))
     observations.extend(collect_metadata_observations(root, traversal.entries))
-    observations.extend(collect_agent_rule_observations(root))
-    observations.extend(collect_test_lint_ci_observations(root, traversal.entries))
+    observations.extend(collect_agent_rule_observations(root, traversal.entries))
+    observations.extend(
+        collect_test_lint_ci_observations(
+            root,
+            traversal.entries,
+            max_file_bytes=max_file_bytes,
+        )
+    )
     observations.extend(collect_config_schema_observations(root, traversal.entries))
     observations.extend(collect_runtime_deploy_observations(root, traversal.entries))
     observations.extend(collect_integration_observations(root, traversal.entries))
-    observations.extend(collect_foundry_observations(root))
+    observations.extend(
+        collect_foundry_observations(
+            root,
+            traversal.entries,
+            max_file_bytes=max_file_bytes,
+        )
+    )
 
     observations.sort(key=lambda o: (o.subject, o.content, o.provenance.source_ref or ""))
 
-    classification_findings = propose_classification_findings(root, traversal.entries, observations)
-    conventions = discover_conventions(root, observations)
-    readiness_findings = assess_readiness(root, observations)
+    classification_findings = propose_classification_findings(
+        root,
+        traversal.entries,
+        observations,
+        max_file_bytes=max_file_bytes,
+    )
+    conventions = discover_conventions(
+        root,
+        traversal.entries,
+        observations,
+        max_file_bytes=max_file_bytes,
+    )
+    readiness_findings = assess_readiness(root, observations, conventions)
 
     limits = TraversalLimits(
         max_depth=max_depth,

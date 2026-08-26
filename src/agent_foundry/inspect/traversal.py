@@ -60,7 +60,10 @@ PACKAGE_METADATA_FILES: frozenset[str] = frozenset(
     }
 )
 
-CI_WORKFLOW_GLOB_PARTS: tuple[str, ...] = (".github", "workflows")
+CI_WORKFLOW_PREFIX = ".github/workflows/"
+FOUNDRY_DIR_PREFIX = ".foundry/"
+CURSOR_RULES_PREFIX = ".cursor/rules/"
+DOCS_AI_PREFIX = "docs/ai/"
 FOUNDRY_DIR_NAME = ".foundry"
 
 
@@ -94,7 +97,7 @@ def _resolve_inside_root(root: Path, candidate: Path) -> Path | None:
         resolved = candidate.resolve()
         root_resolved = root.resolve()
         resolved.relative_to(root_resolved)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RuntimeError):
         return None
     return resolved
 
@@ -175,8 +178,24 @@ def walk_repository(
     return result
 
 
+def relative_posix(root: Path, path: Path) -> str | None:
+    """Return repo-relative POSIX path, or None when *path* escapes *root*."""
+    resolved = _resolve_inside_root(root, path)
+    if resolved is None:
+        return None
+    return resolved.relative_to(root.resolve()).as_posix()
+
+
+def file_entries(entries: list[RepoEntry]) -> list[RepoEntry]:
+    return [entry for entry in entries if not entry.is_dir]
+
+
+def file_path_set(entries: list[RepoEntry]) -> set[str]:
+    return {entry.relative_path for entry in file_entries(entries)}
+
+
 def read_text_bounded(path: Path, *, max_bytes: int = DEFAULT_MAX_FILE_BYTES) -> str | None:
-    """Read at most *max_bytes* from a file; return None on failure."""
+    """Read a file only when its size is within *max_bytes*; return None otherwise."""
     try:
         size = path.stat().st_size
     except OSError:
@@ -189,8 +208,19 @@ def read_text_bounded(path: Path, *, max_bytes: int = DEFAULT_MAX_FILE_BYTES) ->
         return None
 
 
-def relative_posix(root: Path, path: Path) -> str:
-    return path.resolve().relative_to(root.resolve()).as_posix()
+def read_entry_text(
+    root: Path,
+    entry: RepoEntry,
+    *,
+    max_bytes: int,
+) -> str | None:
+    """Read bounded text for a file discovered by the walk."""
+    if entry.is_dir:
+        return None
+    resolved = _resolve_inside_root(root, root / entry.relative_path)
+    if resolved is None or not resolved.is_file():
+        return None
+    return read_text_bounded(resolved, max_bytes=max_bytes)
 
 
 def git_head_revision(root: Path) -> str | None:
