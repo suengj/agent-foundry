@@ -2,45 +2,50 @@
 
 from __future__ import annotations
 
-import ast
-import subprocess
+import json
 from pathlib import Path
 
 import agent_foundry.models as models
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-INTENTIONAL_ADDITIONS = {
-    "BundleProvenanceRecord",
-    "CompiledAuthority",
-    "SkillSummary",
-}
+BASELINE_PATH = Path(__file__).resolve().parent / "fixtures" / "models_public_exports.json"
 
 
-def _main_branch_all_names() -> set[str]:
-    completed = subprocess.run(
-        ["git", "show", "origin/main:src/agent_foundry/models/__init__.py"],
-        capture_output=True,
-        text=True,
-        check=True,
-        cwd=REPO_ROOT,
-    )
-    text = completed.stdout
-    all_block = text.split("__all__ = ", 1)[1]
-    all_block = all_block.split("\n]", 1)[0] + "]"
-    return set(ast.literal_eval(all_block))
+def _baseline_names() -> set[str]:
+    """The public export surface as last deliberately reviewed.
+
+    This is a checked-in file rather than a `git show origin/main` lookup. A guard read
+    from a moving branch tip can only pass while the change is unmerged: the moment it
+    lands, "what this branch adds relative to main" is the empty set and the guard
+    inverts. It also made the suite depend on remote git state. A pinned baseline makes
+    dropping or adding a public name a visible, reviewable diff instead.
+    """
+    return set(json.loads(BASELINE_PATH.read_text()))
 
 
-def test_models_all_exports_resolve_and_is_stable_superset():
-    """Every __all__ name resolves; main-branch exports are never dropped unintentionally."""
+def test_every_declared_export_resolves():
     for name in models.__all__:
         assert hasattr(models, name), f"missing export: {name}"
         assert getattr(models, name) is not None
 
-    main_names = _main_branch_all_names()
-    current_names = set(models.__all__)
 
-    dropped = sorted(main_names - current_names)
-    added = sorted(current_names - main_names)
+def test_no_public_export_is_dropped_without_updating_the_baseline():
+    dropped = sorted(_baseline_names() - set(models.__all__))
+    assert dropped == [], (
+        f"public exports removed: {dropped}. Removing a name from "
+        f"agent_foundry.models.__all__ breaks importers; if it is intended, update "
+        f"{BASELINE_PATH.name} in the same change."
+    )
 
-    assert dropped == [], f"unexpected dropped exports: {dropped}"
-    assert set(added) == INTENTIONAL_ADDITIONS, f"unexpected additions: {added}"
+
+def test_new_public_exports_are_recorded_in_the_baseline():
+    added = sorted(set(models.__all__) - _baseline_names())
+    assert added == [], (
+        f"public exports added without review: {added}. Add them to "
+        f"{BASELINE_PATH.name} so the export surface stays an explicit decision."
+    )
+
+
+def test_baseline_has_no_stale_or_duplicate_entries():
+    raw = json.loads(BASELINE_PATH.read_text())
+    assert len(raw) == len(set(raw)), "baseline contains duplicate names"
+    assert raw == sorted(raw), "baseline must stay sorted for reviewable diffs"
