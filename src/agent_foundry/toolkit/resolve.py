@@ -1263,6 +1263,58 @@ def _derive_roles_from_selected_skills(
     return derived
 
 
+def _annotate_empty_task_toolkit(
+    work_item: WorkItemContract,
+    project_lock: ToolkitLock,
+    selected_skills: set[str],
+    selected_roles: set[str],
+    selected_capabilities: set[str],
+    skills_by_id: dict[str, object],
+    decisions: list[ResolutionDecision],
+) -> None:
+    if selected_skills or selected_roles or selected_capabilities:
+        if selected_skills and not selected_roles:
+            _record_exclude(
+                decisions,
+                "task-toolkit",
+                work_item.id,
+                "selected skills have no compatible role in project lock for work item authority",
+                ResolutionSource.WORK_ITEM,
+                project_fact=(
+                    f"work_item.authority_class={work_item.authority_class.value}; "
+                    f"work_item.work_class={work_item.work_class.value}"
+                ),
+            )
+        return
+
+    compatible_skills = sorted(
+        skill_id
+        for skill_id in project_lock.skill_ids
+        if _skill_allowed_for_work_item(work_item, skill_id, skills_by_id)
+    )
+    if not compatible_skills:
+        rationale = (
+            "no project-lock skill satisfies work item authority "
+            f"{work_item.authority_class.value} and work class {work_item.work_class.value}"
+        )
+    else:
+        rationale = (
+            "no project-lock role can exercise the compatible skills for this work item "
+            f"under authority {work_item.authority_class.value}"
+        )
+    _record_exclude(
+        decisions,
+        "task-toolkit",
+        work_item.id,
+        rationale,
+        ResolutionSource.WORK_ITEM,
+        project_fact=(
+            f"work_item.authority_class={work_item.authority_class.value}; "
+            f"work_item.work_class={work_item.work_class.value}"
+        ),
+    )
+
+
 def _work_item_workflow_for_item(
     work_item: WorkItemContract,
     available_workflow_ids: list[str],
@@ -1493,6 +1545,16 @@ def resolve_task_toolkit(
         for integration_id in project_lock.integration_ids
         if integration_id == "repository"
     ]
+
+    _annotate_empty_task_toolkit(
+        work_item,
+        project_lock,
+        selected_skills,
+        selected_roles,
+        selected_capabilities,
+        skills,
+        decisions,
+    )
 
     task_toolkit = TaskToolkit(
         schema_version=FOUNDRY_SCHEMA_VERSION,

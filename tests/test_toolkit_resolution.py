@@ -35,6 +35,7 @@ from agent_foundry.models import (
     SchemaCompatibilityError,
     SecretRef,
     ToolkitResolutionError,
+    ToolkitLock,
     WorkClass,
     WorkItemContract,
     dump_json,
@@ -327,7 +328,11 @@ def test_task_toolkit_is_strict_subset_with_tighter_controls() -> None:
         assurance={"required": ["deterministic-tests"]},
     )
     _, project_lock = resolve_toolkit(manifest)
-    work_item = _sample_work_item(authority_class="read-only", consequence_class="medium")
+    work_item = _sample_work_item(
+        authority_class="read-only",
+        work_class="DISCOVERY",
+        consequence_class="medium",
+    )
     task = resolve_task_toolkit_for_work_item(work_item, project_lock)
 
     assert set(task.capability_ids) <= set(project_lock.capability_ids)
@@ -339,8 +344,118 @@ def test_task_toolkit_is_strict_subset_with_tighter_controls() -> None:
     assert project_lock.permission_profile_ids == ["repository-write-bounded"]
 
     excluded_skills = set(project_lock.skill_ids) - set(task.skill_ids)
+    assert excluded_skills
     assert "bounded-change" in excluded_skills
     assert "builder" not in task.role_ids
+    assert task.role_ids
+    assert task.skill_ids
+    assert task.capability_ids
+
+
+def _main_style_repository_write_lock() -> ToolkitLock:
+    """Minimal merged-main project lock: builder + bounded-change only."""
+    return ToolkitLock(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        project_name="sample-service",
+        capability_ids=["repository.read", "repository.write"],
+        skill_ids=["bounded-change"],
+        role_ids=["builder"],
+        permission_profile_ids=["repository-write-bounded"],
+        budget_profile_ids=["default"],
+    )
+
+
+def _assert_satisfiable_task_toolkit_nonempty(
+    task: object,
+    project_lock: ToolkitLock,
+) -> None:
+    from agent_foundry.models.toolkit import TaskToolkit
+
+    assert isinstance(task, TaskToolkit)
+    assert task.role_ids, "task toolkit role_ids must be non-empty for satisfiable work items"
+    assert task.skill_ids, "task toolkit skill_ids must be non-empty for satisfiable work items"
+    assert task.capability_ids, "task toolkit capability_ids must be non-empty for satisfiable work items"
+    assert set(task.role_ids) <= set(project_lock.role_ids)
+    assert set(task.skill_ids) <= set(project_lock.skill_ids)
+    assert set(task.capability_ids) <= set(project_lock.capability_ids)
+
+
+def test_task_toolkit_populates_roles_for_repository_write_capability_work_item() -> None:
+    """Regression: merged main left role_ids empty even when skills/capabilities were selected."""
+    lock = _main_style_repository_write_lock()
+    work_item = _sample_work_item(authority_class="repository-write", work_class="CAPABILITY")
+    task = resolve_task_toolkit_for_work_item(work_item, lock)
+    _assert_satisfiable_task_toolkit_nonempty(task, lock)
+    assert task.role_ids == ["builder"]
+    assert set(task.capability_ids) == {"repository.read", "repository.write"}
+    assert task.skill_ids == ["bounded-change"]
+
+
+def test_task_toolkit_read_only_discovery_nonempty_when_lock_has_inspection() -> None:
+    lock = ToolkitLock(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        project_name="sample-service",
+        capability_ids=["inspection.read", "repository.read", "repository.write"],
+        skill_ids=["bounded-change", "repository-inspection"],
+        role_ids=["builder", "explorer"],
+        permission_profile_ids=["repository-write-bounded"],
+        budget_profile_ids=["default"],
+    )
+    work_item = _sample_work_item(authority_class="read-only", work_class="DISCOVERY")
+    task = resolve_task_toolkit_for_work_item(work_item, lock)
+    _assert_satisfiable_task_toolkit_nonempty(task, lock)
+    assert "explorer" in task.role_ids
+    assert "repository-inspection" in task.skill_ids
+    assert "builder" not in task.role_ids
+    assert "repository.write" not in task.capability_ids
+
+
+def test_task_toolkit_unsatisfiable_read_only_discovery_on_builder_only_lock() -> None:
+    lock = _main_style_repository_write_lock()
+    work_item = _sample_work_item(authority_class="read-only", work_class="DISCOVERY")
+    task = resolve_task_toolkit_for_work_item(work_item, lock)
+    assert not task.role_ids
+    assert not task.skill_ids
+    assert not task.capability_ids
+    unsat = [decision for decision in task.decisions if decision.component_kind == "task-toolkit"]
+    assert len(unsat) == 1
+    assert "no project-lock skill satisfies" in unsat[0].rationale
+
+
+def test_task_toolkit_records_missing_role_when_skills_have_no_compatible_role() -> None:
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "repository-write",
+            "reversibility": "versioned",
+            "consequence": "medium",
+        },
+        assurance={"required": ["deterministic-tests"]},
+    )
+    _, project_lock = resolve_toolkit(manifest)
+    work_item = _sample_work_item(authority_class="read-only", consequence_class="medium")
+    task = resolve_task_toolkit_for_work_item(work_item, project_lock)
+    assert task.skill_ids
+    assert not task.role_ids
+    unsat = [decision for decision in task.decisions if decision.component_kind == "task-toolkit"]
+    assert len(unsat) == 1
+    assert "no compatible role" in unsat[0].rationale
+
+
+def test_task_toolkit_nonempty_mutation_killed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_foundry.toolkit import api as toolkit_api
+
+    original = toolkit_api.resolve_task_toolkit
+
+    def _empty_toolkit(*args: object, **kwargs: object):
+        result = original(*args, **kwargs)
+        return result.model_copy(update={"role_ids": [], "skill_ids": [], "capability_ids": []})
+
+    monkeypatch.setattr(toolkit_api, "resolve_task_toolkit", _empty_toolkit)
+    lock = _main_style_repository_write_lock()
+    work_item = _sample_work_item(authority_class="repository-write", work_class="CAPABILITY")
+    task = resolve_task_toolkit_for_work_item(work_item, lock)
+    with pytest.raises(AssertionError, match="non-empty"):
+        _assert_satisfiable_task_toolkit_nonempty(task, lock)
 
 
 def test_include_and_exclude_rationale_present() -> None:
@@ -366,6 +481,8 @@ def test_include_and_exclude_rationale_present() -> None:
     assert "explorer" in lock.role_ids
     discovery_item = _sample_work_item(authority_class="read-only", work_class="DISCOVERY")
     discovery_task = resolve_task_toolkit_for_work_item(discovery_item, lock)
+    assert discovery_task.role_ids
+    assert discovery_task.skill_ids
     assert "explorer" in discovery_task.role_ids
 
 
