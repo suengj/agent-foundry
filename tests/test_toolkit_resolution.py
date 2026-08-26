@@ -154,14 +154,8 @@ def test_resolve_project_toolkit_from_sample_manifest() -> None:
     assert "bounded-change" in lock.skill_ids
     assert "independent-review" in lock.skill_ids
     assert "builder-reviewer" in lock.workflow_ids
-    runtime_verifier_decisions = [
-        d for d in lock.decisions if d.component_kind == "role" and d.component_id == "runtime-verifier"
-    ]
-    assert runtime_verifier_decisions
-    assert any(
-        d.action == ResolutionAction.EXCLUDE and "permission ceiling" in d.rationale
-        for d in runtime_verifier_decisions
-    )
+    assert "runtime-verifier" in lock.role_ids
+    assert "runtime.verify" in lock.capability_ids
     assert resolution.integration_health
     assert all(item.message for item in resolution.integration_health)
 
@@ -331,7 +325,14 @@ def test_task_toolkit_is_strict_subset_with_tighter_controls() -> None:
 
 
 def test_include_and_exclude_rationale_present() -> None:
-    manifest = _sample_manifest()
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "read-only",
+            "reversibility": "trivial",
+            "consequence": "low",
+        },
+        assurance={"required": []},
+    )
     _, lock = resolve_toolkit(manifest)
     includes = [d for d in lock.decisions if d.action == ResolutionAction.INCLUDE]
     excludes = [d for d in lock.decisions if d.action == ResolutionAction.EXCLUDE]
@@ -544,3 +545,119 @@ def test_resolve_toolkit_on_repo_explains_empty_manifest() -> None:
     assert '"decisions"' in result.stdout
     assert "unknown" in result.stdout.lower()
     assert '"capability_ids":[]' in result.stdout.replace(" ", "") or '"capability_ids": []' in result.stdout
+    assert '"integration_ids":[]' in result.stdout.replace(" ", "") or '"integration_ids": []' in result.stdout
+    assert "no integration declared" in result.stdout
+
+
+def test_policy_required_capability_unsatisfiable_raises() -> None:
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "read-only",
+            "reversibility": "trivial",
+            "consequence": "low",
+        },
+        assurance={"required": []},
+    )
+    registry = build_default_registry()
+    registry = registry.model_copy(
+        update={
+            "policy_rules": [
+                *registry.policy_rules,
+                PolicyRule(
+                    id="test-require-repository-write",
+                    description="test",
+                    when=PolicyPredicate(),
+                    require_capabilities=["repository.write"],
+                ),
+            ]
+        }
+    )
+    with pytest.raises(PolicyViolationError, match="policy-required capabilities unsatisfiable"):
+        resolve_toolkit(manifest, registry=registry)
+
+
+def test_unknown_capability_fail_closed_against_read_only_ceiling() -> None:
+    from agent_foundry.models.base import FOUNDRY_SCHEMA_VERSION
+    from agent_foundry.models.registry import CapabilitySpec
+
+    registry = build_default_registry()
+    custom_cap = CapabilitySpec(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        id="production.deploy",
+        version="1.0.0",
+        description="Deploy to production",
+        min_external_effect=ExternalEffectClass.PUBLICATION,
+    )
+    registry = registry.model_copy(
+        update={"capabilities": [*registry.capabilities, custom_cap]}
+    )
+    registry = registry.model_copy(
+        update={
+            "policy_rules": [
+                *registry.policy_rules,
+                PolicyRule(
+                    id="test-require-production-deploy",
+                    description="test",
+                    when=PolicyPredicate(),
+                    require_capabilities=["production.deploy"],
+                ),
+            ]
+        }
+    )
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "read-only",
+            "reversibility": "trivial",
+            "consequence": "low",
+        },
+        assurance={"required": []},
+    )
+    with pytest.raises(PolicyViolationError, match="policy-required capabilities unsatisfiable"):
+        resolve_toolkit(manifest, registry=registry)
+
+
+def test_lock_has_no_contradictory_decisions() -> None:
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "read-only",
+            "reversibility": "trivial",
+            "consequence": "low",
+        },
+        assurance={"required": []},
+    )
+    _, lock = resolve_toolkit(manifest)
+    by_component: dict[tuple[str, str], set[str]] = {}
+    for decision in lock.decisions:
+        key = (decision.component_kind, decision.component_id)
+        by_component.setdefault(key, set()).add(decision.action.value)
+    contradictions = {key: actions for key, actions in by_component.items() if len(actions) > 1}
+    assert contradictions == {}
+
+
+def test_compat_rejects_empty_and_bare_version() -> None:
+    registry = build_default_registry()
+    for bad_compat in ("", "   ", "0.1"):
+        bad_registry = registry.model_copy(update={"foundry_compat": bad_compat})
+        with pytest.raises(SchemaCompatibilityError):
+            resolve_toolkit(_sample_manifest(), registry=bad_registry)
+
+
+def test_task_stage_role_exclude_decisions_recorded() -> None:
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "repository-write",
+            "reversibility": "versioned",
+            "consequence": "medium",
+        },
+        assurance={"required": ["deterministic-tests"]},
+    )
+    _, project_lock = resolve_toolkit(manifest)
+    work_item = _sample_work_item(authority_class="read-only", consequence_class="medium")
+    task = resolve_task_toolkit_for_work_item(work_item, project_lock)
+    role_excludes = [
+        d
+        for d in task.decisions
+        if d.action == ResolutionAction.EXCLUDE and d.component_kind == "role"
+    ]
+    assert role_excludes
+    assert any(d.component_id == "builder" for d in role_excludes)

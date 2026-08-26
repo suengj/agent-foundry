@@ -28,7 +28,7 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 
 ### Changed
 
-- Toolkit resolution reconciles capabilities against permission ceilings, pins permission `external_effect` in locks, and records exclude decisions when manifest facts are unknown.
+- Toolkit resolution reconciles capabilities against the manifest-declared external-effect ceiling (not the selected profile), pins that declaration in locks, and raises on unsatisfiable hard policy requirements.
 - Pre-release vocabulary correction: removed `external-shared` from `Statefulness` (use `persistent-shared-external`); removed `deterministic` from `AssuranceMode` (use `deterministic-tests`).
 
 ### In progress

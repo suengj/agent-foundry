@@ -43,16 +43,22 @@ _EFFECT_RANK: dict[ExternalEffectClass, int] = {
     ExternalEffectClass.PUBLICATION: 5,
 }
 
-_CAPABILITY_MIN_EFFECT: dict[str, ExternalEffectClass] = {
-    "repository.read": ExternalEffectClass.READ_ONLY,
-    "repository.write": ExternalEffectClass.REPOSITORY_WRITE,
-    "validation.test": ExternalEffectClass.READ_ONLY,
-    "validation.review": ExternalEffectClass.READ_ONLY,
-    "inspection.read": ExternalEffectClass.READ_ONLY,
-    "work.read": ExternalEffectClass.SHARED_SERVICE_WRITE,
-    "work.write": ExternalEffectClass.SHARED_SERVICE_WRITE,
-    "runtime.verify": ExternalEffectClass.RUNTIME_MUTATION,
-}
+def _manifest_declared_external_effect(manifest: ProjectManifest) -> ExternalEffectClass:
+    if manifest.impact.external_effect is not None:
+        return manifest.impact.external_effect
+    return ExternalEffectClass.READ_ONLY
+
+
+def _manifest_facts_unspecified(manifest: ProjectManifest) -> bool:
+    artifact = manifest.project.primary_artifact
+    primary_mode = (
+        manifest.project.work_modes.primary if manifest.project.work_modes is not None else None
+    )
+    return (
+        artifact is None
+        and primary_mode is None
+        and manifest.impact.external_effect is None
+    )
 
 
 def _lookup_permission_profile(
@@ -76,8 +82,24 @@ def _lookup_budget_profile(profile_id: str, profiles: list[BudgetProfile]) -> Bu
     )
 
 
-def _capability_exceeds_ceiling(capability_id: str, ceiling: ExternalEffectClass) -> bool:
-    min_effect = _CAPABILITY_MIN_EFFECT.get(capability_id, ExternalEffectClass.READ_ONLY)
+def _capability_min_external_effect(
+    capability_id: str,
+    capabilities: dict[str, object],
+) -> ExternalEffectClass:
+    from agent_foundry.models.registry import CapabilitySpec
+
+    spec = capabilities.get(capability_id)
+    if isinstance(spec, CapabilitySpec):
+        return spec.min_external_effect
+    return ExternalEffectClass.PUBLICATION
+
+
+def _capability_exceeds_ceiling(
+    capability_id: str,
+    ceiling: ExternalEffectClass,
+    capabilities: dict[str, object],
+) -> bool:
+    min_effect = _capability_min_external_effect(capability_id, capabilities)
     return _EFFECT_RANK[min_effect] > _EFFECT_RANK[ceiling]
 
 
@@ -90,32 +112,112 @@ def _select_validator_ids(manifest: ProjectManifest) -> set[str]:
     return validator_ids
 
 
-def _reconcile_with_permission_ceiling(
+def _retract_include(
+    decisions: list[ResolutionDecision],
+    component_kind: str,
+    component_id: str,
+) -> None:
+    decisions[:] = [
+        decision
+        for decision in decisions
+        if not (
+            decision.action == ResolutionAction.INCLUDE
+            and decision.component_kind == component_kind
+            and decision.component_id == component_id
+        )
+    ]
+
+
+def _record_exclude(
+    decisions: list[ResolutionDecision],
+    component_kind: str,
+    component_id: str,
+    rationale: str,
+    source: ResolutionSource,
+    *,
+    project_fact: str | None = None,
+    policy_id: str | None = None,
+) -> None:
+    if any(
+        decision.action == ResolutionAction.EXCLUDE
+        and decision.component_kind == component_kind
+        and decision.component_id == component_id
+        for decision in decisions
+    ):
+        return
+    _retract_include(decisions, component_kind, component_id)
+    decisions.append(
+        _decision(
+            ResolutionAction.EXCLUDE,
+            component_kind,
+            component_id,
+            rationale,
+            source,
+            project_fact=project_fact,
+            policy_id=policy_id,
+        )
+    )
+
+
+def _assert_policy_requirements_satisfied(
+    policy_require: dict[str, set[str]],
     capabilities: set[str],
     skills: set[str],
     roles: set[str],
-    permission_profile: PermissionProfile,
+    workflows: set[str],
+) -> None:
+    missing_capabilities = sorted(policy_require["capabilities"] - capabilities)
+    if missing_capabilities:
+        raise PolicyViolationError(
+            f"policy-required capabilities unsatisfiable: {', '.join(missing_capabilities)}"
+        )
+    missing_skills = sorted(policy_require["skills"] - skills)
+    if missing_skills:
+        raise PolicyViolationError(
+            f"policy-required skills unsatisfiable: {', '.join(missing_skills)}"
+        )
+    missing_roles = sorted(policy_require["roles"] - roles)
+    if missing_roles:
+        raise PolicyViolationError(
+            f"policy-required roles unsatisfiable: {', '.join(missing_roles)}"
+        )
+    missing_workflows = sorted(policy_require["workflows"] - workflows)
+    if missing_workflows:
+        raise PolicyViolationError(
+            f"policy-required workflows unsatisfiable: {', '.join(missing_workflows)}"
+        )
+
+
+def _reconcile_with_permission_ceiling(
+    manifest: ProjectManifest,
+    capabilities: set[str],
+    skills: set[str],
+    roles: set[str],
     index: dict[str, dict[str, object]],
     decisions: list[ResolutionDecision],
 ) -> None:
     from agent_foundry.models.registry import RoleContract, SkillSpec
 
-    ceiling = permission_profile.external_effect
+    ceiling = _manifest_declared_external_effect(manifest)
+    ceiling_fact = (
+        f"impact.external_effect={ceiling.value}"
+        if manifest.impact.external_effect is not None
+        else "impact.external_effect unknown; read-only default"
+    )
     skills_by_id = index["skills"]
     roles_by_id = index["roles"]
+    capabilities_by_id = index["capabilities"]
 
     for capability_id in sorted(capabilities):
-        if _capability_exceeds_ceiling(capability_id, ceiling):
+        if _capability_exceeds_ceiling(capability_id, ceiling, capabilities_by_id):
             capabilities.discard(capability_id)
-            decisions.append(
-                _decision(
-                    ResolutionAction.EXCLUDE,
-                    "capability",
-                    capability_id,
-                    f"exceeds permission ceiling {ceiling.value}",
-                    ResolutionSource.PROJECT_FACT,
-                    project_fact=f"permission_profile.external_effect={ceiling.value}",
-                )
+            _record_exclude(
+                decisions,
+                "capability",
+                capability_id,
+                f"exceeds declared external-effect ceiling {ceiling.value}",
+                ResolutionSource.PROJECT_FACT,
+                project_fact=ceiling_fact,
             )
 
     for skill_id in sorted(skills):
@@ -127,32 +229,31 @@ def _reconcile_with_permission_ceiling(
         ] > _EFFECT_RANK[ceiling]
         if exceeds:
             skills.discard(skill_id)
-            decisions.append(
-                _decision(
-                    ResolutionAction.EXCLUDE,
-                    "skill",
-                    skill_id,
-                    f"external_write skill exceeds permission ceiling {ceiling.value}",
-                    ResolutionSource.PROJECT_FACT,
-                    project_fact=f"permission_profile.external_effect={ceiling.value}",
-                )
+            _record_exclude(
+                decisions,
+                "skill",
+                skill_id,
+                f"external_write skill exceeds declared external-effect ceiling {ceiling.value}",
+                ResolutionSource.PROJECT_FACT,
+                project_fact=ceiling_fact,
             )
 
     for role_id in sorted(roles):
         role = roles_by_id.get(role_id)
         if not isinstance(role, RoleContract):
             continue
-        if any(_capability_exceeds_ceiling(cap, ceiling) for cap in role.allowed_capabilities):
+        if any(
+            _capability_exceeds_ceiling(cap, ceiling, capabilities_by_id)
+            for cap in role.allowed_capabilities
+        ):
             roles.discard(role_id)
-            decisions.append(
-                _decision(
-                    ResolutionAction.EXCLUDE,
-                    "role",
-                    role_id,
-                    f"role capabilities exceed permission ceiling {ceiling.value}",
-                    ResolutionSource.PROJECT_FACT,
-                    project_fact=f"permission_profile.external_effect={ceiling.value}",
-                )
+            _record_exclude(
+                decisions,
+                "role",
+                role_id,
+                f"role capabilities exceed declared external-effect ceiling {ceiling.value}",
+                ResolutionSource.PROJECT_FACT,
+                project_fact=ceiling_fact,
             )
 
 
@@ -570,9 +671,7 @@ def _select_permission_profile(
     profiles: list[PermissionProfile],
     forbidden_profiles: set[str],
 ) -> PermissionProfile:
-    effect = manifest.impact.external_effect
-    if effect is None:
-        effect = ExternalEffectClass.READ_ONLY
+    effect = _manifest_declared_external_effect(manifest)
 
     allowed = [profile for profile in profiles if profile.id not in forbidden_profiles]
     if not allowed:
@@ -683,8 +782,21 @@ def resolve_project_toolkit(
 
     permission_profile = _select_permission_profile(manifest, permission_profiles, forbid["permission_profiles"])
     _assert_no_permission_escalation(manifest, permission_profile)
+    declared_effect = _manifest_declared_external_effect(manifest)
     _reconcile_with_permission_ceiling(
-        capabilities, skills, roles, permission_profile, index, decisions
+        manifest,
+        capabilities,
+        skills,
+        roles,
+        index,
+        decisions,
+    )
+    _assert_policy_requirements_satisfied(
+        policy_require,
+        capabilities,
+        skills,
+        roles,
+        workflows,
     )
 
     if skills:
@@ -695,27 +807,50 @@ def resolve_project_toolkit(
         _assert_present("capability", capabilities, index["capabilities"])
 
     validator_ids = _select_validator_ids(manifest)
-    for validator_id in sorted(validator_ids):
+    decisions.append(
+        _decision(
+            ResolutionAction.INCLUDE,
+            "validator",
+            "schema-compat",
+            "baseline schema contract validation",
+            ResolutionSource.REGISTRY,
+        )
+    )
+    if "evidence-contract" in validator_ids:
         decisions.append(
             _decision(
                 ResolutionAction.INCLUDE,
                 "validator",
-                validator_id,
+                "evidence-contract",
                 "validator required by assurance or consequence policy",
                 ResolutionSource.PROJECT_FACT,
                 project_fact=(
                     "assurance.required"
                     if manifest.assurance.required
                     else f"impact.consequence={manifest.impact.consequence.value}"
-                    if manifest.impact.consequence is not None
-                    else "schema validation baseline"
                 ),
             )
         )
 
     budget_profile = _select_budget_profile(manifest, budget_profiles)
 
-    integration_ids = _sorted_ids(desired_integration_ids or ["repository"])
+    if desired_integration_ids:
+        integration_ids = _sorted_ids(desired_integration_ids)
+        integration_include_rationale = "explicitly requested integration"
+    elif _manifest_facts_unspecified(manifest):
+        integration_ids = []
+        _record_exclude(
+            decisions,
+            "integration",
+            "repository",
+            "no integration declared and project facts are unknown",
+            ResolutionSource.PROJECT_FACT,
+            project_fact="project facts unspecified",
+        )
+        integration_include_rationale = None
+    else:
+        integration_ids = ["repository"]
+        integration_include_rationale = "default project integration pin"
     for integration_id in integration_ids:
         if integration_id not in index["integrations"]:
             raise ToolkitResolutionError(f"integration {integration_id!r} not in registry")
@@ -739,16 +874,17 @@ def resolve_project_toolkit(
         for integration_id in integration_ids
     }
 
-    for integration_id in integration_ids:
-        decisions.append(
-            _decision(
-                ResolutionAction.INCLUDE,
-                "integration",
-                integration_id,
-                "default project integration pin",
-                ResolutionSource.REGISTRY,
+    if integration_include_rationale is not None:
+        for integration_id in integration_ids:
+            decisions.append(
+                _decision(
+                    ResolutionAction.INCLUDE,
+                    "integration",
+                    integration_id,
+                    integration_include_rationale,
+                    ResolutionSource.REGISTRY,
+                )
             )
-        )
 
     decisions.append(
         _decision(
@@ -797,7 +933,7 @@ def resolve_project_toolkit(
         workflow_versions=workflow_versions,
         integration_adapter_versions=integration_adapter_versions,
         permission_profile_version=permission_profile.version,
-        permission_external_effect=permission_profile.external_effect,
+        permission_external_effect=declared_effect,
         budget_profile_version=budget_profile.version,
         decisions=sorted(
             decisions,

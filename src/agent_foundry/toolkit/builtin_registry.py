@@ -39,6 +39,7 @@ def _cap(
     *,
     tags: list[str] = [],
     provides: list[str] = [],
+    min_external_effect: ExternalEffectClass = ExternalEffectClass.READ_ONLY,
 ) -> CapabilitySpec:
     return CapabilitySpec(
         schema_version=FOUNDRY_SCHEMA_VERSION,
@@ -47,6 +48,7 @@ def _cap(
         description=description,
         tags=tags,
         provides=provides or [id],
+        min_external_effect=min_external_effect,
     )
 
 
@@ -117,13 +119,33 @@ def build_default_registry() -> CapabilityRegistry:
     """Return the default small capability registry."""
     capabilities = [
         _cap("repository.read", "Read repository files within scoped paths", tags=["repository"]),
-        _cap("repository.write", "Write repository files within scoped paths", tags=["repository"]),
+        _cap(
+            "repository.write",
+            "Write repository files within scoped paths",
+            tags=["repository"],
+            min_external_effect=ExternalEffectClass.REPOSITORY_WRITE,
+        ),
         _cap("validation.test", "Run deterministic project tests", tags=["validation"]),
         _cap("validation.review", "Perform independent review", tags=["validation"]),
         _cap("inspection.read", "Inspect repository structure read-only", tags=["inspection"]),
-        _cap("work.read", "Read work tracker state", tags=["work"]),
-        _cap("work.write", "Mutate work tracker state", tags=["work"]),
-        _cap("runtime.verify", "Verify runtime or external read-back", tags=["runtime"]),
+        _cap(
+            "work.read",
+            "Read work tracker state",
+            tags=["work"],
+            min_external_effect=ExternalEffectClass.SHARED_SERVICE_WRITE,
+        ),
+        _cap(
+            "work.write",
+            "Mutate work tracker state",
+            tags=["work"],
+            min_external_effect=ExternalEffectClass.SHARED_SERVICE_WRITE,
+        ),
+        _cap(
+            "runtime.verify",
+            "Verify runtime or external read-back",
+            tags=["runtime"],
+            min_external_effect=ExternalEffectClass.RUNTIME_MUTATION,
+        ),
     ]
 
     roles = [
@@ -295,6 +317,13 @@ def build_default_registry() -> CapabilityRegistry:
             preview_required=True,
             apply_requires=AuthorityRequirement.EXPLICIT_AUTHORITY,
         ),
+        PermissionProfile(
+            id="runtime-mutation-bounded",
+            external_effect=ExternalEffectClass.RUNTIME_MUTATION,
+            write_requires=AuthorityRequirement.EXPLICIT_AUTHORITY,
+            preview_required=True,
+            apply_requires=AuthorityRequirement.EXPLICIT_AUTHORITY,
+        ),
     ]
 
     budget_profiles = [
@@ -404,6 +433,13 @@ def build_default_registry_permission_profiles() -> list[PermissionProfile]:
         PermissionProfile(
             id="shared-service-write",
             external_effect=ExternalEffectClass.SHARED_SERVICE_WRITE,
+            write_requires=AuthorityRequirement.EXPLICIT_AUTHORITY,
+            preview_required=True,
+            apply_requires=AuthorityRequirement.EXPLICIT_AUTHORITY,
+        ),
+        PermissionProfile(
+            id="runtime-mutation-bounded",
+            external_effect=ExternalEffectClass.RUNTIME_MUTATION,
             write_requires=AuthorityRequirement.EXPLICIT_AUTHORITY,
             preview_required=True,
             apply_requires=AuthorityRequirement.EXPLICIT_AUTHORITY,

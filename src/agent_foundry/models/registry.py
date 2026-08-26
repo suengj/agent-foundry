@@ -7,7 +7,7 @@ from enum import StrEnum
 from pydantic import Field
 
 from agent_foundry.models.base import FoundryModel, VersionedContract
-from agent_foundry.models.common import PrimaryWorkMode, WorkClass
+from agent_foundry.models.common import ExternalEffectClass, PrimaryWorkMode, WorkClass
 from agent_foundry.models.policy import PolicyRule
 
 
@@ -19,6 +19,7 @@ class CapabilitySpec(VersionedContract):
     description: str
     tags: list[str] = Field(default_factory=list)
     provides: list[str] = Field(default_factory=list)
+    min_external_effect: ExternalEffectClass = ExternalEffectClass.READ_ONLY
 
 
 class SkillTriggers(FoundryModel):
