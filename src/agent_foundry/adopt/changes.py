@@ -136,32 +136,76 @@ def _bootstrap_changes(intake: ProjectIntake) -> list[AdoptionChangeItem]:
     return changes
 
 
+def _foundry_retention_changes(intake: ProjectIntake) -> list[AdoptionChangeItem]:
+    changes: list[AdoptionChangeItem] = []
+    declaration_observations = [
+        observation
+        for observation in intake.observations
+        if observation.subject == "foundry-declaration"
+    ]
+    if declaration_observations:
+        refs = sorted(
+            {
+                observation.provenance.source_ref
+                for observation in declaration_observations
+                if observation.provenance.source_ref
+            }
+        )
+        if refs:
+            changes.append(
+                _change(
+                    target="foundry-project-declaration",
+                    action=AdoptionAction.KEEP,
+                    summary="Retain authoritative owner-declared project characteristics",
+                    kind=ProvenanceKind.DECLARED,
+                    authority_requirement=AuthorityRequirement.NONE,
+                    status=AdoptionChangeStatus.AUTO_APPLICABLE,
+                    evidence_refs=refs,
+                    rationale="Existing declaration is authoritative and compatible",
+                    priority=1,
+                )
+            )
+        return changes
+
+    artifact_observations = [
+        observation
+        for observation in intake.observations
+        if observation.subject == "foundry-artifact"
+    ]
+    if not artifact_observations:
+        return changes
+
+    refs = sorted(
+        {
+            observation.provenance.source_ref
+            for observation in artifact_observations
+            if observation.provenance.source_ref
+        }
+    )
+    if not refs:
+        return changes
+
+    changes.append(
+        _change(
+            target="foundry-artifact-surfaces",
+            action=AdoptionAction.KEEP,
+            summary="Retain observed Foundry artifact surfaces",
+            kind=ProvenanceKind.OBSERVED,
+            authority_requirement=AuthorityRequirement.NONE,
+            status=AdoptionChangeStatus.AUTO_APPLICABLE,
+            evidence_refs=refs,
+            rationale="Observed artifacts are retained during retrofit",
+            priority=1,
+        )
+    )
+    return changes
+
+
 def _brownfield_retrofit_changes(intake: ProjectIntake) -> list[AdoptionChangeItem]:
     subjects = _observation_subjects(intake)
     changes: list[AdoptionChangeItem] = []
 
-    if "foundry-artifact" in subjects or "foundry-declaration" in subjects:
-        refs = sorted(
-            {
-                observation.provenance.source_ref
-                for observation in intake.observations
-                if observation.subject in {"foundry-artifact", "foundry-declaration"}
-                and observation.provenance.source_ref
-            }
-        )
-        changes.append(
-            _change(
-                target="foundry-project-declaration",
-                action=AdoptionAction.KEEP,
-                summary="Retain authoritative owner-declared project characteristics",
-                kind=ProvenanceKind.DECLARED,
-                authority_requirement=AuthorityRequirement.NONE,
-                status=AdoptionChangeStatus.AUTO_APPLICABLE,
-                evidence_refs=refs or [".foundry/project.yaml"],
-                rationale="Existing declaration is authoritative and compatible",
-                priority=1,
-            )
-        )
+    changes.extend(_foundry_retention_changes(intake))
 
     if "package-metadata" in subjects:
         refs = sorted(
@@ -256,28 +300,8 @@ def _brownfield_retrofit_changes(intake: ProjectIntake) -> list[AdoptionChangeIt
                 authority_requirement=AuthorityRequirement.EXPLICIT_AUTHORITY,
                 status=AdoptionChangeStatus.PROPOSED,
                 confidence=finding.provenance.confidence,
-                rationale="Adjudicate conflicting mentions with owner authority; do not auto-prescribe",
+                rationale="Adjudicate unreconciled mentions with owner authority; do not auto-prescribe",
                 priority=6,
-            )
-        )
-
-    test_runner_conventions = [item for item in intake.conventions if item.subject == "test-runner"]
-    if len(test_runner_conventions) >= 2:
-        refs = sorted({item.source_ref for item in test_runner_conventions})
-        verbatim = " | ".join(item.evidence for item in test_runner_conventions)
-        changes.append(
-            _change(
-                target="test-runner",
-                action=AdoptionAction.CONSOLIDATE,
-                summary="Instruction surfaces mention conflicting test runners without prescribing either",
-                kind=ProvenanceKind.INFERRED,
-                authority_requirement=AuthorityRequirement.EXPLICIT_AUTHORITY,
-                status=AdoptionChangeStatus.PROPOSED,
-                evidence_refs=refs,
-                verbatim=verbatim,
-                confidence=0.5,
-                rationale="Observed mentions require explicit owner adjudication",
-                priority=7,
             )
         )
 
@@ -337,13 +361,29 @@ def _authority_proposal_changes(
     return changes
 
 
+def _unknown_intake_mode_change() -> AdoptionChangeItem:
+    return _change(
+        target="intake-mode",
+        action=AdoptionAction.BLOCK,
+        summary="intake_mode could not be determined from available evidence",
+        kind=ProvenanceKind.INFERRED,
+        authority_requirement=AuthorityRequirement.EXPLICIT_AUTHORITY,
+        status=AdoptionChangeStatus.BLOCKED,
+        confidence=0.0,
+        rationale="Adoption planning requires an evidenced intake mode",
+        priority=0,
+    )
+
+
 def build_change_set(intake: ProjectIntake, manifest: ProjectManifest) -> AdoptionChangeSet:
-    intake_mode = manifest.project.intake_mode or IntakeMode.GREENFIELD
+    intake_mode = manifest.project.intake_mode
 
     if intake_mode == IntakeMode.GREENFIELD:
         changes = _bootstrap_changes(intake)
     else:
         changes = _brownfield_retrofit_changes(intake)
+        if intake_mode is None:
+            changes.insert(0, _unknown_intake_mode_change())
 
     changes.extend(_authority_proposal_changes(manifest, intake))
 

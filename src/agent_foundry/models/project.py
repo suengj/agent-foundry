@@ -141,7 +141,7 @@ class AdoptionChangeSet(VersionedContract):
     """Explicit current → proposed adoption delta."""
 
     project_name: str | None = None
-    intake_mode: IntakeMode
+    intake_mode: IntakeMode | None = None
     changes: list[AdoptionChangeItem]
 
 

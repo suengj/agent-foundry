@@ -32,6 +32,7 @@ from agent_foundry.models.common import ConsequenceClass
 from agent_foundry.models.project import (
     ClassificationFinding,
     ProjectIntake,
+    ProjectObservation,
     ReadinessFinding,
     TraversalLimits,
     TraversalStats,
@@ -40,6 +41,11 @@ from agent_foundry.models.project import (
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "projects"
 GREENFIELD = FIXTURES / "greenfield-minimal"
 BROWNFIELD = FIXTURES / "brownfield-sample"
+MISSING_INTAKE_MODE = FIXTURES / "brownfield-missing-intake-mode"
+MALFORMED_INTAKE_MODE = FIXTURES / "brownfield-malformed-intake-mode"
+FOUNDRY_SCRATCH_ONLY = FIXTURES / "brownfield-foundry-scratch-only"
+SINGLE_FILE_PYTEST = FIXTURES / "brownfield-single-file-pytest-mentions"
+TWO_FILE_TEST_MENTIONS = FIXTURES / "brownfield-two-file-test-mentions"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -293,3 +299,125 @@ def test_blocker_readiness_produces_block_change() -> None:
     blocked = [change for change in result.change_set.changes if change.action == AdoptionAction.BLOCK]
     assert blocked
     assert blocked[0].status == AdoptionChangeStatus.BLOCKED
+
+
+def test_unknown_intake_mode_not_planned_as_greenfield() -> None:
+    result = plan_adoption(inspect_project(MISSING_INTAKE_MODE))
+    assert result.manifest.project.intake_mode is None
+    assert result.change_set.intake_mode is None
+    assert result.change_set.intake_mode != IntakeMode.GREENFIELD
+    keep_targets = {
+        change.target
+        for change in result.change_set.changes
+        if change.action == AdoptionAction.KEEP
+    }
+    assert "foundry-project-declaration" in keep_targets
+    assert "package-metadata" in keep_targets
+    assert "runtime-deploy" in keep_targets
+    blocked = [change for change in result.change_set.changes if change.target == "intake-mode"]
+    assert blocked
+    assert blocked[0].action == AdoptionAction.BLOCK
+
+
+def test_cli_adopt_missing_intake_mode_not_greenfield(tmp_path: Path) -> None:
+    target = tmp_path / "project"
+    shutil.copytree(MISSING_INTAKE_MODE, target)
+    result = subprocess.run(
+        [sys.executable, "-m", "agent_foundry", "adopt", str(target), "--format", "json"],
+        cwd=REPO_ROOT,
+        env=_subprocess_env(),
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    payload = result.stdout.decode("utf-8")
+    assert '"intake_mode":null' in payload.replace(" ", "")
+    assert '"intake_mode":"greenfield"' not in payload.replace(" ", "")
+    assert '"target":"foundry-project-declaration"' in payload.replace(" ", "")
+    assert '"action":"KEEP"' in payload.replace(" ", "")
+
+
+def test_malformed_declared_intake_mode_surfaces_readiness_finding() -> None:
+    result = plan_adoption(inspect_project(MALFORMED_INTAKE_MODE))
+    invalid = [
+        finding
+        for finding in result.manifest.readiness_findings
+        if finding.dimension == "declared-value-invalid"
+    ]
+    assert invalid
+    assert "brown-field" in invalid[0].message
+    assert ".foundry/project.yaml" in invalid[0].message
+    assert result.manifest.project.intake_mode is None
+    assert result.change_set.intake_mode is None
+
+
+def test_observed_foundry_artifact_not_stamped_declared() -> None:
+    result = plan_adoption(inspect_project(FOUNDRY_SCRATCH_ONLY))
+    foundry_changes = [
+        change
+        for change in result.change_set.changes
+        if change.target.startswith("foundry-")
+    ]
+    assert foundry_changes
+    assert all(
+        change.evidence.provenance.kind != ProvenanceKind.DECLARED for change in foundry_changes
+    )
+    assert foundry_changes[0].target == "foundry-artifact-surfaces"
+    assert foundry_changes[0].evidence.provenance.kind == ProvenanceKind.OBSERVED
+    assert ".foundry/scratch-notes.txt" in foundry_changes[0].evidence.evidence_refs
+
+
+def test_change_set_never_fabricates_evidence_refs() -> None:
+    intake = _minimal_intake(
+        classification_findings=[
+            ClassificationFinding(
+                dimension="intake_mode",
+                value=IntakeMode.BROWNFIELD.value,
+                provenance=Provenance(kind=ProvenanceKind.INFERRED, confidence=0.7, source_ref="."),
+            )
+        ],
+        observations=[
+            ProjectObservation(
+                subject="foundry-declaration",
+                content="project.yaml present with owner-declared characteristics",
+                provenance=Provenance(kind=ProvenanceKind.DECLARED, source_ref=None),
+            ),
+            ProjectObservation(
+                subject="package-metadata",
+                content="package/build metadata file present: pyproject.toml",
+                provenance=Provenance(kind=ProvenanceKind.OBSERVED, source_ref="pyproject.toml"),
+            ),
+        ],
+    )
+    result = plan_adoption(intake)
+    for change in result.change_set.changes:
+        assert ".foundry/project.yaml" not in change.evidence.evidence_refs
+    foundry_changes = [
+        change
+        for change in result.change_set.changes
+        if change.target == "foundry-project-declaration"
+    ]
+    assert not foundry_changes
+
+
+def test_single_file_pytest_mentions_do_not_claim_runner_conflict() -> None:
+    result = plan_adoption(inspect_project(SINGLE_FILE_PYTEST))
+    conflict_claims = [
+        change
+        for change in result.change_set.changes
+        if "conflicting test runner" in change.evidence.summary.lower()
+        or change.target == "test-runner"
+    ]
+    assert not conflict_claims
+
+
+def test_two_file_test_mentions_still_produce_reconciliation_change() -> None:
+    result = plan_adoption(inspect_project(TWO_FILE_TEST_MENTIONS))
+    reconcile = [
+        change
+        for change in result.change_set.changes
+        if change.target == "instruction-surface-mentions"
+    ]
+    assert reconcile
+    assert reconcile[0].action == AdoptionAction.CONSOLIDATE
+    assert "reconciled" in reconcile[0].evidence.summary.lower()
