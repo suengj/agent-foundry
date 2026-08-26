@@ -32,6 +32,27 @@ class ProjectObservation(FoundryModel):
     provenance: Provenance
 
 
+class ClassificationFinding(FoundryModel):
+    """Proposed classification field candidate — evidence, not synthesized profile."""
+
+    dimension: str
+    value: str | None = None
+    reason: str | None = None
+    provenance: Provenance
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class ConventionSpec(FoundryModel):
+    """Locally discovered convention with source evidence and confidence."""
+
+    subject: str
+    pattern: str
+    source_ref: str
+    evidence: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    provenance: Provenance
+
+
 class ReadinessFinding(FoundryModel):
     """Readiness assessment finding."""
 
@@ -104,3 +125,34 @@ class ProjectManifest(VersionedContract):
     access: ProjectAccess
     observations: list[ProjectObservation] = Field(default_factory=list)
     readiness_findings: list[ReadinessFinding] = Field(default_factory=list)
+
+
+class TraversalLimits(FoundryModel):
+    """Documented traversal bounds applied during inspection."""
+
+    max_depth: int
+    max_entries: int
+    max_file_bytes: int
+    skipped_dir_names: list[str] = Field(default_factory=list)
+
+
+class TraversalStats(FoundryModel):
+    """Traversal accounting for bounded inspection."""
+
+    entries_visited: int
+    entries_skipped: int
+    depth_limit_reached: bool
+    entry_limit_reached: bool
+    limits: TraversalLimits
+
+
+class ProjectIntake(VersionedContract):
+    """Read-only project inspection output — evidence for later synthesis."""
+
+    project_root: str
+    repository_revision: str | None = None
+    observations: list[ProjectObservation] = Field(default_factory=list)
+    classification_findings: list[ClassificationFinding] = Field(default_factory=list)
+    conventions: list[ConventionSpec] = Field(default_factory=list)
+    readiness_findings: list[ReadinessFinding] = Field(default_factory=list)
+    traversal_stats: TraversalStats

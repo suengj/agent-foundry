@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 
 from agent_foundry import __version__
+from agent_foundry.inspect import inspect_project
+from agent_foundry.models.io import dump_json, dump_yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTRACT_PATH = REPO_ROOT / "docs" / "contracts" / "product-boundary.md"
@@ -52,6 +54,22 @@ def _cmd_doctor(_: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def _cmd_inspect(args: argparse.Namespace) -> int:
+    try:
+        intake = inspect_project(args.project_path)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    if args.format == "json":
+        payload = dump_json(intake)
+    else:
+        payload = dump_yaml(intake)
+
+    sys.stdout.buffer.write(payload)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agent-foundry",
@@ -68,6 +86,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor_cmd = sub.add_parser("doctor", help="Validate bootstrap contract artifacts")
     doctor_cmd.set_defaults(func=_cmd_doctor)
+
+    inspect_cmd = sub.add_parser("inspect", help="Read-only project inventory and readiness assessment")
+    inspect_cmd.add_argument("project_path", help="Path to the project repository to inspect")
+    inspect_cmd.add_argument(
+        "--format",
+        choices=("json", "yaml"),
+        default="json",
+        help="Structured output format (default: json)",
+    )
+    inspect_cmd.set_defaults(func=_cmd_inspect)
 
     return parser
 

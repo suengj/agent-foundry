@@ -1,0 +1,4 @@
+---
+description: Local test conventions
+---
+Use pytest with coverage for all Python changes.
