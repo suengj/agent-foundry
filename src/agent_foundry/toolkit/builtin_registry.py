@@ -109,7 +109,7 @@ def _cap(
     *,
     tags: list[str] = [],
     provides: list[str] = [],
-    min_external_effect: ExternalEffectClass = ExternalEffectClass.READ_ONLY,
+    min_external_effect: ExternalEffectClass = ExternalEffectClass.PUBLICATION,
 ) -> CapabilitySpec:
     return CapabilitySpec(
         schema_version=FOUNDRY_SCHEMA_VERSION,
@@ -188,16 +188,36 @@ def _role(
 def build_default_registry() -> CapabilityRegistry:
     """Return the default small capability registry."""
     capabilities = [
-        _cap("repository.read", "Read repository files within scoped paths", tags=["repository"]),
+        _cap(
+            "repository.read",
+            "Read repository files within scoped paths",
+            tags=["repository"],
+            min_external_effect=ExternalEffectClass.READ_ONLY,
+        ),
         _cap(
             "repository.write",
             "Write repository files within scoped paths",
             tags=["repository"],
             min_external_effect=ExternalEffectClass.REPOSITORY_WRITE,
         ),
-        _cap("validation.test", "Run deterministic project tests", tags=["validation"]),
-        _cap("validation.review", "Perform independent review", tags=["validation"]),
-        _cap("inspection.read", "Inspect repository structure read-only", tags=["inspection"]),
+        _cap(
+            "validation.test",
+            "Run deterministic project tests",
+            tags=["validation"],
+            min_external_effect=ExternalEffectClass.READ_ONLY,
+        ),
+        _cap(
+            "validation.review",
+            "Perform independent review",
+            tags=["validation"],
+            min_external_effect=ExternalEffectClass.READ_ONLY,
+        ),
+        _cap(
+            "inspection.read",
+            "Inspect repository structure read-only",
+            tags=["inspection"],
+            min_external_effect=ExternalEffectClass.READ_ONLY,
+        ),
         _cap(
             "work.read",
             "Read work tracker state",
@@ -526,20 +546,12 @@ def manifest_requires_code_capabilities(manifest) -> bool:
 
 def manifest_external_effect_allows_repository_write(manifest) -> bool:
     """True when declared external effect permits repository write."""
-    from agent_foundry.models.common import ExternalEffectClass
     from agent_foundry.models.project import ProjectManifest
+    from agent_foundry.toolkit.ceiling import EFFECT_RANK, effective_permission_ceiling
 
     if not isinstance(manifest, ProjectManifest):
         return False
     effect = manifest.impact.external_effect
     if effect is None:
         return False
-    write_rank = {
-        ExternalEffectClass.READ_ONLY: 0,
-        ExternalEffectClass.REPOSITORY_WRITE: 1,
-        ExternalEffectClass.SHARED_SERVICE_WRITE: 2,
-        ExternalEffectClass.DATA_MUTATION: 3,
-        ExternalEffectClass.RUNTIME_MUTATION: 4,
-        ExternalEffectClass.PUBLICATION: 5,
-    }
-    return write_rank[effect] >= write_rank[ExternalEffectClass.REPOSITORY_WRITE]
+    return EFFECT_RANK[effect] >= EFFECT_RANK[ExternalEffectClass.REPOSITORY_WRITE]

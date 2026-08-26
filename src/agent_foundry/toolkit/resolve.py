@@ -400,11 +400,14 @@ def _policy_matches(manifest: ProjectManifest, rule: PolicyRule) -> bool:
     if when.consequence is not None:
         if manifest.impact.consequence != when.consequence:
             return False
+    declared_effect = manifest.impact.external_effect
+    if declared_effect is None:
+        declared_effect = effective_permission_ceiling(manifest)
     if when.external_effect is not None:
-        if manifest.impact.external_effect != when.external_effect:
+        if declared_effect != when.external_effect:
             return False
     if when.authority_class is not None:
-        if manifest.impact.external_effect != when.authority_class:
+        if declared_effect != when.authority_class:
             return False
     if when.assurance is not None:
         required_mode = AssuranceMode(when.assurance)

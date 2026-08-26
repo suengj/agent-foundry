@@ -63,7 +63,12 @@ from agent_foundry.toolkit.builtin_registry import (
     build_default_registry,
     build_default_registry_permission_profiles,
 )
-from agent_foundry.toolkit.ceiling import EFFECT_RANK, effective_permission_ceiling
+from agent_foundry.toolkit.ceiling import (
+    EFFECT_RANK,
+    effective_permission_ceiling,
+    validate_task_toolkit_against_ceiling,
+    validate_toolkit_lock_against_ceiling,
+)
 from agent_foundry.toolkit.resolve import (
     _decision,
     _record_exclude,
@@ -952,3 +957,112 @@ def test_assurance_sweep_refusal_counts() -> None:
     fixture_key = tuple(_ASSURANCE_SWEEP_SETS[-1])
     assert refused_by_assurance[fixture_key] == 0
     assert refused_by_assurance[("independent-review",)] <= 2
+
+
+def test_unknown_external_effect_critical_requires_independent_review() -> None:
+    manifest = _sample_manifest(
+        impact={
+            "reversibility": "trivial",
+            "consequence": "critical",
+        },
+        assurance={"required": ["independent-review"]},
+    )
+    assert manifest.impact.external_effect is None
+    _, lock = resolve_toolkit(manifest)
+    assert "independent-review" in lock.skill_ids
+    assert "reviewer" in lock.role_ids
+    assert "independent-review-readonly" in lock.workflow_ids
+    assert "builder-reviewer" not in lock.workflow_ids
+
+
+def test_assurance_sweep_none_axes_assurance_never_dropped() -> None:
+    external_effects: list[str | None] = [
+        None,
+        "read-only",
+        "repository-write",
+        "shared-service-write",
+        "runtime-mutation",
+        "publication",
+        "data-mutation",
+    ]
+    consequences: list[str | None] = [None, "low", "medium", "high", "critical"]
+    dropped = 0
+    for assurance in _ASSURANCE_SWEEP_SETS:
+        if "independent-review" not in assurance:
+            continue
+        for external_effect in external_effects:
+            for consequence in consequences:
+                impact: dict[str, str] = {"reversibility": "trivial"}
+                if external_effect is not None:
+                    impact["external_effect"] = external_effect
+                if consequence is not None:
+                    impact["consequence"] = consequence
+                manifest = _sample_manifest(
+                    impact=impact,
+                    assurance={"required": assurance},
+                )
+                try:
+                    _, lock = resolve_toolkit(manifest)
+                    if "independent-review" not in lock.skill_ids:
+                        dropped += 1
+                except PolicyViolationError:
+                    pass
+    assert dropped == 0
+
+
+def test_validate_toolkit_lock_against_ceiling_rejects_forged_capability() -> None:
+    registry = build_default_registry()
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "read-only",
+            "reversibility": "trivial",
+            "consequence": "low",
+        },
+        assurance={"required": []},
+    )
+    _, lock = resolve_toolkit(manifest, registry=registry)
+    forged = lock.model_copy(
+        update={"capability_ids": sorted([*lock.capability_ids, "repository.write"])}
+    )
+    with pytest.raises(ToolkitResolutionError, match="repository.write"):
+        validate_toolkit_lock_against_ceiling(
+            forged,
+            registry,
+            ExternalEffectClass.READ_ONLY,
+        )
+
+
+def test_validate_task_toolkit_against_ceiling_rejects_looser_profile() -> None:
+    builtin_profiles = build_default_registry_permission_profiles()
+    looser_profile = PermissionProfile(
+        id="aaa-publication",
+        external_effect=ExternalEffectClass.PUBLICATION,
+        write_requires=AuthorityRequirement.EXPLICIT_AUTHORITY,
+        preview_required=True,
+        apply_requires=AuthorityRequirement.EXPLICIT_AUTHORITY,
+    )
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "runtime-mutation",
+            "reversibility": "rollback-required",
+            "consequence": "medium",
+        },
+        assurance={"required": ["deterministic-tests"]},
+    )
+    _, lock = resolve_toolkit(manifest, permission_profiles=builtin_profiles)
+    work_item = _sample_work_item(authority_class="publication", consequence_class="medium")
+    task_profiles = [*builtin_profiles, looser_profile]
+    task = resolve_task_toolkit_for_work_item(
+        work_item,
+        lock,
+        permission_profiles=task_profiles,
+    )
+    forged = task.model_copy(update={"permission_profile_ids": ["aaa-publication"]})
+    with pytest.raises(ToolkitResolutionError, match="exceeds pinned profile"):
+        validate_task_toolkit_against_ceiling(
+            forged,
+            lock,
+            build_default_registry(),
+            work_item,
+            task_profiles,
+        )
