@@ -150,7 +150,7 @@ def test_hyphenated_openai_project_key_is_detected(value: str) -> None:
         "sk-live-Feature-Toggle-2024",
         "sk-test-Migration-Plan-V2",
         "sk-proj-Agent-Foundry-V2-Spec",
-        "sk-live-SUE-318-Serialization",
+        "sk-live-API-318-Serialization",
         "sk-live-2024-Q3-Release-Notes",
         "sk-live-Feature-Toggle-2024-Release-Candidate",
         "refs/heads/sk-live-Feature-Toggle-2024",
