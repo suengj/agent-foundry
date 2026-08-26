@@ -48,7 +48,12 @@ from agent_foundry.models.common import (
     WorkClass,
     WorkLifecycleState,
 )
-from agent_foundry.models.execution import ExecutionBundle
+from agent_foundry.models.execution import (
+    BundleProvenanceRecord,
+    CompiledAuthority,
+    ExecutionBundle,
+    SkillSummary,
+)
 from agent_foundry.models.integrations import (
     IntegrationAuth,
     IntegrationHealth,
@@ -165,12 +170,14 @@ __all__ = [
     "AssuranceMode",
     "AuthorityRequirement",
     "Autonomy",
+    "BundleProvenanceRecord",
     "BudgetProfile",
     "BudgetProfileRef",
     "CapabilityRegistry",
     "CapabilitySpec",
     "CapabilityUnit",
     "ClassificationFinding",
+    "CompiledAuthority",
     "Concurrency",
     "ConfidenceTier",
     "ConsequenceClass",
@@ -242,6 +249,7 @@ __all__ = [
     "SkillPermissions",
     "SkillRoleConstraint",
     "SkillSpec",
+    "SkillSummary",
     "SkillTriggers",
     "Statefulness",
     "TaskToolkit",

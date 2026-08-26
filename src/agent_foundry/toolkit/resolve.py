@@ -571,6 +571,24 @@ def _manifest_fact_requirements(
             ResolutionSource.PROJECT_FACT,
             project_fact="project.primary_artifact=code or work_modes.primary=build",
         )
+        require["skills"].add("repository-inspection")
+        require["roles"].add("explorer")
+        _record_include(
+            decisions,
+            "skill",
+            "repository-inspection",
+            "code-centric project requires read-only inspection baseline",
+            ResolutionSource.PROJECT_FACT,
+            project_fact="project.primary_artifact=code or work_modes.primary=build",
+        )
+        _record_include(
+            decisions,
+            "role",
+            "explorer",
+            "code-centric project requires explorer for inspection baseline",
+            ResolutionSource.PROJECT_FACT,
+            project_fact="project.primary_artifact=code or work_modes.primary=build",
+        )
         if external_effect is None:
             _record_exclude(
                 decisions,
@@ -1202,6 +1220,101 @@ def _skill_allowed_for_work_item(
     return True
 
 
+def _role_allowed_for_work_item(
+    work_item: WorkItemContract,
+    role_id: str,
+    roles_by_id: dict[str, object],
+    capabilities_by_id: dict[str, object],
+) -> bool:
+    from agent_foundry.models.registry import RoleContract
+
+    role = roles_by_id.get(role_id)
+    if not isinstance(role, RoleContract):
+        return False
+    ceiling = work_item.authority_class
+    for capability_id in role.allowed_capabilities:
+        min_effect = capability_min_external_effect(capability_id, capabilities_by_id)
+        if exceeds_permission_ceiling(min_effect, ceiling):
+            return False
+    return True
+
+
+def _derive_roles_from_selected_skills(
+    work_item: WorkItemContract,
+    selected_skills: set[str],
+    project_lock: ToolkitLock,
+    skills_by_id: dict[str, object],
+    roles_by_id: dict[str, object],
+    capabilities_by_id: dict[str, object],
+) -> set[str]:
+    from agent_foundry.models.registry import SkillSpec
+
+    derived: set[str] = set()
+    for skill_id in sorted(selected_skills):
+        skill = skills_by_id.get(skill_id)
+        if not isinstance(skill, SkillSpec):
+            continue
+        candidates = skill.roles.allowed if skill.roles.allowed else list(project_lock.role_ids)
+        for role_id in sorted(candidates):
+            if role_id not in project_lock.role_ids:
+                continue
+            if _role_allowed_for_work_item(work_item, role_id, roles_by_id, capabilities_by_id):
+                derived.add(role_id)
+    return derived
+
+
+def _annotate_empty_task_toolkit(
+    work_item: WorkItemContract,
+    project_lock: ToolkitLock,
+    selected_skills: set[str],
+    selected_roles: set[str],
+    selected_capabilities: set[str],
+    skills_by_id: dict[str, object],
+    decisions: list[ResolutionDecision],
+) -> None:
+    if selected_skills or selected_roles or selected_capabilities:
+        if selected_skills and not selected_roles:
+            _record_exclude(
+                decisions,
+                "task-toolkit",
+                work_item.id,
+                "selected skills have no compatible role in project lock for work item authority",
+                ResolutionSource.WORK_ITEM,
+                project_fact=(
+                    f"work_item.authority_class={work_item.authority_class.value}; "
+                    f"work_item.work_class={work_item.work_class.value}"
+                ),
+            )
+        return
+
+    compatible_skills = sorted(
+        skill_id
+        for skill_id in project_lock.skill_ids
+        if _skill_allowed_for_work_item(work_item, skill_id, skills_by_id)
+    )
+    if not compatible_skills:
+        rationale = (
+            "no project-lock skill satisfies work item authority "
+            f"{work_item.authority_class.value} and work class {work_item.work_class.value}"
+        )
+    else:
+        rationale = (
+            "no project-lock role can exercise the compatible skills for this work item "
+            f"under authority {work_item.authority_class.value}"
+        )
+    _record_exclude(
+        decisions,
+        "task-toolkit",
+        work_item.id,
+        rationale,
+        ResolutionSource.WORK_ITEM,
+        project_fact=(
+            f"work_item.authority_class={work_item.authority_class.value}; "
+            f"work_item.work_class={work_item.work_class.value}"
+        ),
+    )
+
+
 def _work_item_workflow_for_item(
     work_item: WorkItemContract,
     available_workflow_ids: list[str],
@@ -1212,6 +1325,13 @@ def _work_item_workflow_for_item(
     preference: list[str] = []
     if work_item.work_class == WorkClass.DISCOVERY:
         preference = ["investigator-synthesis"]
+    elif work_item.work_class == WorkClass.INCIDENT:
+        if work_item.authority_class == ExternalEffectClass.READ_ONLY:
+            preference = ["investigator-synthesis"]
+        else:
+            preference = ["single-worker-validation", "investigator-synthesis"]
+    elif work_item.work_class == WorkClass.CONTRACT_AMENDMENT:
+        preference = ["builder-reviewer", "single-worker-validation"]
     elif work_item.work_class in {WorkClass.CAPABILITY, WorkClass.BASELINE}:
         if work_item.consequence_class in {ConsequenceClass.HIGH, ConsequenceClass.CRITICAL}:
             preference = ["builder-reviewer", "single-worker-validation"]
@@ -1238,6 +1358,8 @@ def resolve_task_toolkit(
     """Resolve minimum Task Toolkit — strict subset of project lock, may only tighten controls."""
     index = _index_registry(registry)
     skills = index["skills"]
+    roles_by_id = index["roles"]
+    capabilities_by_id = index["capabilities"]
 
     selected_skills: set[str] = set()
     selected_roles: set[str] = set()
@@ -1256,7 +1378,12 @@ def resolve_task_toolkit(
                 ):
                     selected_skills.add(skill_id)
             for role_id in workflow.required_roles:
-                if role_id in project_lock.role_ids:
+                if role_id in project_lock.role_ids and _role_allowed_for_work_item(
+                    work_item,
+                    role_id,
+                    roles_by_id,
+                    capabilities_by_id,
+                ):
                     selected_roles.add(role_id)
             decisions.append(
                 _decision(
@@ -1302,6 +1429,17 @@ def resolve_task_toolkit(
                     project_fact=f"work_item.work_class={work_item.work_class.value}",
                 )
             )
+
+    selected_roles.update(
+        _derive_roles_from_selected_skills(
+            work_item,
+            selected_skills,
+            project_lock,
+            skills,
+            roles_by_id,
+            capabilities_by_id,
+        )
+    )
 
     for skill_id in sorted(selected_skills):
         skill = skills.get(skill_id)
@@ -1414,6 +1552,16 @@ def resolve_task_toolkit(
         for integration_id in project_lock.integration_ids
         if integration_id == "repository"
     ]
+
+    _annotate_empty_task_toolkit(
+        work_item,
+        project_lock,
+        selected_skills,
+        selected_roles,
+        selected_capabilities,
+        skills,
+        decisions,
+    )
 
     task_toolkit = TaskToolkit(
         schema_version=FOUNDRY_SCHEMA_VERSION,
