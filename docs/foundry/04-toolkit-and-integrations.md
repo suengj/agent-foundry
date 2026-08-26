@@ -7,7 +7,7 @@ A project should not receive every available Skill, tool, connector, provider, o
 ```text
 Foundry Capability Registry
         ↓
-Project Manifest
+Project Profile / Manifest
         ↓
 Project Toolkit
         ↓
@@ -26,11 +26,12 @@ The global registry can describe:
 Roles
 Workflows
 Skills
-Tools
+Tools / Tool Interface Profiles
 Connectors / MCP servers / APIs
 Validators
 Permission profiles
-Context sources
+Execution budget profiles
+Context sources / convention indexes
 Provider capability profiles
 Render/adaptation profiles
 ```
@@ -43,13 +44,13 @@ The Project Toolkit is the approved and version-pinned capability universe for o
 
 It answers:
 
-- which roles may exist
-- which workflows are available
-- which Skills can be selected
-- which tools/connectors may be used
-- which permission profiles are allowed
-- which validators/evidence profiles apply
-- which provider capability classes are permitted
+- which roles may exist;
+- which workflows are available;
+- which Skills can be selected;
+- which tools/connectors may be used;
+- which permission and execution-budget profiles are allowed;
+- which validators/evidence profiles apply;
+- which provider capability classes are permitted.
 
 ## 4. Task Toolkit
 
@@ -60,6 +61,7 @@ Project Toolkit
 - capabilities irrelevant to current work
 - unavailable integrations
 - permissions not required by the current role
+- standards/context irrelevant to the current work
 + workflow-required components
 + temporary tighter restrictions
 = Task Toolkit
@@ -72,21 +74,22 @@ Least capability is both a safety principle and a context-quality principle.
 A practical resolver should combine deterministic filtering with bounded reasoning.
 
 ```text
-1. Work / project requirements
+1. Project Profile + Work Item requirements
 2. Capability matching
 3. Hard policy filtering
 4. Integration health and availability
 5. Workflow requirements
 6. Role separation / ownership validation
-7. Provider/model resolution
-8. Final completeness validation
+7. Skill/context relevance selection
+8. Provider/model resolution
+9. Final completeness validation
 ```
 
 Domain tags may help select specialized Skills, but authority and control are primarily derived from external effect, consequence, reversibility, access sensitivity, and assurance requirements.
 
 ## 6. Capability metadata
 
-A Skill or tool should carry enough metadata for deterministic selection.
+A Skill or tool should carry enough metadata for deterministic discovery before full instructions are loaded.
 
 Example:
 
@@ -95,11 +98,14 @@ id: deterministic-test
 kind: skill
 version: 1.0.0
 
+description: Run project-approved deterministic tests and return normalized evidence.
+
 provides:
   - validation.test
 
-applicable_when:
+triggers:
   artifact_types: [source-code]
+  work_modes: [implementation, validation]
 
 roles:
   allowed: [builder, validator]
@@ -114,7 +120,56 @@ outputs:
   - test_evidence
 ```
 
-## 7. IntegrationSpec
+Discovery metadata should stay compact. Full Skill/procedure content is loaded only after selection.
+
+## 7. Progressive disclosure and convention relevance
+
+Project intake may discover many conventions and standards. They should be indexed with short descriptions and relevance metadata rather than copied into every Execution Bundle.
+
+```text
+Convention / standard index
+        ↓
+Project Profile + Work Item + Role
+        ↓ relevance selection
+Applicable conventions only
+        ↓
+Execution Bundle context
+```
+
+This keeps project context lean while preserving local architectural intent.
+
+A discovered convention is not automatically a hard policy. Preserve source/evidence/confidence and promote it only through the appropriate governance path.
+
+## 8. Tool Interface Profile
+
+A tool is more than an allow/deny capability. Agent performance also depends on how commands, context, and feedback are presented.
+
+A future toolkit should be able to describe an agent-facing interaction profile such as:
+
+```yaml
+id: repository-edit
+kind: tool-interface
+version: 1
+
+capabilities:
+  - file.read
+  - file.edit
+  - repo.search
+
+feedback:
+  max_context_lines: 120
+  normalize_empty_output: true
+
+post_actions:
+  - syntax-check
+
+permissions:
+  external_write: false
+```
+
+V0.1 does not need to implement a custom shell or ACI. It should establish metadata/contracts that future adapters can consume.
+
+## 9. IntegrationSpec
 
 External systems should be modeled separately from procedures.
 
@@ -141,7 +196,7 @@ health:
 
 An integration is a privilege and state boundary, not merely a convenient tool.
 
-## 8. Credential references
+## 10. Credential references
 
 Foundry configuration should never require raw secret values in version-controlled project files.
 
@@ -172,7 +227,7 @@ api_key: actual-secret-value
 
 Foundry may validate that a reference exists or that an integration can authenticate, but the secret value belongs to the credential provider or execution environment.
 
-## 9. Identity and delegation
+## 11. Identity and delegation
 
 Where supported, prefer delegated or workload identity over long-lived shared credentials.
 
@@ -188,7 +243,7 @@ External system
 
 Agents should not need to reason about or reproduce secret material in their natural-language output.
 
-## 10. Integration lifecycle / health
+## 12. Integration lifecycle / health
 
 Presence in configuration is not equivalent to usability.
 
@@ -196,7 +251,7 @@ Track integration state explicitly:
 
 ```text
 DESIRED
-INSTALLED
+AVAILABLE
 CONFIGURED
 AUTHENTICATED
 AUTHORIZED
@@ -207,7 +262,7 @@ UNAVAILABLE
 
 A Task Toolkit requiring `work.write` must fail preflight if the required integration is not both authorized and sufficiently healthy.
 
-## 11. Configuration split
+## 13. Configuration split
 
 Recommended project-side separation:
 
@@ -218,8 +273,11 @@ Recommended project-side separation:
 .foundry/toolkit.lock.yaml
 = resolved/pinned capability versions and integration profiles
 
+.foundry/integrations.yaml
+= integration declarations + SecretRefs, never raw secrets
+
 local/runtime configuration
-= credential references and environment-specific endpoints when appropriate
+= environment-specific endpoints and credential-provider bindings where appropriate
 
 credential provider
 = actual secrets
@@ -227,7 +285,7 @@ credential provider
 
 Environment-specific configuration must not be confused with project-level authority. A credential being available does not imply that a task is authorized to use it.
 
-## 12. Toolkit lock and compatibility
+## 14. Toolkit lock and compatibility
 
 A resolved toolkit should be reproducible.
 
@@ -252,7 +310,7 @@ validators:
 
 Updating the global registry should not silently change an existing project's resolved behavior. Toolkit upgrades should be explicit and validate compatibility.
 
-## 13. Capability health
+## 15. Capability health
 
 The resolver should distinguish declared capability from effective capability.
 
@@ -266,14 +324,14 @@ HEALTHY
 
 Examples of failure:
 
-- Skill metadata exists but required executable is absent
-- connector is installed but authentication expired
-- provider exists but model/cost policy forbids the role
-- runtime verifier exists but target environment cannot be read
+- Skill metadata exists but required executable is absent;
+- connector is installed but authentication expired;
+- provider exists but model/cost policy forbids the role;
+- runtime verifier exists but target environment cannot be read.
 
 These should become typed preflight failures rather than mid-run surprises.
 
-## 14. Provider resolution
+## 16. Provider resolution
 
 Provider/model selection is downstream of role and capability requirements.
 
@@ -288,8 +346,103 @@ Work Item
 
 Provider identities should remain adapters at the edge, not core role definitions.
 
-## 15. Practical objective
+## 17. MCP facade principle
+
+MCP is a supported interface for Foundry capabilities, not the core architecture.
+
+```text
+              Foundry Core
+                  │
+       ┌──────────┼──────────┐
+       ↓          ↓          ↓
+      CLI     Python API   MCP Server
+```
+
+Core inspection, profiling, resolution, compilation, and validation should be testable without an MCP host.
+
+Candidate MCP tools:
+
+```text
+foundry.inspect
+foundry.profile
+foundry.adopt_preview
+foundry.adopt_apply
+foundry.work_plan
+foundry.resolve_toolkit
+foundry.integration_check
+foundry.compile
+foundry.validate
+foundry.reconcile
+```
+
+Candidate resources:
+
+```text
+foundry://project/profile
+foundry://project/manifest
+foundry://project/adoption
+foundry://project/toolkit
+foundry://project/work
+foundry://task/current
+```
+
+### Project path handling
+
+For MCP `2026-07-28` and newer designs, do not build new project selection around MCP Roots, which is deprecated for new implementations.
+
+Prefer:
+
+- explicit `project_path` tool parameters;
+- project resource URIs;
+- server configuration;
+- environment-specific adapter configuration.
+
+Foundry itself must still canonicalize paths, enforce allowed-root containment, reject traversal/symlink escape where applicable, and apply read/write policy independently of MCP metadata.
+
+### Long-running tasks
+
+The MCP Tasks extension is a possible future transport for long-running inspect/adopt/validate operations. It should not be required to prove V0.1 Core correctness.
+
+## 18. Declarative policy input to toolkit resolution
+
+Avoid toolkit selection through hard-coded named project types.
+
+Prefer composable predicates:
+
+```yaml
+when:
+  consequence: high
+  external_effect: true
+require:
+  - independent-review
+forbid:
+  - self-approval
+```
+
+The resolver should combine:
+
+1. deterministic invariants;
+2. declarative policy rules;
+3. bounded reasoning for ambiguous selection among already-permitted alternatives.
+
+A reasoning result may tighten capability selection, but must not silently grant broader authority than declared/confirmed project inputs permit.
+
+## 19. Explainable resolution
+
+Toolkit outputs should eventually retain enough decision trace to answer:
+
+```text
+Why was this role selected?
+Why was this Skill selected?
+Why is this integration required?
+Why was this capability excluded?
+Which project facts and policies caused the decision?
+```
+
+This explanation/provenance becomes part of validation and audit rather than hidden reasoning state.
+
+## 20. Practical objective
 
 A toolkit is successful when project configuration can reproducibly answer:
 
-> What may this project use, what does this Work Item actually need, which external systems are authorized and healthy, and how can the execution environment obtain the required capability without exposing unnecessary privileges or secrets?
+> What may this project use, what does this Work Item actually need, which standards and Skills are relevant, which external systems are authorized and healthy, and how can the execution environment obtain the required capability without exposing unnecessary privileges or secrets?
