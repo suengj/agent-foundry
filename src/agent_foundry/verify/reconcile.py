@@ -33,6 +33,7 @@ from agent_foundry.models.verification import (
     TrackerProjection,
 )
 from agent_foundry.models.work import WorkItemContract
+from agent_foundry.verify.independent import vocabulary_violations
 
 # Evidence states that can only be established by reading back applied external
 # state. If a work item requires one of these, an unobserved runtime is decisive.
@@ -65,6 +66,45 @@ def _finding(
         authorities_consulted=authorities,
         evidence_refs=sorted(evidence_refs or []),
     )
+
+
+def _malformed_vocabulary_report(
+    work_item: WorkItemContract,
+    inputs: dict[str, object],
+) -> ReconciliationReport | None:
+    """Refuse to reconcile projections carrying values from no known vocabulary.
+
+    Same policy as the validators: membership, rank, and `.value` dereference are all
+    unsafe on an unrecognised value — the first falls through silently, the other two
+    raise, and an exception returns no report at all, so nothing is recorded about why
+    the artifact was rejected.
+
+    The violations are reported on *every* dimension rather than one. A dimension left
+    without findings would aggregate to MISSING, which reads as "not yet established";
+    what is true here is stronger — the input cannot establish anything, and each
+    dimension should say so.
+    """
+    violations: list[str] = []
+    for label, model in inputs.items():
+        if model is None:
+            continue
+        violations.extend(f"{label}.{item}" for item in vocabulary_violations(model))
+    if not violations:
+        return None
+
+    findings = [
+        _finding(
+            dimension,
+            ValidationOutcome.BLOCKED,
+            work_item.id,
+            violation,
+            [_TRACKER, _REPOSITORY, _RUNTIME],
+        )
+        for dimension in ReconciliationDimension
+        for violation in violations
+    ]
+    return ReconciliationReport(work_item_id=work_item.id, findings=findings, proposals=[])
+
 
 
 def _partition_declarations(
@@ -109,6 +149,13 @@ def reconcile_work_item(
     proposal against an authority other than Foundry itself is marked as requiring
     explicit human apply.
     """
+    malformed = _malformed_vocabulary_report(
+        work_item, {"work_item": work_item, "tracker": tracker,
+                    "repository": repository, "runtime": runtime}
+    )
+    if malformed is not None:
+        return malformed
+
     findings: list[ReconciliationFinding] = []
     proposals: list[StateProposal] = []
 

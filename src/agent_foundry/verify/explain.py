@@ -34,7 +34,7 @@ from agent_foundry.models.verification import (
     ValidationReport,
 )
 from agent_foundry.verify import claims
-from agent_foundry.verify.independent import EXTERNAL_EFFECT_ASCENDING
+from agent_foundry.verify.independent import EXTERNAL_EFFECT_ASCENDING, vocabulary_violations
 
 _AUTONOMY_ASCENDING: tuple[Autonomy, ...] = (
     Autonomy.SUGGEST,
@@ -80,11 +80,19 @@ def _axis_rank(axis: str, value: str | None) -> int:
 
 
 def _manifest_axis_value(manifest: ProjectManifest, axis: str) -> str | None:
+    """The manifest's value on an authority axis, as a plain string.
+
+    Read through `getattr(..., "value", ...)` rather than `.value` directly: a
+    manifest built past its validators carries a raw string where the field type
+    promises an enum, and dereferencing it raises. Callers run the vocabulary scan
+    first, which rejects such a manifest outright; this keeps the accessor total so a
+    caller that forgets crashes nothing.
+    """
     if axis == "impact.external_effect":
-        effect: ExternalEffectClass | None = manifest.impact.external_effect
-        return None if effect is None else effect.value
-    autonomy: Autonomy | None = manifest.execution.autonomy
-    return None if autonomy is None else autonomy.value
+        effect: ExternalEffectClass | str | None = manifest.impact.external_effect
+        return None if effect is None else str(getattr(effect, "value", effect))
+    autonomy: Autonomy | str | None = manifest.execution.autonomy
+    return None if autonomy is None else str(getattr(autonomy, "value", autonomy))
 
 
 def assess_inferred_fact_tightening(
@@ -212,6 +220,37 @@ def validate_decision_explainability(
 ) -> ValidationReport:
     """Check that the compiled decisions are attributable and did not widen authority."""
     validator_id = claims.DECISION_EXPLAINABILITY
+    subject_id = f"{bundle.work_item_id}/{bundle.run_id}"
+
+    # Vocabulary first, as everywhere else in verify/: a manifest or bundle carrying a
+    # value from no known vocabulary cannot support any statement about why a
+    # decision was made, and ranking or dereferencing it below would raise.
+    malformed: list[ValidationFinding] = []
+    for label, model in (
+        ("bundle", bundle),
+        ("manifest", manifest),
+        ("receipt", receipt),
+        *(
+            (f"classification[{index}]", item)
+            for index, item in enumerate(classification_findings or [])
+        ),
+    ):
+        if model is None:
+            continue
+        malformed.extend(
+            ValidationFinding(
+                validator_id=validator_id,
+                outcome=ValidationOutcome.BLOCKED,
+                subject=subject_id,
+                message=f"{label}.{violation}",
+            )
+            for violation in vocabulary_violations(model)
+        )
+    if malformed:
+        return ValidationReport(
+            subject_kind="execution-bundle", subject_id=subject_id, findings=malformed
+        )
+
     findings: list[ValidationFinding] = []
     trace = build_decision_trace(
         bundle,

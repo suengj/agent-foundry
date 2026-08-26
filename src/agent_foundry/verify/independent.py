@@ -48,11 +48,24 @@ declared level, so an unknown requirement can never slip under a ceiling.
 """
 
 
-def effect_rank(effect: ExternalEffectClass | None) -> int:
-    """Position of an external-effect class, with unknown ranking above all."""
+def effect_rank(effect: ExternalEffectClass | str | None) -> int:
+    """Position of an external-effect class, with anything unrecognised ranking above all.
+
+    Total by construction. A value that names no effect class — which is what a
+    forged or drifted artifact carries — ranks above every declared level rather than
+    raising `ValueError` from `tuple.index`. An exception is not a fail-closed
+    verdict: it aborts the caller and records nothing about why the artifact was
+    rejected, so the caller cannot report it. Callers still scan the vocabulary first
+    and emit a finding; this is the backstop that keeps them from crashing if one
+    forgets.
+    """
     if effect is None:
         return UNDECLARED_BOUND_RANK
-    return EXTERNAL_EFFECT_ASCENDING.index(effect)
+    value = getattr(effect, "value", effect)
+    for index, member in enumerate(EXTERNAL_EFFECT_ASCENDING):
+        if member.value == value:
+            return index
+    return UNDECLARED_BOUND_RANK
 
 
 def exceeds(effect: ExternalEffectClass | None, ceiling: ExternalEffectClass | None) -> bool:
@@ -207,17 +220,34 @@ AVAILABLE, CONFIGURED and UNAVAILABLE do not, whatever credentials are declared.
 """
 
 
+def _health_member(state: IntegrationHealthState | str | None) -> IntegrationHealthState | None:
+    """Resolve a health value to a known member, or None when it names none."""
+    if state is None:
+        return None
+    if isinstance(state, IntegrationHealthState):
+        return state
+    for member in IntegrationHealthState:
+        if member.value == state:
+            return member
+    return None
+
+
 def health_satisfies(
-    actual: IntegrationHealthState | None,
-    required: IntegrationHealthState,
+    actual: IntegrationHealthState | str | None,
+    required: IntegrationHealthState | str,
 ) -> bool:
     """True when an observed state meets a required one.
 
     `None` — no observation at all — satisfies nothing. Unobserved is not healthy,
-    and this function is the place that refuses to blur the two.
+    and this function is the place that refuses to blur the two. A value that names
+    no health state satisfies nothing either, and returns False rather than raising
+    from `tuple.index`.
     """
-    if actual is None:
+    actual = _health_member(actual)
+    required_member = _health_member(required)
+    if actual is None or required_member is None:
         return False
+    required = required_member
     if actual == IntegrationHealthState.UNAVAILABLE:
         return False
     if actual == IntegrationHealthState.DEGRADED:
@@ -230,9 +260,14 @@ def health_satisfies(
     return HEALTH_LADDER.index(actual) >= HEALTH_LADDER.index(required)
 
 
-def authentication_evidenced(actual: IntegrationHealthState | None) -> bool:
-    """True when the observed state is positive evidence of authentication."""
-    return actual is not None and actual in AUTHENTICATED_STATES
+def authentication_evidenced(actual: IntegrationHealthState | str | None) -> bool:
+    """True when the observed state is positive evidence of authentication.
+
+    An unrecognised value evidences nothing, so it resolves to False rather than
+    comparing a bare string against a set of members and quietly missing.
+    """
+    member = _health_member(actual)
+    return member is not None and member in AUTHENTICATED_STATES
 
 
 EVIDENCE_STATE_PROGRESSION: tuple[EvidenceState, ...] = (
@@ -405,4 +440,72 @@ def evidence_state_partition_conflicts(
                 "not-required; an exemption must name the obligation it lifts"
             )
 
+    return violations
+
+
+# --- vocabulary membership, checked before anything is done with a value --------
+
+
+def _enum_types(annotation: object) -> list[type]:
+    """Every enum type mentioned anywhere in a field annotation."""
+    from enum import Enum
+    from typing import get_args
+
+    found: list[type] = []
+    stack: list[object] = [annotation]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, type) and issubclass(item, Enum):
+            found.append(item)
+        stack.extend(get_args(item) or ())
+    return found
+
+
+def vocabulary_violations(model: object, *, path: str = "") -> list[str]:
+    """Values sitting in an enum-typed position that name nothing in that vocabulary.
+
+    Walks a model's declared fields — including nested models and lists of them —
+    and reports every position whose value is outside the enum the field is typed
+    with. Runs *before* any membership test, rank lookup, or `.value` dereference,
+    because all three of those silently mishandle an unrecognised value: membership
+    quietly falls through every branch, rank raises, and dereference raises.
+
+    A validator that returns PASS for an artifact carrying an unrecognised lifecycle
+    state has accepted a malformed positive claim, and one that raises has returned
+    no verdict at all. Both are failures; this is what makes them a BLOCKED finding
+    instead.
+
+    The value arrives as a raw string when a model was built with `model_construct`
+    or loaded past its validators — which is exactly the artifact a validator exists
+    to examine — so comparison is on the declared enum's values, not on member type.
+    """
+    fields = getattr(type(model), "model_fields", None)
+    if not fields:
+        return []
+
+    violations: list[str] = []
+    for name, field in fields.items():
+        value = getattr(model, name, None)
+        if value is None:
+            continue
+        where = f"{path}.{name}" if path else name
+        enums = _enum_types(field.annotation)
+        items = value if isinstance(value, (list, tuple)) else [value]
+
+        for index, item in enumerate(items):
+            position = where if not isinstance(value, (list, tuple)) else f"{where}[{index}]"
+            if item is None:
+                continue
+            if getattr(type(item), "model_fields", None):
+                violations.extend(vocabulary_violations(item, path=position))
+                continue
+            if not enums:
+                continue
+            raw = getattr(item, "value", item)
+            if any(raw in {member.value for member in enum} for enum in enums):
+                continue
+            names = "/".join(enum.__name__ for enum in enums)
+            violations.append(
+                f"{position} carries {raw!r}, which names no {names} value"
+            )
     return violations

@@ -78,8 +78,8 @@ MODELS_DIR = (
 # discovered, so that adding a producer rule is a deliberate act — and cross-checked
 # against AST discovery below, so the list cannot silently fall behind the code.
 PRODUCER_VALIDATION_RULES: tuple[tuple[str, str], ...] = (
-    ("agent_foundry.models.interaction", "disposition_obligation_violations"),
-    ("agent_foundry.models.interaction", "evidence_state_partition_violations"),
+    ("agent_foundry.models._producer_rules", "disposition_obligation_violations"),
+    ("agent_foundry.models._producer_rules", "evidence_state_partition_violations"),
     ("agent_foundry.models.interaction", "_parse_optional_datetime"),
     ("agent_foundry.models.base", "validate_schema_compatibility"),
     ("agent_foundry.models.base", "lint_no_raw_secrets"),
@@ -263,7 +263,7 @@ def test_the_tripwire_catches_a_getattr_bypass_the_ast_guard_cannot_see(
         "def bypass():\n"
         "    return getattr(\n"
         "        __import__(\n"
-        "            'agent_foundry.models.interaction',\n"
+        "            'agent_foundry.models._producer_rules',\n"
         "            fromlist=['evidence_state_partition_violations'],\n"
         "        ),\n"
         "        'evidence_state_partition_violations',\n"

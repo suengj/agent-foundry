@@ -7,24 +7,42 @@ to "what does this check actually establish?" cannot drift away from the code.
 `independently_derived` means the validator restates the property from the durable
 contract and shares no implementation with anything that produces or gates the
 artifact — including the pydantic model validators, which are producers: they decide
-whether an artifact may exist at all. Two entries here were wrongly marked True in
-the first version of this change because their obligations were delegated to a
-model-validator helper.
+whether an artifact may exist at all.
 
-Two guards now hold that line, on purpose:
+Three mechanisms hold that line, and none of them is complete on its own:
 
-* `tests/test_verify_independence.py` reads the import graph of every module in
-  `verify/` and discovers producer-owned rules from `models/` rather than from a
-  list. Cheap, fast, and catches the ordinary regression — but it is syntactic, so a
-  call assembled at runtime is invisible to it.
-* `tests/test_verify_producer_tripwire.py` wraps every producer rule and runs the
-  whole validation surface, failing if validation logic calls one by any route:
-  dynamic import, re-export, `getattr`, or function-local import. It distinguishes
-  that from the legitimate case — pydantic constructing a model — by which boundary
-  the call stack crosses first.
+* **An import boundary.** The two artifact-property rules a validator could be
+  tempted to reuse live in a private module of their own under `agent_foundry.models`,
+  imported only from inside the model-validator bodies that need them — so importing
+  the DTOs does not put those functions, or their module, into any namespace a
+  verifier can walk to. No module under `verify/` may name that module, by import,
+  attribute, or string literal; this file is subject to that rule too, which is why
+  the module is described here rather than spelled. `test_verify_independence.py`
+  names it, and the guard's own failure message names it. This is what closes
+  *pre-capture*: binding a reference at import time, before anything could patch it.
+* **A static rule-name scan**, covering the producer rules that cannot move behind
+  that boundary — `validate_schema_compatibility` and `lint_no_raw_secrets` are part
+  of the public model API and are called from many places. Cheap and fast, but
+  syntactic, so a name assembled at runtime is invisible to it.
+* **A runtime tripwire** that wraps each producer rule and fails if validation logic
+  calls one while a validator is executing. This covers the live-dynamic route the
+  static scans cannot see.
 
-A claim of independence therefore rests on observed behavior, not on how the source
-happens to be spelled.
+**What this pair does not prove.** An earlier version of this file claimed the
+tripwire caught a producer rule "by any route". That was false, and the reason is
+ordinary Python semantics rather than a missing case: `monkeypatch.setattr` rebinds a
+module dictionary entry and cannot rewrite a reference captured before it installs.
+A module-level capture, a closure, a default argument, a `functools.partial`, or an
+object handed to another module all keep the original callable. The import boundary
+is what actually closes that route for the two rules behind it, and the guards
+together are strong evidence rather than a proof.
+
+The residue, stated plainly: a verifier that assembles the module path from pieces at
+runtime, or reaches a rule through some future third module that legitimately imports
+it, would still escape all three. The complete answer is a
+process boundary — running verification in a fresh interpreter whose imports are
+restricted to DTOs and independently derived rules, over serialized primitives. That
+is out of scope for V0.1 and is recorded here as a limitation, not a promise.
 """
 
 from __future__ import annotations
@@ -214,20 +232,23 @@ VALIDATOR_CLAIMS: tuple[ValidatorClaim, ...] = (
         validator_id=LIFECYCLE_SEPARATION,
         proves=(
             "work lifecycle, execution state and evidence state are recorded as three "
-            "independent fields with disjoint vocabularies, that a receipt does not "
-            "collapse them into one status, that every value in BOTH evidence lists "
-            "names a real evidence state, that no state is both attained and exempt, "
-            "and that a lifecycle claiming closure is backed by the evidence states the "
-            "work item requires. The partition is derived from the evidence progression "
-            "in verify.independent — NOT_REQUIRED has no rung, so it cannot have been "
-            "attained, and it cannot exempt itself either — rather than from the "
-            "ExecutionReceipt model validator that gates construction. Both lists are "
-            "checked against the vocabulary: an unrecognised exemption is BLOCKED, "
-            "because an exemption naming no evidence state lifts no obligation"
+            "independent fields drawn from three disjoint vocabularies; that EVERY "
+            "enum-typed position on the receipt — the three state fields and both "
+            "evidence lists, nested models included — holds a value from its declared "
+            "vocabulary, checked before any membership test, rank lookup or "
+            "dereference and BLOCKED when it does not; that a receipt does not "
+            "collapse the three into one status; that no state is both attained and "
+            "exempt; and that a lifecycle claiming closure is backed by the evidence "
+            "states the work item requires. The partition is derived from the evidence "
+            "progression in verify.independent — NOT_REQUIRED has no rung, so it "
+            "cannot have been attained, and it cannot exempt itself either — rather "
+            "than from the ExecutionReceipt model validator that gates construction"
         ),
         cannot_prove=(
             "that the three recorded values were observed independently; it detects "
-            "conflation of the record, not of the observation"
+            "conflation of the record, not of the observation. Nor does a recognised "
+            "value mean a true one: this establishes that a state belongs to its "
+            "vocabulary, not that the run was in it"
         ),
         independently_derived=True,
         checks_output_of="agent_foundry.verify.receipt.build_execution_receipt",

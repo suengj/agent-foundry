@@ -111,6 +111,11 @@ class RunFinding(FoundryModel):
 
     @model_validator(mode="after")
     def _disposition_obligations(self) -> Self:
+        # Imported here, not at module scope: a module-level binding would make the
+        # producer rule reachable from anything that imports these DTOs, which is
+        # exactly the capture route the import guard exists to close.
+        from agent_foundry.models._producer_rules import disposition_obligation_violations
+
         for message in disposition_obligation_violations(
             disposition=self.disposition,
             finding_id=self.id,
@@ -122,42 +127,6 @@ class RunFinding(FoundryModel):
         ):
             raise ReceiptContractError(message)
         return self
-
-
-def disposition_obligation_violations(
-    *,
-    disposition: FindingDisposition | str,
-    finding_id: str,
-    evidence_refs: list[str],
-    follow_up_work_ref: str | None,
-    falsifiable_prediction: str | None,
-    evidence_condition: str | None,
-    escalation_reason: str | None,
-) -> list[str]:
-    """Obligations a disposition owes, expressed over plain values.
-
-    This is the *producer* rule: it decides whether a `RunFinding` may be
-    constructed at all. The validation layer must not call it. A validator that
-    reuses this function agrees with it however wrong it is, which is the defect
-    AF6 was blocked for; `agent_foundry.verify.independent` restates the same
-    obligations from docs/foundry/06 §9 as a table so the two can disagree.
-    """
-    violations: list[str] = []
-    value = disposition.value if isinstance(disposition, FindingDisposition) else str(disposition)
-    if value == FindingDisposition.BLOCKER.value and not evidence_refs:
-        violations.append(f"finding {finding_id!r}: BLOCKER requires at least one evidence_ref")
-    if value == FindingDisposition.RESIDUAL.value and not follow_up_work_ref:
-        violations.append(f"finding {finding_id!r}: RESIDUAL requires follow_up_work_ref")
-    if value == FindingDisposition.HYPOTHESIS.value:
-        if not falsifiable_prediction:
-            violations.append(
-                f"finding {finding_id!r}: HYPOTHESIS requires falsifiable_prediction"
-            )
-        if not evidence_condition:
-            violations.append(f"finding {finding_id!r}: HYPOTHESIS requires evidence_condition")
-    if value == FindingDisposition.HUMAN_REQUIRED.value and not escalation_reason:
-        violations.append(f"finding {finding_id!r}: HUMAN_REQUIRED requires escalation_reason")
-    return violations
 
 
 class EvidenceBundle(VersionedContract):
@@ -304,37 +273,12 @@ class ExecutionReceipt(VersionedContract):
 
     @model_validator(mode="after")
     def _evidence_states_are_consistent(self) -> Self:
+        # Imported inside the body for the same reason as above.
+        from agent_foundry.models._producer_rules import evidence_state_partition_violations
+
         for message in evidence_state_partition_violations(
             attained=[state.value for state in self.attained_evidence_states],
             not_required=[state.value for state in self.not_required_evidence_states],
         ):
             raise ReceiptContractError(f"receipt {self.run_id!r}: {message}")
         return self
-
-
-def evidence_state_partition_violations(
-    *,
-    attained: list[str],
-    not_required: list[str],
-) -> list[str]:
-    """Partition rules for the two evidence-state lists, over plain values.
-
-    A state cannot be both attained and exempt, and `NOT_REQUIRED` is the marker for
-    the exempt list rather than an attainment.
-
-    This is the *producer* rule, enforced when an `ExecutionReceipt` is constructed.
-    The validation layer must not call it; `agent_foundry.verify.independent`
-    derives the same partition from the evidence progression instead, so a defect
-    here cannot be laundered through the check meant to catch it.
-    """
-    violations: list[str] = []
-    overlap = sorted(set(attained) & set(not_required))
-    if overlap:
-        violations.append(
-            f"evidence states {overlap} are declared both attained and not-required"
-        )
-    if EvidenceState.NOT_REQUIRED.value in attained:
-        violations.append(
-            "NOT_REQUIRED is an exemption, not an attained evidence state"
-        )
-    return violations

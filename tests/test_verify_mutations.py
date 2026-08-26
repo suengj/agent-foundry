@@ -498,10 +498,10 @@ def test_receipt_completeness_survives_a_disposition_rule_bypassed_at_constructi
 
 
 def test_lifecycle_separation_survives_a_neutralized_partition_rule(monkeypatch):
-    """Producer: `models.interaction.evidence_state_partition_violations`."""
+    """Producer: `models._producer_rules.evidence_state_partition_violations`."""
     from agent_foundry.models import ExecutionReceipt
     from agent_foundry.models.interaction import ReceiptContractError
-    import agent_foundry.models.interaction as interaction
+    import agent_foundry.models._producer_rules as producer_rules
 
     receipt, _ = complete_receipt()
     overlapping = {
@@ -517,7 +517,7 @@ def test_lifecycle_separation_survives_a_neutralized_partition_rule(monkeypatch)
         ExecutionReceipt.model_validate(overlapping)
 
     monkeypatch.setattr(
-        interaction, "evidence_state_partition_violations", lambda **_kwargs: []
+        producer_rules, "evidence_state_partition_violations", lambda **_kwargs: []
     )
 
     # Producer acceptance: with the rule gutted, ingestion now emits the receipt.
@@ -531,14 +531,14 @@ def test_lifecycle_separation_survives_a_neutralized_partition_rule(monkeypatch)
 
 
 def test_completeness_validators_survive_a_neutralized_disposition_rule(monkeypatch):
-    """Producer: `models.interaction.disposition_obligation_violations`.
+    """Producer: `models._producer_rules.disposition_obligation_violations`.
 
     One gutted helper, two validators that must both still bite — a RESIDUAL with no
     follow-up work is how a bounded weakness quietly becomes permanent.
     """
     from agent_foundry.models import RunFinding
     from agent_foundry.models.interaction import ReceiptContractError
-    import agent_foundry.models.interaction as interaction
+    import agent_foundry.models._producer_rules as producer_rules
 
     naked_residual = {
         "id": "F-NAKED",
@@ -551,7 +551,7 @@ def test_completeness_validators_survive_a_neutralized_disposition_rule(monkeypa
         RunFinding.model_validate(naked_residual)
 
     monkeypatch.setattr(
-        interaction, "disposition_obligation_violations", lambda **_kwargs: []
+        producer_rules, "disposition_obligation_violations", lambda **_kwargs: []
     )
 
     # Producer acceptance: the finding now constructs with nothing to follow up.
@@ -572,22 +572,15 @@ def test_completeness_validators_survive_a_neutralized_disposition_rule(monkeypa
     assert "RESIDUAL requires follow_up_work_ref" in _messages(bundle_report)
 
 
-# Constructing an off-vocabulary disposition is the point of the test; pydantic
-# warns when serializing it back out, which is the expected consequence, not a defect.
-@pytest.mark.filterwarnings("ignore:Pydantic serializer warnings:UserWarning")
-def test_an_unrecognised_disposition_owes_an_obligation_it_cannot_meet():
-    """The re-derived table refuses to pass what it cannot place.
-
-    The producer's branch chain silently ignores a disposition it has no branch for.
-    The table-driven derivation treats an entry it does not hold as a violation, so
-    a new disposition added without an obligation is visible rather than exempt.
-    """
+def test_an_unrecognised_disposition_is_rejected_by_the_vocabulary_scan():
+    """An off-vocabulary disposition never reaches the obligation table."""
     from agent_foundry.models import RunFinding
 
+    receipt, _ = complete_receipt()
     unknown = RunFinding.model_construct(
         id="F-UNKNOWN",
         disposition="SOMEDAY",
-        summary="a disposition nobody defined an obligation for",
+        summary="a disposition nobody defined",
         evidence_refs=[],
         follow_up_work_ref=None,
         falsifiable_prediction=None,
@@ -595,10 +588,32 @@ def test_an_unrecognised_disposition_owes_an_obligation_it_cannot_meet():
         escalation_reason=None,
         failure_category=None,
     )
-    receipt, _ = complete_receipt()
     report = validate_receipt_completeness(receipt.model_copy(update={"findings": [unknown]}))
     assert report.outcome() == ValidationOutcome.BLOCKED
-    assert "carries no known obligation" in _messages(report)
+    assert "names no FindingDisposition value" in _messages(report)
+
+
+def test_a_valid_disposition_with_no_obligation_entry_is_still_a_violation():
+    """The table refuses to pass what it cannot place.
+
+    The vocabulary scan handles values outside `FindingDisposition`. This covers the
+    case it cannot: a disposition that IS a member but that nobody gave an
+    obligation. The producer's branch chain would ignore it silently; the
+    table-driven derivation treats a missing entry as a violation, so adding a
+    disposition without an obligation is visible rather than exempt.
+    """
+    from agent_foundry.verify.independent import (
+        DISPOSITION_REQUIRED_FIELDS,
+        finding_obligation_violations,
+    )
+
+    untabled = "SOMEDAY"
+    assert untabled not in DISPOSITION_REQUIRED_FIELDS
+    violations = finding_obligation_violations(
+        {"disposition": untabled, "id": "F-X"}, label="F-X"
+    )
+    assert violations
+    assert "carries no known obligation" in " ".join(violations)
 
 
 # --- 14. decision-explainability -----------------------------------------------------------

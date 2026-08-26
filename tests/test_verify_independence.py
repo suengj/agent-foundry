@@ -60,6 +60,20 @@ MODELS_MODULES = sorted((SRC / "models").glob("*.py"))
 
 VALIDATOR_DECORATORS = frozenset({"model_validator", "field_validator"})
 
+# The module holding the artifact-property rules that gate construction. The boundary
+# is an *import* boundary, not a naming convention: you cannot capture a function
+# object without naming the module that holds it, so forbidding the name closes the
+# pre-capture route that a rule-name scan cannot see. A module-level
+#
+#     from agent_foundry.models import interaction as _p
+#     _CAPTURED = getattr(_p, "evidence_state_partition_violations")
+#
+# defeats a name scan (the rule name is a string) and survives a runtime tripwire
+# (the reference is taken before any patch installs). It cannot defeat this, because
+# the rules are no longer reachable from `interaction` at all.
+PRODUCER_RULES_MODULE = "agent_foundry.models._producer_rules"
+PRODUCER_RULES_TOKEN = "_producer_rules"
+
 # Packages whose implementations the independent layer must never consult. Importing
 # any of them would make a "second derivation" a call back into the first.
 FORBIDDEN_IMPORT_ROOTS = (
@@ -96,18 +110,24 @@ def _decorator_name(node: ast.expr) -> str | None:
 def producer_validation_rules() -> dict[str, str]:
     """Helpers that a model validator in `models/` calls to gate construction.
 
-    Discovered rather than listed: any module-level function called from inside a
+    Discovered rather than listed: any function called from inside a
     `@model_validator` or `@field_validator` body is, by definition, part of the rule
     that decides whether the producer will emit the artifact at all.
+
+    Resolution is two-pass, because a rule may be *called* in one models module and
+    *defined* in another — which is now the normal case, since the artifact-property
+    rules were moved behind an import boundary. A one-pass scan that only matched
+    same-file definitions stopped discovering them the moment they moved, which would
+    have made this guard quietly vacuous.
     """
-    rules: dict[str, str] = {}
+    defined_in: dict[str, str] = {}
+    called_in_validators: set[str] = set()
+
     for path in MODELS_MODULES:
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        module_level = {
-            node.name
-            for node in tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                defined_in[node.name] = f"agent_foundry.models.{path.stem}"
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -118,9 +138,11 @@ def producer_validation_rules() -> dict[str, str]:
                 continue
             for called in ast.walk(node):
                 if isinstance(called, ast.Call) and isinstance(called.func, ast.Name):
-                    if called.func.id in module_level:
-                        rules[called.func.id] = f"agent_foundry.models.{path.stem}"
-    return rules
+                    called_in_validators.add(called.func.id)
+
+    return {
+        name: defined_in[name] for name in sorted(called_in_validators) if name in defined_in
+    }
 
 
 def _referenced_names(path: Path) -> set[str]:
@@ -168,6 +190,107 @@ def test_producer_validation_rules_are_discovered_not_assumed():
     ):
         assert expected in rules, f"{expected} was not discovered as a producer rule"
 
+    # The two artifact-property rules must be behind the import boundary; the rest
+    # are parsing and lint helpers that no validator restates, and they rest on the
+    # weaker name scan plus the tripwire. claims.py records that split.
+    assert rules["disposition_obligation_violations"] == PRODUCER_RULES_MODULE
+    assert rules["evidence_state_partition_violations"] == PRODUCER_RULES_MODULE
+
+
+def _names_producer_rules_module(path: Path) -> list[str]:
+    """Every way this file could name the producer-rules module.
+
+    Imports, attribute access (`models._producer_rules`), bare names, and string
+    literals — the last covering `__import__(...)`, `importlib.import_module(...)`,
+    and `sys.modules[...]`. One distinctive token rather than a list of rule names,
+    so the target does not grow as rules are added.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    hits: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if PRODUCER_RULES_TOKEN in alias.name:
+                    hits.append(f"import {alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and PRODUCER_RULES_TOKEN in node.module:
+                hits.append(f"from {node.module} import ...")
+            for alias in node.names:
+                if PRODUCER_RULES_TOKEN in alias.name:
+                    hits.append(f"from ... import {alias.name}")
+        elif isinstance(node, ast.Attribute) and PRODUCER_RULES_TOKEN in node.attr:
+            hits.append(f"attribute .{node.attr}")
+        elif isinstance(node, ast.Name) and PRODUCER_RULES_TOKEN in node.id:
+            hits.append(f"name {node.id}")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if PRODUCER_RULES_TOKEN in node.value:
+                hits.append(f"string {node.value!r}")
+    return sorted(set(hits))
+
+
+@pytest.mark.parametrize("path", VERIFY_MODULES, ids=lambda p: p.name)
+def test_no_verify_module_names_the_producer_rules_module(path):
+    """The structural guard: reaching the rules requires naming their module.
+
+    This is the one that closes pre-capture. A rule-name scan cannot, because the
+    capturing expression need never contain the rule's name; a runtime tripwire
+    cannot, because the reference is taken before the patch installs.
+    """
+    hits = _names_producer_rules_module(path)
+    assert hits == [], (
+        f"verify/{path.name} names {PRODUCER_RULES_MODULE} via {hits}. Those rules "
+        "gate artifact construction; re-derive the property in verify/independent.py "
+        "instead of reaching for the producer's copy."
+    )
+
+
+def test_the_import_guard_catches_the_pre_capture_route(tmp_path):
+    """Guard the guard, against the exact capture the tripwire cannot see."""
+    pre_capture = tmp_path / "precaptured.py"
+    pre_capture.write_text(
+        "from agent_foundry.models import _producer_rules as _p\n"
+        "_CAPTURED = getattr(_p, 'evidence_state_partition_violations')\n",
+        encoding="utf-8",
+    )
+    assert _names_producer_rules_module(pre_capture)
+
+    dynamic = tmp_path / "dynamic.py"
+    dynamic.write_text(
+        "import sys\n"
+        "_CAPTURED = sys.modules['agent_foundry.models._producer_rules']\n",
+        encoding="utf-8",
+    )
+    assert _names_producer_rules_module(dynamic)
+
+    attribute = tmp_path / "attr.py"
+    attribute.write_text(
+        "from agent_foundry import models\n"
+        "_CAPTURED = models._producer_rules.evidence_state_partition_violations\n",
+        encoding="utf-8",
+    )
+    assert _names_producer_rules_module(attribute)
+
+
+def test_the_artifact_property_rules_live_behind_the_import_boundary():
+    """The rules must actually be in the guarded module, and nowhere reachable.
+
+    If a rule drifted back into `interaction.py`, the import guard would still pass
+    while protecting nothing — so the location is asserted, not assumed.
+    """
+    import agent_foundry.models._producer_rules as producer_rules
+    import agent_foundry.models.interaction as interaction
+
+    for name in ("disposition_obligation_violations", "evidence_state_partition_violations"):
+        assert callable(getattr(producer_rules, name)), name
+        assert not hasattr(interaction, name), (
+            f"{name} is bound on models.interaction; importing the DTOs would put the "
+            "producer rule back within reach of a verifier"
+        )
+    assert not hasattr(interaction, PRODUCER_RULES_TOKEN), (
+        "models.interaction holds a module-level reference to the producer-rules "
+        "module; import it inside the validator body instead"
+    )
+
 
 @pytest.mark.parametrize("path", VERIFY_MODULES, ids=lambda p: p.name)
 def test_no_verify_module_calls_a_producer_owned_validation_rule(path):
@@ -188,28 +311,42 @@ def test_no_verify_module_calls_a_producer_owned_validation_rule(path):
 
 
 def test_the_producer_rule_guard_would_catch_a_reintroduced_coupling(tmp_path):
-    """Guard the guard: a file that does import the producer rule must be flagged."""
+    """Guard the guard: a file that imports a producer rule must be flagged.
+
+    Both scans are exercised — the module-name scan that closes pre-capture, and the
+    rule-name scan that remains the only cover for producer rules which cannot move
+    behind the boundary (`lint_no_raw_secrets`, `validate_schema_compatibility`).
+    """
     offending = tmp_path / "recoupled.py"
     offending.write_text(
-        "from agent_foundry.models.interaction import "
+        "from agent_foundry.models._producer_rules import "
         "evidence_state_partition_violations\n",
         encoding="utf-8",
     )
     rules = producer_validation_rules()
     referenced = _referenced_names(offending)
-    assert sorted(name for name in referenced if name in rules) == [
-        "evidence_state_partition_violations"
-    ]
+    assert "evidence_state_partition_violations" in referenced
+    assert "evidence_state_partition_violations" in rules
+    assert _names_producer_rules_module(offending)
 
     attribute_style = tmp_path / "recoupled_attr.py"
     attribute_style.write_text(
-        "from agent_foundry.models import interaction\n"
+        "from agent_foundry.models import _producer_rules\n"
         "def check(x):\n"
-        "    return interaction.disposition_obligation_violations(**x)\n",
+        "    return _producer_rules.disposition_obligation_violations(**x)\n",
         encoding="utf-8",
     )
-    referenced_attr = _referenced_names(attribute_style)
-    assert "disposition_obligation_violations" in referenced_attr
+    assert "disposition_obligation_violations" in _referenced_names(attribute_style)
+    assert _names_producer_rules_module(attribute_style)
+
+    # A rule that cannot move behind the boundary is still covered by the name scan.
+    base_rule = tmp_path / "recoupled_base.py"
+    base_rule.write_text(
+        "from agent_foundry.models.base import validate_schema_compatibility\n",
+        encoding="utf-8",
+    )
+    assert "validate_schema_compatibility" in _referenced_names(base_rule)
+    assert _names_producer_rules_module(base_rule) == []
 
 
 def test_the_independent_layer_only_depends_on_contracts():

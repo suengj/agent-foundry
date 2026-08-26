@@ -80,7 +80,11 @@ def test_an_unrecognised_not_required_state_is_blocked_not_passed():
     report = validate_lifecycle_separation(forged)
     assert report.outcome() == ValidationOutcome.BLOCKED
     assert not report.accepted()
-    assert "names no known evidence" in _messages(report) or "is not an evidence state" in _messages(report)
+    # Two layers cover this list. The vocabulary scan runs first and names the exact
+    # position; the partition rule below it catches values that ARE evidence states
+    # but still cannot be exemptions.
+    assert "not_required_evidence_states[0] carries 'SOMEDAY'" in _messages(report)
+    assert "names no EvidenceState value" in _messages(report)
 
 
 def test_the_exemption_marker_cannot_exempt_itself():
@@ -97,7 +101,7 @@ def test_an_unrecognised_attained_state_is_blocked_too():
     forged = _construct(receipt, attained_evidence_states=["SOMEDAY"])
     report = validate_lifecycle_separation(forged)
     assert report.outcome() == ValidationOutcome.BLOCKED
-    assert "cannot have been attained" in _messages(report)
+    assert "attained_evidence_states[0] carries 'SOMEDAY'" in _messages(report)
 
 
 @pytest.mark.parametrize("side", ["attained", "not_required"])
@@ -123,14 +127,14 @@ def test_an_unrecognised_evidence_class_on_an_item_is_blocked():
     forged = _construct(bundle, items=[item])
     report = validate_evidence_bundle_completeness(forged)
     assert report.outcome() == ValidationOutcome.BLOCKED
-    assert "not a known evidence class" in _messages(report)
+    assert "items[0].evidence_class carries 'vibes'" in _messages(report)
 
 
 def test_an_unrecognised_not_required_class_is_blocked():
     forged = _construct(full_evidence_bundle(), not_required_classes=["vibes"])
     report = validate_evidence_bundle_completeness(forged)
     assert report.outcome() == ValidationOutcome.BLOCKED
-    assert "names no known evidence class" in _messages(report)
+    assert "not_required_classes[0] carries 'vibes'" in _messages(report)
 
 
 # --- 3. required-evidence requirement vs exemption ------------------------------
@@ -141,7 +145,7 @@ def test_an_unrecognised_exemption_never_reads_as_an_accepted_requirement():
     forged = _construct(full_evidence_bundle(), not_required_classes=["vibes"])
     report = validate_required_evidence(sample_work_item(), forged)
     assert report.outcome() == ValidationOutcome.BLOCKED
-    assert "names no known evidence class" in _messages(report)
+    assert "not_required_classes[0] carries 'vibes'" in _messages(report)
     accepted_subjects = {
         finding.subject
         for finding in report.findings
@@ -252,10 +256,12 @@ def test_an_unrecognised_state_in_either_tracker_declaration_is_blocked(field):
     report = reconcile_work_item(
         work_item=sample_work_item(), tracker=forged, repository=repository()
     )
-    assert report.outcome_for(ReconciliationDimension.EVIDENCE_STATE) == (
-        ValidationOutcome.BLOCKED
-    )
-    assert "names none" in _messages(report)
+    # Reconciliation refuses the whole comparison: an input carrying a value from no
+    # vocabulary cannot establish anything, so every dimension is BLOCKED rather than
+    # leaving the untouched ones reading as "not yet established".
+    for dimension in ReconciliationDimension:
+        assert report.outcome_for(dimension) == ValidationOutcome.BLOCKED, dimension
+    assert f"tracker.{field}[0] carries 'SOMEDAY'" in _messages(report)
 
 
 def test_reconciliation_returns_a_verdict_rather_than_crashing_on_a_forged_projection():
