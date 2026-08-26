@@ -1,0 +1,17 @@
+schema_version: "0.1"
+id: work-tracker
+kind: integration
+transport: mcp
+version: "1"
+capabilities:
+  - work.read
+  - work.write
+permissions:
+  write_requires: explicit-authority
+auth:
+  method: oauth
+  credential_ref: managed:work-tracker
+health:
+  required: authenticated
+adapter_options:
+  timeout_seconds: 30

@@ -1,0 +1,11 @@
+schema_version: "0.1"
+project_name: sample-service
+capability_ids:
+  - cap-repo-read
+  - cap-test-run
+skill_ids:
+  - skill-bounded-change
+workflow_ids:
+  - wf-builder-reviewer
+integration_ids:
+  - work-tracker

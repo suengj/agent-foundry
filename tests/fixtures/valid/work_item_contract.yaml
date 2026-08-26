@@ -1,0 +1,27 @@
+schema_version: "0.1"
+id: WI-001
+title: Implement typed contracts
+work_class: CAPABILITY
+objective: Deliver versioned provider-neutral data contracts
+current_facts:
+  - Package bootstrap exists with six passing tests
+scope:
+  - models package
+  - contract tests
+out_of_scope:
+  - CLI changes
+  - registry content
+acceptance_criteria:
+  - All contracts importable from agent_foundry.models
+  - Deterministic round-trip holds
+dependencies: []
+authority_class: repository-write
+consequence_class: medium
+required_evidence:
+  - pytest green
+  - doctor clean
+stop_conditions:
+  - Required semantics cannot be expressed without inventing behaviour
+runtime_external_validation_requirement: pytest and doctor must pass
+implementation_references:
+  - src/agent_foundry/models

@@ -1,0 +1,31 @@
+{
+  "schema_version": "0.1",
+  "project": {
+    "name": "sample-service",
+    "intake_mode": "greenfield",
+    "work_modes": {
+      "primary": "build",
+      "secondary": ["operate"]
+    }
+  },
+  "state": {
+    "persistence": "local",
+    "temporal_mode": "one-shot"
+  },
+  "impact": {
+    "external_effect": "read-only",
+    "reversibility": "trivial",
+    "consequence": "low"
+  },
+  "execution": {
+    "autonomy": "suggest",
+    "ambiguity": "procedural",
+    "concurrency": "single-writer"
+  },
+  "assurance": {
+    "required": ["deterministic-tests"]
+  },
+  "access": {
+    "sensitivity": "internal"
+  }
+}

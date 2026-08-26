@@ -1,0 +1,6 @@
+schema_version: "0.1"
+id: cap-repo-read
+version: "1.0.0"
+description: Read repository files within scoped paths
+tags:
+  - repository

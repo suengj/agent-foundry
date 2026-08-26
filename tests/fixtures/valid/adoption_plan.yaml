@@ -1,0 +1,10 @@
+schema_version: "0.1"
+project_name: sample-service
+items:
+  - target: docs-structure
+    action: CONSOLIDATE
+    rationale: Duplicate instruction surfaces should converge
+    priority: 1
+  - target: test-harness
+    action: HARDEN
+    rationale: Add deterministic checks before increasing autonomy

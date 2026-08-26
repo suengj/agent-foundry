@@ -1,0 +1,8 @@
+schema_version: "0.1"
+work_item_id: WI-001
+capability_ids:
+  - cap-repo-read
+skill_ids:
+  - skill-bounded-change
+workflow_id: wf-builder-reviewer
+integration_ids: []

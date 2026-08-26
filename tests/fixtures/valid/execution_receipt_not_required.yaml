@@ -1,0 +1,8 @@
+schema_version: "0.1"
+work_item_id: WI-002
+run_id: RUN-002
+role_id: reviewer
+work_lifecycle_state: in-review
+execution_state: waiting
+evidence_state: NOT_REQUIRED
+started_at: "2026-01-15T14:00:00Z"
