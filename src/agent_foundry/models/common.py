@@ -34,6 +34,15 @@ class AdoptionAction(StrEnum):
     BLOCK = "BLOCK"
 
 
+class AdoptionChangeStatus(StrEnum):
+    """Lifecycle status for an adoption change-set entry."""
+
+    PROPOSED = "proposed"
+    AUTO_APPLICABLE = "auto-applicable"
+    BLOCKED = "blocked"
+    DEFERRED = "deferred"
+
+
 class SecretProvider(StrEnum):
     """Credential reference schemes from docs/foundry/04 §8."""
 

@@ -8,8 +8,10 @@ from agent_foundry.models.base import FoundryModel, VersionedContract
 from agent_foundry.models.common import (
     AccessSensitivity,
     AdoptionAction,
+    AdoptionChangeStatus,
     Ambiguity,
     AssuranceMode,
+    AuthorityRequirement,
     Autonomy,
     Concurrency,
     ConsequenceClass,
@@ -64,39 +66,39 @@ class ReadinessFinding(FoundryModel):
 
 
 class WorkModes(FoundryModel):
-    primary: PrimaryWorkMode
+    primary: PrimaryWorkMode | None = None
     secondary: list[PrimaryWorkMode] = Field(default_factory=list)
 
 
 class ProjectState(FoundryModel):
-    persistence: Statefulness
-    temporal_mode: TemporalMode
+    persistence: Statefulness | None = None
+    temporal_mode: TemporalMode | None = None
 
 
 class ProjectImpact(FoundryModel):
-    external_effect: ExternalEffectClass
-    reversibility: Reversibility
-    consequence: ConsequenceClass
+    external_effect: ExternalEffectClass | None = None
+    reversibility: Reversibility | None = None
+    consequence: ConsequenceClass | None = None
 
 
 class ProjectExecution(FoundryModel):
-    autonomy: Autonomy
-    ambiguity: Ambiguity
-    concurrency: Concurrency
+    autonomy: Autonomy | None = None
+    ambiguity: Ambiguity | None = None
+    concurrency: Concurrency | None = None
 
 
 class ProjectAssurance(FoundryModel):
-    required: list[AssuranceMode]
+    required: list[AssuranceMode] = Field(default_factory=list)
 
 
 class ProjectAccess(FoundryModel):
-    sensitivity: AccessSensitivity
+    sensitivity: AccessSensitivity | None = None
 
 
 class ProjectInfo(FoundryModel):
-    name: str
-    intake_mode: IntakeMode
-    work_modes: WorkModes
+    name: str | None = None
+    intake_mode: IntakeMode | None = None
+    work_modes: WorkModes | None = None
     primary_artifact: PrimaryArtifactState | None = None
 
 
@@ -107,11 +109,47 @@ class AdoptionPlanItem(FoundryModel):
     priority: int | None = None
 
 
+class AdoptionEvidence(FoundryModel):
+    """Evidence backing an adoption change — never silently normative."""
+
+    summary: str
+    provenance: Provenance
+    evidence_refs: list[str] = Field(default_factory=list)
+    verbatim: str | None = None
+
+
+class AdoptionChangeItem(FoundryModel):
+    """Typed adoption delta with authority and lifecycle metadata."""
+
+    target: str
+    action: AdoptionAction
+    evidence: AdoptionEvidence
+    authority_requirement: AuthorityRequirement
+    status: AdoptionChangeStatus
+    rationale: str | None = None
+    priority: int | None = None
+
+
 class AdoptionPlan(VersionedContract):
     """Brownfield retrofit plan skeleton — structure only."""
 
     project_name: str
     items: list[AdoptionPlanItem]
+
+
+class AdoptionChangeSet(VersionedContract):
+    """Explicit current → proposed adoption delta."""
+
+    project_name: str | None = None
+    intake_mode: IntakeMode
+    changes: list[AdoptionChangeItem]
+
+
+class AdoptionPlanResult(FoundryModel):
+    """Synthesized manifest plus adoption change set from intake evidence."""
+
+    manifest: ProjectManifest
+    change_set: AdoptionChangeSet
 
 
 class ProjectManifest(VersionedContract):
