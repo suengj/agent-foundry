@@ -565,8 +565,9 @@ AF8 End-to-end
   prompt additions, integration failures, evidence completeness
 ```
 
-AF8 is complete. Its measurements, and every gap it classified against this document,
-are in [`v0.1-readiness-report.md`](v0.1-readiness-report.md).
+The end-to-end measurements taken against this checklist, and every gap classified
+against it, are recorded in [`v0.1-readiness-report.md`](v0.1-readiness-report.md).
+Work status for the issues above lives in the tracker, not here.
 
 If active implementation has already frozen an interface, do not inject broad scope mid-issue. Record a bounded follow-up or incorporate only truly foundational omissions before merge.
 

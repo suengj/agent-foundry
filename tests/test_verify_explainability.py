@@ -48,9 +48,14 @@ def _inferred(dimension: str, value: str, confidence: float = 0.6) -> Classifica
     )
 
 
+# The `ClassificationFinding.dimension` keys the inspector actually emits. These read
+# "External effect" and "Autonomy" until AF8: human labels, matching no finding, so the
+# declared baseline was always empty and every manifest was reported as widened by
+# inference. Nothing exposed it while classification could produce no value on either
+# axis — an owner declaration can, so the names have to be the same name.
 DECLARED_BASELINE = [
-    _declared("External effect", ExternalEffectClass.REPOSITORY_WRITE.value),
-    _declared("Autonomy", Autonomy.BOUNDED_EXTERNAL_WRITE.value),
+    _declared("impact.external_effect", ExternalEffectClass.REPOSITORY_WRITE.value),
+    _declared("execution.autonomy", Autonomy.BOUNDED_EXTERNAL_WRITE.value),
 ]
 
 
@@ -101,7 +106,7 @@ def test_inferred_facts_at_or_below_the_declared_baseline_do_not_widen():
         manifest,
         [
             *DECLARED_BASELINE,
-            _inferred("External effect", ExternalEffectClass.READ_ONLY.value),
+            _inferred("impact.external_effect", ExternalEffectClass.READ_ONLY.value),
         ],
     )
     assert all(not result.widened for result in results), results
@@ -178,7 +183,7 @@ def test_an_inferred_observation_without_confidence_is_reported():
 def test_an_inferred_classification_without_a_source_is_reported():
     artifacts = compiled()
     anonymous = ClassificationFinding(
-        dimension="Autonomy",
+        dimension="execution.autonomy",
         value=Autonomy.PREPARE.value,
         provenance=Provenance(kind=ProvenanceKind.INFERRED, confidence=0.4),
     )

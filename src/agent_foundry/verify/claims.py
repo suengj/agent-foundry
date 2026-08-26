@@ -152,9 +152,12 @@ VALIDATOR_CLAIMS: tuple[ValidatorClaim, ...] = (
         validator_id=WRITE_SCOPE_CONTAINMENT,
         proves=(
             "every granted write path resolves to a usable repository-relative bound "
-            "and lies inside both the work item scope and the role write scope, with "
-            "traversal, absolute, drive-rooted and root-equivalent bounds granting "
-            "nothing, and no path both granted and forbidden"
+            "and lies inside the work item scope and inside every declared write bound "
+            "— the project manifest's `authority.write_scope` and the role's, whichever "
+            "exist — that a granted path with no declared bound at all is MISSING "
+            "rather than passed, with traversal, absolute, drive-rooted and "
+            "root-equivalent bounds granting nothing, and no path both granted and "
+            "forbidden"
         ),
         cannot_prove=(
             "that the execution runtime honours the scope; this is a claim about the "

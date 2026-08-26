@@ -7,6 +7,7 @@ from agent_foundry.models.common import (
     AssuranceMode,
     AuthorityRequirement,
     ConsequenceClass,
+    EvidenceClass,
     ExternalEffectClass,
     PrimaryArtifactState,
     PrimaryWorkMode,
@@ -134,6 +135,7 @@ def _skill(
     external_write: bool = False,
     inputs: list[str] = [],
     outputs: list[str] = [],
+    produces_evidence: list[EvidenceClass] = [],
 ) -> SkillSpec:
     return SkillSpec(
         schema_version=FOUNDRY_SCHEMA_VERSION,
@@ -147,6 +149,7 @@ def _skill(
         permissions=SkillPermissions(external_write=external_write),
         inputs=inputs,
         outputs=outputs,
+        produces_evidence=list(produces_evidence),
     )
 
 
@@ -245,10 +248,17 @@ def build_default_registry() -> CapabilityRegistry:
         _role("manager", "Coordinate work and authority boundaries"),
         _role("explorer", "Read-only discovery", allowed_capabilities=["repository.read", "inspection.read"]),
         _role(
+            # No `write_scope` here, deliberately. It used to be `["src/", "tests/"]`,
+            # which is a project-shape assumption living in core: compiled write
+            # authority is the intersection of the declared bounds with the Work Item
+            # scope, so every project whose changes land elsewhere — an instruction
+            # surface, a build file, a CI config — intersected to nothing and compiled
+            # to a bundle authorizing no change it could make. The bound now comes from
+            # the project's own `authority.write_scope` declaration, and a role in a
+            # project-supplied registry may narrow it further.
             "builder",
             "Primary implementation role",
             allowed_capabilities=["repository.read", "repository.write"],
-            write_scope=["src/", "tests/"],
         ),
         _role("validator", "Run deterministic validation", allowed_capabilities=["validation.test"]),
         _role("reviewer", "Independent review role", allowed_capabilities=["validation.review"]),
@@ -275,6 +285,10 @@ def build_default_registry() -> CapabilityRegistry:
             roles=SkillRoleConstraint(allowed=["explorer", "manager"]),
             inputs=["repository-root"],
             outputs=["inspection-evidence"],
+            # Inspection evidence describes a repository; it closes no evidence class a
+            # Work Item can require. This skill is selected as a read baseline or by a
+            # workflow, never because an item asked for what it produces.
+            produces_evidence=[],
         ),
         _skill(
             "bounded-change",
@@ -302,6 +316,7 @@ def build_default_registry() -> CapabilityRegistry:
             external_write=True,
             inputs=["changed-scope"],
             outputs=["implementation-diff"],
+            produces_evidence=[EvidenceClass.REPOSITORY_REVISION],
         ),
         _skill(
             "deterministic-test",
@@ -325,6 +340,7 @@ def build_default_registry() -> CapabilityRegistry:
             roles=SkillRoleConstraint(allowed=["builder", "validator"]),
             inputs=["changed-scope"],
             outputs=["test-evidence"],
+            produces_evidence=[EvidenceClass.DETERMINISTIC_TEST],
         ),
         _skill(
             "independent-review",
@@ -344,6 +360,7 @@ def build_default_registry() -> CapabilityRegistry:
             roles=SkillRoleConstraint(allowed=["reviewer"]),
             inputs=["implementation-diff", "test-evidence"],
             outputs=["review-decision"],
+            produces_evidence=[EvidenceClass.INDEPENDENT_REVIEW],
         ),
     ]
 

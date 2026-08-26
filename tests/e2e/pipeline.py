@@ -62,6 +62,7 @@ from agent_foundry.models import (
     ToolkitLock,
     ToolkitResolution,
     TrackerProjection,
+    SliceValidation,
     ValidationReport,
     WorkClass,
     WorkItemContract,
@@ -72,11 +73,16 @@ from agent_foundry.models import (
 from agent_foundry.render import render_execution_bundle_markdown
 from agent_foundry.toolkit import (
     check_integrations,
-    default_registry as _builtin_registry,
+    default_registry,
     resolve_toolkit,
 )
-from agent_foundry.verify import build_execution_receipt, reconcile_work_item
-from agent_foundry.verify.cli_api import validate_artifact
+from agent_foundry.toolkit.builtin_registry import build_default_registry_permission_profiles
+from agent_foundry.verify import (
+    CompiledSlice,
+    build_execution_receipt,
+    reconcile_work_item,
+    validate_compiled_slice,
+)
 
 # Fixed clock. Every timestamp the harness produces is derived from these, so two
 # runs a week apart serialize identically and a digest comparison means something.
@@ -161,16 +167,26 @@ def decomposition_input(change_set: AdoptionChangeSet, project_name: str) -> Dec
     )
 
 
-def _evidence_bundle(work_item: WorkItemContract, run_id: str) -> EvidenceBundle:
+def _evidence_bundle(
+    work_item: WorkItemContract,
+    run_id: str,
+    *,
+    satisfied_evidence: frozenset[str] | None = None,
+) -> EvidenceBundle:
     """Stand in for what a runtime would report, typed to what the item requires.
 
-    One typed, passing item per required class. Anything the item does not require
-    is absent rather than fabricated, so a bundle never proves more than it was asked
-    for.
+    One typed, passing item per required class. Anything the item does not require is
+    absent rather than fabricated, so a bundle never proves more than it was asked for.
+
+    `satisfied_evidence` narrows what the run managed to produce. It is how the
+    end-to-end tests inject a real missing-evidence run at the pipeline's input rather
+    than editing a finished artifact afterwards.
     """
     class_by_requirement = {member.value: member for member in EvidenceClass}
     items: list[EvidenceItem] = []
     for requirement in sorted(work_item.required_evidence):
+        if satisfied_evidence is not None and requirement not in satisfied_evidence:
+            continue
         evidence_class = class_by_requirement.get(requirement)
         if evidence_class is None:
             continue
@@ -205,30 +221,6 @@ def _evidence_bundle(work_item: WorkItemContract, run_id: str) -> EvidenceBundle
     )
 
 
-def registry_with_builder_write_scope(write_scope: list[str]) -> CapabilityRegistry:
-    """The builtin registry with the builder role's write scope replaced.
-
-    The builtin `builder` role declares `write_scope=["src/", "tests/"]`, and compiled
-    write authority is the intersection of that with the Work Item scope. Any project
-    whose changes land elsewhere — `AGENTS.md`, `Makefile`, `.github/`, `.foundry/`,
-    which is most of what adoption touches — intersects to nothing and compiles to a
-    bundle that may write nowhere.
-
-    `CapabilityRegistry` is a supported input to every resolve/compile entry point, so
-    supplying a project-appropriate one is the product's own answer. What AF8 records
-    is that nothing derives it: the default is a project-shape assumption baked into
-    core, and a consumer has to notice and override it by hand.
-    """
-    builtin = _builtin_registry()
-    roles = [
-        role.model_copy(update={"write_scope": list(write_scope)})
-        if role.id == "builder"
-        else role
-        for role in builtin.roles
-    ]
-    return builtin.model_copy(update={"roles": roles})
-
-
 @dataclass(frozen=True)
 class PipelineResult:
     """Everything one pass of the slice produced, stage by stage."""
@@ -246,20 +238,37 @@ class PipelineResult:
     bundle: ExecutionBundle
     markdown: str
     registry: CapabilityRegistry
-    validation_reports: list[ValidationReport]
+    validation: SliceValidation
     evidence_bundle: EvidenceBundle
     receipt: ExecutionReceipt
     reconciliation: ReconciliationReport
 
+    @property
+    def validation_reports(self) -> list[ValidationReport]:
+        return list(self.validation.reports)
+
     def accepted(self) -> bool:
-        return all(report.accepted() for report in self.validation_reports)
+        """The slice verdict, not a subset of it.
+
+        `SliceValidation.accepted()` is False when any applicable validator did not
+        run. An earlier version of this harness aggregated four artifact checks and
+        called that an acceptance, so a run carrying an unhealthy required integration
+        reported True while the integration validator rejected the same inputs.
+        """
+        return self.validation.accepted()
 
     def rejecting(self) -> list[str]:
-        return [
+        messages = [
             f"{finding.validator_id}/{finding.outcome.value}: {finding.message}"
-            for report in self.validation_reports
-            for finding in report.rejecting()
+            for finding in self.validation.rejecting()
         ]
+        messages.extend(
+            f"{item.validator_id}/NOT-RUN: {item.reason}" for item in self.validation.not_run
+        )
+        return messages
+
+    def ran(self) -> list[str]:
+        return self.validation.ran()
 
 
 def run_pipeline(
@@ -273,11 +282,19 @@ def run_pipeline(
     observed_health: list[IntegrationHealth] | None = None,
     work_item_id: str | None = None,
     registry: CapabilityRegistry | None = None,
+    satisfied_evidence: frozenset[str] | None = None,
+    also_compile_roles: list[str] = [],
 ) -> PipelineResult:
     """Run repository -> receipt once, returning every intermediate contract.
 
     `work_item_id` selects which decomposed item is compiled; without it the first
     item in the plan's own sorted order is used, which is stable across runs.
+
+    Three parameters exist so a test can break the *run* rather than a finished
+    artifact, and watch the break travel the whole path into the verdict:
+    `observed_health` supplies what preflight actually saw, `satisfied_evidence`
+    narrows what the run managed to prove, and `also_compile_roles` authorizes further
+    roles concurrently under the same run id.
     """
     project = Path(project_path)
     integration_list = list(integrations or [])
@@ -302,7 +319,7 @@ def run_pipeline(
     else:
         work_item = next(item for item in work_plan.work_items if item.id == work_item_id)
 
-    reg = registry if registry is not None else _builtin_registry()
+    reg = registry if registry is not None else default_registry()
 
     resolution, project_lock = resolve_toolkit(
         manifest,
@@ -332,16 +349,28 @@ def run_pipeline(
     )
     markdown = render_execution_bundle_markdown(compiled.bundle)
 
-    reports = validate_artifact(
-        "execution-bundle",
-        compiled.bundle,
-        project_lock=project_lock,
-        registry=reg,
-        work_item=work_item,
-    )
+    # Further roles authorized against the same run. Compiling them here rather than
+    # copying the builder's bundle keeps the collision a real one: each goes through
+    # the same resolver and authority intersection the first did.
+    extra_bundles = [
+        compile_work_item(
+            work_item,
+            manifest,
+            project_lock,
+            other_role_id,
+            run_id,
+            registry=reg,
+            integrations=integration_list,
+            integration_health=health_list,
+            observations=list(intake.observations),
+            conventions=list(intake.conventions),
+        ).bundle
+        for other_role_id in also_compile_roles
+    ]
 
-    evidence_bundle = _evidence_bundle(work_item, run_id)
-    reports.extend(validate_artifact("evidence-bundle", evidence_bundle))
+    evidence_bundle = _evidence_bundle(
+        work_item, run_id, satisfied_evidence=satisfied_evidence
+    )
 
     review = ReviewDecision(
         work_item_id=work_item.id,
@@ -384,7 +413,31 @@ def run_pipeline(
             )
         ],
     )
-    reports.extend(validate_artifact("execution-receipt", receipt))
+    validation = validate_compiled_slice(
+        CompiledSlice(
+            work_item=work_item,
+            manifest=manifest,
+            project_lock=project_lock,
+            registry=reg,
+            bundle=compiled.bundle,
+            concurrent_bundles=[compiled.bundle, *extra_bundles],
+            work_items=list(work_plan.work_items),
+            permission_profiles=build_default_registry_permission_profiles(),
+            integrations=integration_list,
+            # The *observations*, not `check_integrations`' synthesized report. The
+            # preflight validator's whole point is that an unobserved integration is
+            # MISSING, and the synthesized record carries no `checked_at`, so feeding
+            # it back would make freshness unestablishable for a health observation that
+            # was in fact made.
+            integration_health=health_list,
+            # What the run was *asked* to have, not only what survived resolution.
+            required_integration_ids=desired_ids,
+            classification_findings=list(intake.classification_findings),
+            evidence_bundle=evidence_bundle,
+            receipt=receipt,
+            review_decisions=[review],
+        )
+    )
 
     reconciliation = reconcile_work_item(
         work_item=work_item,
@@ -427,7 +480,7 @@ def run_pipeline(
         bundle=compiled.bundle,
         markdown=markdown,
         registry=reg,
-        validation_reports=reports,
+        validation=validation,
         evidence_bundle=evidence_bundle,
         receipt=receipt,
         reconciliation=reconciliation,

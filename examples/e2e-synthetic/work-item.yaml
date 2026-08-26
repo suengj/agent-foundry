@@ -1,0 +1,30 @@
+acceptance_criteria:
+- HARDEN applied to test-harness
+- regression evidence passes
+authority_class: repository-write
+consequence_class: medium
+current_facts:
+- Tightening controls does not expand authority, but editing the test harness writes
+  repository files and needs bounded write policy
+dependencies: []
+escalation_conditions: []
+id: wi-dcc714550913
+implementation_references: []
+objective: Apply the planned adoption change set so agent execution in this repository
+  is bounded, evidenced, and reviewable.
+out_of_scope: []
+required_evidence:
+- deterministic-test
+- repository-revision
+rollback_boundary_id: adopt-harden-test-harness
+runtime_external_validation_requirement: 're-read the changed repository files from
+  the working tree after the change; evidence required before closure: deterministic-test,
+  repository-revision'
+schema_version: '0.1'
+scope:
+- Makefile
+stop_conditions:
+- blocked adoption path cannot be resolved within scope
+title: 'Adopt: test-harness'
+work_class: ADOPTION
+write_scope_id: scope-harden-test-harness

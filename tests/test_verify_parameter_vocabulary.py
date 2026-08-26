@@ -155,7 +155,7 @@ def test_every_enum_typed_parameter_is_either_swept_or_explained():
     )
 
 
-VALIDATOR_SOURCES = ("validators.py", "explain.py")
+VALIDATOR_SOURCES = ("validators.py", "explain.py", "slice.py")
 
 
 ENTRY_OPENERS = (

@@ -290,6 +290,37 @@ def _brownfield_retrofit_changes(intake: ProjectIntake) -> list[AdoptionChangeIt
             )
         )
 
+    # WRAP, per docs/foundry/02 §7: "existing tool/runtime retained behind a Foundry
+    # adapter". A credential or integration surface the repository already carries is
+    # exactly that — the tool stays, and what changes is that agent access reaches it
+    # through a declared `IntegrationSpec` whose credential positions are `SecretRef`
+    # coordinates, instead of through whatever the surface exposes directly. The
+    # surface itself is not consolidated, hardened, or moved, which is what
+    # distinguishes this from its sibling actions.
+    if "integration-config" in subjects and "foundry-integration" not in subjects:
+        refs = _observation_refs(intake, "integration-config")
+        changes.append(
+            _change(
+                target="integration-surfaces",
+                action=AdoptionAction.WRAP,
+                summary=(
+                    "Retain existing integration and credential surfaces behind a "
+                    "declared Foundry integration adapter"
+                ),
+                kind=ProvenanceKind.OBSERVED,
+                authority_requirement=AuthorityRequirement.EXPLICIT_AUTHORITY,
+                status=AdoptionChangeStatus.PROPOSED,
+                source_ref=_primary_ref(refs),
+                evidence_refs=refs,
+                rationale=(
+                    "No IntegrationSpec declares how agents reach these surfaces, so "
+                    "credential coordinates and required health are unstated; wrapping "
+                    "changes the access path, not the surface"
+                ),
+                priority=4,
+            )
+        )
+
     if "runtime-deploy-hint" in subjects:
         refs = _observation_refs(intake, "runtime-deploy-hint")
         changes.append(

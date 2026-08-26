@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+from agent_foundry.compile import CompileError
 from agent_foundry.models import (
     AdoptionAction,
     AdoptionChangeStatus,
@@ -49,7 +50,6 @@ def result() -> PipelineResult:
     return run_pipeline(
         support.SYNTHETIC,
         work_item_id=TEST_HARNESS_ITEM,
-        registry=support.synthetic_registry(),
         integrations=[support.tracker_integration()],
         desired_integration_ids=[support.TRACKER_INTEGRATION_ID],
         observed_health=[support.tracker_health()],
@@ -164,14 +164,47 @@ def test_adoption_never_widens_authority_by_inference(result: PipelineResult) ->
         assert change.status is AdoptionChangeStatus.PROPOSED
 
 
-def test_wrap_is_not_emitted_by_the_current_planner(result: PipelineResult) -> None:
-    """AF8 finding, pinned rather than asserted in prose.
+def test_every_brownfield_action_the_contract_names_can_be_produced(
+    result: PipelineResult,
+) -> None:
+    """`docs/foundry/02` §7 lists seven brownfield categories. Six have emit sites.
 
-    `AdoptionAction.WRAP` has no emit site anywhere in `agent_foundry`. This test
-    fails the day one is added, which is the point: the gap is visible, not folded
-    into a claim that the planner covers every action.
+    KEEP, CONSOLIDATE, WRAP, HARDEN and DEFER are all produced for this one fixture.
+    MIGRATE is produced for a project with no owner declaration (see the brownfield
+    tests). BLOCK is the one category with no observable trigger: `assess_readiness`
+    never sets `blocker=True`, so it is reachable only through a hand-built intake, and
+    that is reported as an unverified residual rather than claimed as coverage.
     """
-    assert AdoptionAction.WRAP not in {change.action for change in result.change_set.changes}
+    emitted = {change.action for change in result.change_set.changes}
+    assert {
+        AdoptionAction.KEEP,
+        AdoptionAction.CONSOLIDATE,
+        AdoptionAction.WRAP,
+        AdoptionAction.HARDEN,
+        AdoptionAction.DEFER,
+    } <= emitted
+
+
+def test_wrap_retains_the_surface_and_changes_only_how_it_is_reached(
+    result: PipelineResult,
+) -> None:
+    """WRAP per the contract: "existing tool/runtime retained behind a Foundry adapter".
+
+    The fixture carries an `env.example` naming credential positions and declares no
+    `IntegrationSpec`, so nothing states how an agent reaches it or what health it
+    needs. Wrapping changes the access path; it does not consolidate, harden, or move
+    the surface, which is what separates it from its sibling actions.
+    """
+    wraps = [
+        change for change in result.change_set.changes if change.action is AdoptionAction.WRAP
+    ]
+    assert len(wraps) == 1
+    wrap = wraps[0]
+    assert wrap.target == "integration-surfaces"
+    assert wrap.evidence.evidence_refs == ["env.example"]
+    assert wrap.status is AdoptionChangeStatus.PROPOSED
+    assert wrap.authority_requirement.value == "explicit-authority"
+    assert "behind a declared Foundry integration adapter" in wrap.evidence.summary
 
 
 # --- stage 3: causal work ------------------------------------------------------
@@ -419,20 +452,19 @@ def test_integration_config_carries_a_reference_not_a_value() -> None:
 # --- stage 7: validation, evidence, receipt, reconciliation --------------------
 
 
-def test_validation_accepts_the_slice_and_names_what_it_ran(result: PipelineResult) -> None:
+def test_validation_runs_every_published_validator_and_accepts(
+    result: PipelineResult,
+) -> None:
+    """Coverage first, verdict second — in that order, because the reverse misleads.
+
+    An acceptance over a subset of the checks is not an acceptance of the slice. An
+    earlier version of this harness aggregated four artifact validators and reported
+    True for a run whose required integration was unavailable, so what is asserted here
+    is that the verdict covers the whole published catalog and nothing was skipped.
+    """
+    assert set(result.ran()) == set(VALIDATOR_IDS)
+    assert result.validation.not_run == []
     assert result.accepted(), result.rejecting()
-    ran = {report.findings[0].validator_id for report in result.validation_reports}
-    assert ran <= set(VALIDATOR_IDS)
-    assert {
-        "execution-bundle-completeness",
-        "provenance-completeness",
-        "write-scope-containment",
-        "toolkit-coherence",
-        "evidence-bundle-completeness",
-        "receipt-completeness",
-        "lifecycle-separation",
-        "contract-schema-compatibility",
-    } <= ran
     for report in result.validation_reports:
         assert report.findings, "a report with no findings is not an acceptance"
         assert report.outcome() in {ValidationOutcome.PASS, ValidationOutcome.NOT_REQUIRED}
@@ -470,34 +502,40 @@ def test_reconciliation_reports_agreement_without_applying_anything(
 # --- the useless-bundle case, caught rather than passed -----------------------
 
 
-def test_a_write_bundle_with_no_write_path_is_rejected() -> None:
-    """The completion gate's own failure mode, exercised end to end.
+def test_compilation_refuses_a_write_bundle_with_no_write_path() -> None:
+    """The completion gate's own failure mode, refused by the producer.
 
     `instruction-surface-mentions` is a readiness finding with no located evidence, so
-    the change carries no repository path, so the Work Item bounds a write with a
-    logical name rather than a file. Everything downstream stays internally
-    consistent: capabilities are drawn from the toolkit, containment holds vacuously,
-    provenance is complete. The bundle is valid and cannot change anything, and
-    validation says so instead of accepting it.
+    the change carries no repository path and the Work Item bounds a write with a
+    logical name rather than a file. Everything about the resulting bundle would be
+    internally consistent — capabilities drawn from the toolkit, containment holding
+    vacuously, provenance complete — and an executor holding it could not change a
+    single file.
+
+    Compilation refuses rather than emitting it. Leaving that to a later `validate`
+    call means `agent-foundry compile` reports success for work that cannot be done.
     """
-    result = run_pipeline(
-        support.SYNTHETIC,
-        work_item_id=UNLOCATED_ITEM,
-        registry=support.synthetic_registry(),
-    )
-    assert result.bundle.write_scope == []
-    assert result.bundle.authority.external_effect is ExternalEffectClass.REPOSITORY_WRITE
-    assert not result.accepted()
-    assert any(
-        "grants no write path" in message for message in result.rejecting()
-    ), result.rejecting()
+    with pytest.raises(CompileError) as excinfo:
+        run_pipeline(support.SYNTHETIC, work_item_id=UNLOCATED_ITEM)
+
+    message = str(excinfo.value)
+    assert "no write path" in message
+    # The message has to be actionable: it names the scope that found no bound, and
+    # the bounds it was checked against.
+    assert "instruction-surface-mentions" in message
+    assert "authority.write_scope" in message
 
 
-def test_a_located_change_compiles_to_the_files_it_is_evidenced_by() -> None:
-    result = run_pipeline(
-        support.SYNTHETIC,
-        work_item_id=INSTRUCTION_SURFACES_ITEM,
-        registry=support.synthetic_registry(),
-    )
-    assert result.bundle.write_scope == ["AGENTS.md", "CLAUDE.md"]
+def test_the_declared_envelope_narrows_a_work_item_scope() -> None:
+    """The project permits writing its canonical instruction surface, not the mirror.
+
+    The change is evidenced by both `AGENTS.md` and `CLAUDE.md`, so the Work Item is
+    scoped to both. `.foundry/project.yaml` declares only the first as writable, and
+    the compiled grant is the intersection — which is the envelope doing its job
+    rather than the Work Item getting what it asked for.
+    """
+    result = run_pipeline(support.SYNTHETIC, work_item_id=INSTRUCTION_SURFACES_ITEM)
+    assert sorted(result.work_item.scope) == ["AGENTS.md", "CLAUDE.md"]
+    assert "CLAUDE.md" not in result.manifest.authority.write_scope
+    assert result.bundle.write_scope == ["AGENTS.md"]
     assert result.accepted(), result.rejecting()

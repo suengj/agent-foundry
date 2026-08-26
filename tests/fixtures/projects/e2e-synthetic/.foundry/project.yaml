@@ -24,3 +24,16 @@ assurance:
     - independent-review
 access:
   sensitivity: internal
+authority:
+  # Repository paths agents may write. Compiled write authority is the intersection
+  # of this envelope with the Work Item scope, so a path absent here is never granted.
+  # The canonical instruction surface is writable; the vendor-specific mirror beside
+  # it is not, and neither is CI. A Work Item scoped to a path absent here compiles to
+  # a narrower grant than its own scope, which is the envelope doing its job.
+  write_scope:
+    - .foundry/
+    - AGENTS.md
+    - Makefile
+    - docs/
+    - src/
+    - tests/

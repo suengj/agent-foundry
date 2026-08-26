@@ -8,9 +8,7 @@ authority:
   external_effect: repository-write
   forbidden_scopes:
   - .foundry/
-  - .github/
   - AGENTS.md
-  - CLAUDE.md
   - docs/
   - src/
   - tests/
@@ -20,7 +18,6 @@ budget_profile_id: default
 context_refs: []
 escalation_conditions: []
 forbidden_capabilities:
-- inspection.read
 - validation.review
 - validation.test
 integration_ids:
@@ -50,8 +47,8 @@ provenance:
   evidence_refs: []
   policy_id: null
   project_fact: work_item.work_class=ADOPTION
-  rationale: required by selected task skills
-  selected: true
+  rationale: not required for this work item
+  selected: false
   source: work-item
 - component_id: repository.read
   component_kind: capability
@@ -289,8 +286,8 @@ provenance:
   evidence_refs: []
   policy_id: null
   project_fact: work_item.work_class=ADOPTION
-  rationale: required by selected task workflow or skills
-  selected: true
+  rationale: not required for this work item
+  selected: false
   source: work-item
 - component_id: reviewer
   component_kind: role
@@ -312,8 +309,9 @@ provenance:
   component_kind: skill
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION
-  rationale: skill triggers match work item class
+  project_fact: work_item.work_class=ADOPTION; work_item.required_evidence=['deterministic-test',
+    'repository-revision']
+  rationale: workflow 'builder-reviewer' requires this skill
   selected: true
   source: work-item
 - component_id: deterministic-test
@@ -328,8 +326,9 @@ provenance:
   component_kind: skill
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION
-  rationale: skill triggers match work item class
+  project_fact: work_item.work_class=ADOPTION; work_item.required_evidence=['deterministic-test',
+    'repository-revision']
+  rationale: workflow 'builder-reviewer' requires this skill
   selected: true
   source: work-item
 - component_id: independent-review
@@ -344,25 +343,28 @@ provenance:
   component_kind: skill
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION
-  rationale: skill triggers match work item class
+  project_fact: work_item.work_class=ADOPTION; work_item.required_evidence=['deterministic-test',
+    'repository-revision']
+  rationale: workflow 'builder-reviewer' requires this skill
   selected: true
   source: work-item
 - component_id: repository-inspection
   component_kind: skill
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION
-  rationale: skill included in task toolkit for work item class
-  selected: true
+  project_fact: work_item.required_evidence=['deterministic-test', 'repository-revision'];
+    task_toolkit.workflow_id='builder-reviewer'
+  rationale: permitted for this work class, but the work item requires neither the
+    evidence it produces nor the workflow that needs it
+  selected: false
   source: work-item
 - component_id: repository-inspection
   component_kind: skill
   evidence_refs: []
   policy_id: null
   project_fact: work_item.work_class=ADOPTION
-  rationale: skill triggers match work item class
-  selected: true
+  rationale: skill not selected in task toolkit
+  selected: false
   source: work-item
 - component_id: blocked adoption path cannot be resolved within scope
   component_kind: stop-condition
@@ -434,27 +436,39 @@ skill_summaries:
 - description: Perform independent review without implementation authority
   relevance: work_class=ADOPTION
   skill_id: independent-review
-- description: Inspect repository structure and conventions read-only
-  relevance: work_class=ADOPTION
-  skill_id: repository-inspection
 stop_conditions:
 - blocked adoption path cannot be resolved within scope
 task_toolkit:
   budget_profile_ids:
   - default
   capability_ids:
-  - inspection.read
   - repository.read
   - repository.write
   - validation.review
   - validation.test
   decisions:
-  - action: include
+  - action: exclude
     component_id: inspection.read
     component_kind: capability
     policy_id: null
     project_fact: work_item.work_class=ADOPTION
-    rationale: required by selected task skills
+    rationale: not required for this work item
+    source: work-item
+  - action: exclude
+    component_id: explorer
+    component_kind: role
+    policy_id: null
+    project_fact: work_item.work_class=ADOPTION
+    rationale: not required for this work item
+    source: work-item
+  - action: exclude
+    component_id: repository-inspection
+    component_kind: skill
+    policy_id: null
+    project_fact: work_item.required_evidence=['deterministic-test', 'repository-revision'];
+      task_toolkit.workflow_id='builder-reviewer'
+    rationale: permitted for this work class, but the work item requires neither the
+      evidence it produces nor the workflow that needs it
     source: work-item
   - action: include
     component_id: repository.read
@@ -500,13 +514,6 @@ task_toolkit:
     rationale: required by selected task workflow or skills
     source: work-item
   - action: include
-    component_id: explorer
-    component_kind: role
-    policy_id: null
-    project_fact: work_item.work_class=ADOPTION
-    rationale: required by selected task workflow or skills
-    source: work-item
-  - action: include
     component_id: reviewer
     component_kind: role
     policy_id: null
@@ -517,29 +524,25 @@ task_toolkit:
     component_id: bounded-change
     component_kind: skill
     policy_id: null
-    project_fact: work_item.work_class=ADOPTION
-    rationale: skill triggers match work item class
+    project_fact: work_item.work_class=ADOPTION; work_item.required_evidence=['deterministic-test',
+      'repository-revision']
+    rationale: workflow 'builder-reviewer' requires this skill
     source: work-item
   - action: include
     component_id: deterministic-test
     component_kind: skill
     policy_id: null
-    project_fact: work_item.work_class=ADOPTION
-    rationale: skill triggers match work item class
+    project_fact: work_item.work_class=ADOPTION; work_item.required_evidence=['deterministic-test',
+      'repository-revision']
+    rationale: workflow 'builder-reviewer' requires this skill
     source: work-item
   - action: include
     component_id: independent-review
     component_kind: skill
     policy_id: null
-    project_fact: work_item.work_class=ADOPTION
-    rationale: skill triggers match work item class
-    source: work-item
-  - action: include
-    component_id: repository-inspection
-    component_kind: skill
-    policy_id: null
-    project_fact: work_item.work_class=ADOPTION
-    rationale: skill triggers match work item class
+    project_fact: work_item.work_class=ADOPTION; work_item.required_evidence=['deterministic-test',
+      'repository-revision']
+    rationale: workflow 'builder-reviewer' requires this skill
     source: work-item
   - action: include
     component_id: builder-reviewer
@@ -554,14 +557,12 @@ task_toolkit:
   - repository-write-bounded
   role_ids:
   - builder
-  - explorer
   - reviewer
   schema_version: '0.1'
   skill_ids:
   - bounded-change
   - deterministic-test
   - independent-review
-  - repository-inspection
   validator_ids:
   - evidence-contract
   - schema-compat

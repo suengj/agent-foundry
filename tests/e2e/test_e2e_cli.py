@@ -27,6 +27,7 @@ from tests.e2e.generate_examples import EXAMPLES_DIR
 VALIDATE_OK = 0
 VALIDATE_REJECTED = 1
 VALIDATE_INPUT_ERROR = 2
+VALIDATE_INCOMPLETE = 3
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
@@ -144,13 +145,30 @@ def test_compile_render_matches_the_committed_example(tmp_path: Path) -> None:
         assert line in rendered.stdout
         assert line in committed
     assert result.work_item.objective in rendered.stdout
-    # The builtin builder write scope is `src/`, `tests/`; the work item scopes
-    # `Makefile`; so the CLI run, using the builtin registry, grants nothing.
-    assert "## Write scope" not in rendered.stdout
-    assert "## Write scope" in committed
+    # Same registry, same declared envelope, so the CLI grants exactly what the Python
+    # API did. Before AF8's review round the builtin builder role hardcoded
+    # `["src/", "tests/"]` and this same command produced a bundle with no write scope
+    # at all, which only a later `validate` call would have caught.
+    assert "## Write scope" in rendered.stdout
+    for path in result.bundle.write_scope:
+        assert path in rendered.stdout
 
 
 # --- agent-foundry validate ------------------------------------------------------
+
+
+def _validate_args(name: str, kind: str) -> list[str]:
+    args = ["validate", str(EXAMPLES_DIR / name), "--kind", kind]
+    if kind in {"execution-bundle", "task-toolkit"}:
+        args += ["--toolkit-lock", str(EXAMPLES_DIR / "toolkit-lock.yaml")]
+    if kind == "execution-bundle":
+        args += [
+            "--work-item",
+            str(EXAMPLES_DIR / "work-item.yaml"),
+            "--manifest",
+            str(EXAMPLES_DIR / "project-manifest.yaml"),
+        ]
+    return args
 
 
 @pytest.mark.parametrize(
@@ -163,14 +181,12 @@ def test_compile_render_matches_the_committed_example(tmp_path: Path) -> None:
     ],
 )
 def test_validate_accepts_every_committed_example(name: str, kind: str) -> None:
-    args = ["validate", str(EXAMPLES_DIR / name), "--kind", kind]
-    if kind in {"execution-bundle", "task-toolkit"}:
-        args += ["--toolkit-lock", str(EXAMPLES_DIR / "toolkit-lock.yaml")]
-    completed = _run(*args)
+    completed = _run(*_validate_args(name, kind))
     assert completed.returncode == VALIDATE_OK, completed.stdout + completed.stderr
-    reports = json.loads(completed.stdout)
-    assert reports
-    for report in reports:
+    validation = json.loads(completed.stdout)
+    assert validation["not_run"] == []
+    assert validation["reports"]
+    for report in validation["reports"]:
         assert report["findings"]
         assert all(
             finding["outcome"] in {"PASS", "NOT_REQUIRED"} for finding in report["findings"]
@@ -202,29 +218,57 @@ def test_validate_separates_a_bad_request_from_a_rejection(tmp_path: Path) -> No
     assert missing.returncode == VALIDATE_INPUT_ERROR
 
 
-def test_validate_reports_only_the_validators_it_actually_ran(tmp_path: Path) -> None:
-    """A skipped validator shows as a smaller report, never as a pass it did not earn."""
-    with_lock = _run(
-        "validate",
-        str(EXAMPLES_DIR / "execution-bundle.yaml"),
-        "--kind",
-        "execution-bundle",
-        "--toolkit-lock",
-        str(EXAMPLES_DIR / "toolkit-lock.yaml"),
-    )
-    without_lock = _run(
+def test_validate_names_what_it_could_not_run_and_says_so_in_its_exit_code() -> None:
+    """A missing input is a recorded state, not a smaller pass.
+
+    Without `--toolkit-lock` and `--work-item` two validators that apply to an
+    execution bundle have nothing to run against. The reports that did run all pass, so
+    the naive answer is exit 0 — and that reads as a safety verdict the command did not
+    give. Exit 3 says so, and `not_run` names which checks are missing and why.
+    """
+    complete = _run(*_validate_args("execution-bundle.yaml", "execution-bundle"))
+    partial = _run(
         "validate", str(EXAMPLES_DIR / "execution-bundle.yaml"), "--kind", "execution-bundle"
     )
-    assert with_lock.returncode == VALIDATE_OK
-    assert without_lock.returncode == VALIDATE_OK
 
-    ran_with = {report["findings"][0]["validator_id"] for report in json.loads(with_lock.stdout)}
-    ran_without = {
-        report["findings"][0]["validator_id"] for report in json.loads(without_lock.stdout)
-    }
-    assert "toolkit-coherence" in ran_with
-    assert "toolkit-coherence" not in ran_without
-    assert ran_without < ran_with
+    assert complete.returncode == VALIDATE_OK
+    assert partial.returncode == VALIDATE_INCOMPLETE
+
+    complete_payload = json.loads(complete.stdout)
+    partial_payload = json.loads(partial.stdout)
+    assert complete_payload["not_run"] == []
+
+    not_run = {item["validator_id"] for item in partial_payload["not_run"]}
+    assert not_run == {"toolkit-coherence", "write-scope-containment"}
+    for item in partial_payload["not_run"]:
+        assert item["reason"], "a skipped validator must say what it lacked"
+    # Everything that did run still passed: the exit code is about coverage, not fault.
+    assert all(
+        finding["outcome"] in {"PASS", "NOT_REQUIRED"}
+        for report in partial_payload["reports"]
+        for finding in report["findings"]
+    )
+    assert "[not run]" in partial.stderr
+
+
+def test_the_cli_cannot_give_the_whole_slice_verdict_by_itself() -> None:
+    """A documented boundary, pinned so it cannot be overstated.
+
+    `agent-foundry validate` checks one artifact. Six of the fourteen published
+    validators need inputs no single artifact carries — a review decision, observed
+    integration health, the permission profile, the work plan — so the complete verdict
+    is `agent_foundry.verify.validate_compiled_slice`, and the command's own
+    `--help` says so.
+    """
+    from agent_foundry.verify.cli_api import ARTIFACT_KINDS, _APPLICABLE_BY_KIND
+
+    reachable = {"contract-schema-compatibility"}
+    for kind in ARTIFACT_KINDS:
+        reachable |= set(_APPLICABLE_BY_KIND.get(kind, ()))
+    assert reachable < set(VALIDATOR_IDS)
+
+    helped = _run("validate", "--help")
+    assert "validate_compiled_slice" in helped.stdout
 
 
 def test_doctor_passes_for_this_repository() -> None:

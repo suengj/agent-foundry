@@ -4,6 +4,14 @@ assurance:
   required:
   - deterministic-tests
   - independent-review
+authority:
+  write_scope:
+  - .foundry/
+  - AGENTS.md
+  - Makefile
+  - docs/
+  - src/
+  - tests/
 execution:
   ambiguity: bounded-judgment
   autonomy: suggest

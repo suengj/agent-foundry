@@ -24,6 +24,10 @@ assurance:
     - runtime-readback
 access:
   sensitivity: internal
+authority:
+  write_scope:
+    - src/
+    - tests/
 observations:
   - subject: test-harness
     content: pytest entrypoint present

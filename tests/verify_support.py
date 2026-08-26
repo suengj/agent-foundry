@@ -68,6 +68,9 @@ def sample_manifest(**overrides: object) -> ProjectManifest:
         },
         "assurance": {"required": ["deterministic-tests"]},
         "access": {"sensitivity": "internal"},
+        # Compiled write authority is the intersection of this declared envelope
+        # with the Work Item scope. Undeclared grants nothing.
+        "authority": {"write_scope": ["src/", "tests/"]},
     }
     base.update(overrides)
     return ProjectManifest.model_validate(base)

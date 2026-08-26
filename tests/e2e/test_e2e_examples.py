@@ -60,6 +60,7 @@ def test_the_structured_examples_load_back_as_contracts() -> None:
         ProjectManifest,
         TaskToolkit,
         ToolkitLock,
+        WorkItemContract,
         WorkPlan,
         load_yaml,
     )
@@ -68,6 +69,7 @@ def test_the_structured_examples_load_back_as_contracts() -> None:
         ("project-manifest.yaml", ProjectManifest),
         ("adoption-change-set.yaml", AdoptionChangeSet),
         ("work-plan.yaml", WorkPlan),
+        ("work-item.yaml", WorkItemContract),
         ("toolkit-lock.yaml", ToolkitLock),
         ("task-toolkit.yaml", TaskToolkit),
         ("execution-bundle.yaml", ExecutionBundle),
@@ -78,12 +80,21 @@ def test_the_structured_examples_load_back_as_contracts() -> None:
         assert loaded.schema_version
 
 
-def test_the_example_validation_report_records_a_pass_for_every_validator_run() -> None:
+def test_the_example_slice_validation_covers_the_whole_catalog_and_passes() -> None:
+    """A committed acceptance has to be an acceptance of everything, not of a subset."""
     import json
 
-    reports = json.loads((EXAMPLES_DIR / "validation-report.json").read_text())
-    assert reports
-    for report in reports:
+    from agent_foundry.verify import VALIDATOR_IDS
+
+    validation = json.loads((EXAMPLES_DIR / "slice-validation.json").read_text())
+    assert validation["not_run"] == []
+    ran = {
+        finding["validator_id"]
+        for report in validation["reports"]
+        for finding in report["findings"]
+    }
+    assert ran == set(VALIDATOR_IDS)
+    for report in validation["reports"]:
         assert report["findings"], "an empty report is not a pass"
         assert all(
             finding["outcome"] in {"PASS", "NOT_REQUIRED"} for finding in report["findings"]

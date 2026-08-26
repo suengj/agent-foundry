@@ -95,6 +95,22 @@ class ProjectAccess(FoundryModel):
     sensitivity: AccessSensitivity | None = None
 
 
+class ProjectAuthority(FoundryModel):
+    """Repository bounds an owner grants to write-bearing work.
+
+    This is the outer envelope compiled write authority is intersected against. It
+    exists because a role's write scope cannot be guessed: a default of `src/, tests/`
+    baked into the registry is a project-shape assumption, and every project whose
+    changes land elsewhere compiled to a bundle that authorized nothing.
+
+    Undeclared means no write is granted, not that any write is allowed. An owner who
+    has not said which paths agents may touch has not granted write authority, and
+    silence is not permission.
+    """
+
+    write_scope: list[str] = Field(default_factory=list)
+
+
 class ProjectInfo(FoundryModel):
     name: str | None = None
     intake_mode: IntakeMode | None = None
@@ -161,6 +177,7 @@ class ProjectManifest(VersionedContract):
     execution: ProjectExecution
     assurance: ProjectAssurance
     access: ProjectAccess
+    authority: ProjectAuthority = Field(default_factory=ProjectAuthority)
     observations: list[ProjectObservation] = Field(default_factory=list)
     readiness_findings: list[ReadinessFinding] = Field(default_factory=list)
 

@@ -35,6 +35,10 @@ DOCTOR_PROJECT_FAILED = 2
 VALIDATE_OK = 0
 VALIDATE_REJECTED = 1
 VALIDATE_INPUT_ERROR = 2
+# Everything that ran was accepted, but a validator that applies to this artifact had
+# no input to run against. Distinct from OK because a partial result is not a verdict,
+# and distinct from REJECTED because nothing was found wrong.
+VALIDATE_INCOMPLETE = 3
 
 
 def find_project_root(start: Path) -> Path | None:
@@ -311,12 +315,14 @@ def _cmd_validate(args: argparse.Namespace) -> int:
             if args.registry
             else default_registry()
         )
-        reports = validate_artifact(
+        manifest = _load_manifest(Path(args.manifest)) if args.manifest else None
+        validation = validate_artifact(
             args.kind,
             artifact,
             project_lock=project_lock,
             registry=registry,
             work_item=work_item,
+            manifest=manifest,
         )
     except ValidateInputError as exc:
         print(str(exc), file=sys.stderr)
@@ -325,16 +331,26 @@ def _cmd_validate(args: argparse.Namespace) -> int:
         print(f"could not read {args.artifact!r} as {args.kind}: {exc}", file=sys.stderr)
         return VALIDATE_INPUT_ERROR
 
-    payload_data = [report.model_dump(mode="json") for report in reports]
+    payload_data = validation.model_dump(mode="json")
     if args.format == "json":
         payload = dump_json_raw(payload_data)
     else:
         payload = dump_yaml_raw(payload_data)
     sys.stdout.buffer.write(payload)
 
-    # A report with no findings is not an acceptance. `accepted()` is False for an
-    # empty report by construction, and that is the answer this exit code carries.
-    return VALIDATE_OK if all(report.accepted() for report in reports) else VALIDATE_REJECTED
+    # A report with no findings is not an acceptance: `ValidationReport.accepted()` is
+    # False for an empty one by construction. Neither is a subset of the applicable
+    # checks, which is what the third exit code is for.
+    if not all(report.accepted() for report in validation.reports):
+        return VALIDATE_REJECTED
+    if validation.not_run:
+        for item in validation.not_run:
+            print(
+                f"[not run] {item.validator_id}: {item.reason}",
+                file=sys.stderr,
+            )
+        return VALIDATE_INCOMPLETE
+    return VALIDATE_OK
 
 
 def _cmd_integration_check(args: argparse.Namespace) -> int:
@@ -506,11 +522,20 @@ def build_parser() -> argparse.ArgumentParser:
         "validate",
         help="Run every published validator that applies to one contract artifact",
         description=(
-            "Exit 0 when every report is accepted; 1 when an artifact was examined "
-            "and rejected; 2 when the request itself could not be carried out."
+            "Exit 0 when every applicable validator ran and accepted; 1 when an "
+            "artifact was examined and rejected; 2 when the request itself could not "
+            "be carried out; 3 when everything that ran accepted but a validator that "
+            "applies to this artifact had no input to run against. This checks one "
+            "artifact -- the verdict over a whole compiled slice is "
+            "agent_foundry.verify.validate_compiled_slice."
         ),
     )
     validate_cmd.add_argument("artifact", help="Path to the contract artifact (YAML or JSON)")
+    validate_cmd.add_argument(
+        "--manifest",
+        help="Path to the ProjectManifest; write-scope containment cannot check the "
+        "project's declared write envelope without it",
+    )
     validate_cmd.add_argument(
         "--kind",
         required=True,

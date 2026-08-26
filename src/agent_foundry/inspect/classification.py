@@ -31,6 +31,7 @@ CLASSIFICATION_DIMENSIONS: tuple[str, ...] = (
     "execution.concurrency",
     "assurance.required",
     "access.sensitivity",
+    "authority.write_scope",
 )
 
 # Where each dimension is read from inside `.foundry/project.yaml`. The path is the
@@ -52,10 +53,13 @@ _DECLARED_PATHS: dict[str, tuple[str, ...]] = {
     "execution.concurrency": ("execution", "concurrency"),
     "assurance.required": ("assurance", "required"),
     "access.sensitivity": ("access", "sensitivity"),
+    "authority.write_scope": ("authority", "write_scope"),
 }
 
 # Dimensions whose declared value is a list of scalars rather than one scalar.
-_LIST_DIMENSIONS: frozenset[str] = frozenset({"secondary_work_modes", "assurance.required"})
+_LIST_DIMENSIONS: frozenset[str] = frozenset(
+    {"secondary_work_modes", "assurance.required", "authority.write_scope"}
+)
 
 # Declared list values are carried as one finding whose `value` is this separator
 # joined — a ClassificationFinding holds a single string by contract, and AF8 is

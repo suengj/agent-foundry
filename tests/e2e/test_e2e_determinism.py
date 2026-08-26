@@ -30,7 +30,6 @@ from tests.e2e.pipeline import run_pipeline
 
 result = run_pipeline(
     sys.argv[1],
-    registry=support.synthetic_registry(),
     integrations=[support.tracker_integration()],
     desired_integration_ids=[support.TRACKER_INTEGRATION_ID],
     observed_health=[support.tracker_health()],
@@ -124,7 +123,6 @@ def test_repeating_the_run_in_one_process_is_stable() -> None:
         result = run_pipeline(
             support.SYNTHETIC,
             work_item_id="wi-dcc714550913",
-            registry=support.synthetic_registry(),
         )
         return dump_json(result.bundle) + result.markdown.encode("utf-8")
 

@@ -14,10 +14,16 @@ from typing import Any, Callable
 from agent_foundry.models.base import FoundryModel
 from agent_foundry.models.execution import ExecutionBundle
 from agent_foundry.models.interaction import EvidenceBundle, ExecutionReceipt
+from agent_foundry.models.project import ProjectManifest
 from agent_foundry.models.registry import CapabilityRegistry, RoleContract
 from agent_foundry.models.toolkit import TaskToolkit, ToolkitLock
-from agent_foundry.models.verification import ValidationReport
+from agent_foundry.models.verification import (
+    SliceValidation,
+    ValidationReport,
+    ValidatorNotRun,
+)
 from agent_foundry.models.work import WorkItemContract
+from agent_foundry.verify import claims
 from agent_foundry.verify.validators import (
     validate_contract_schema_compatibility,
     validate_evidence_bundle_completeness,
@@ -76,6 +82,7 @@ def _bundle_reports(
     project_lock: ToolkitLock | None,
     registry: CapabilityRegistry | None,
     work_item: WorkItemContract | None,
+    manifest: ProjectManifest | None,
 ) -> list[ValidationReport]:
     reports = [
         validate_execution_bundle_completeness(bundle),
@@ -90,6 +97,7 @@ def _bundle_reports(
                 bundle.authority,
                 work_item=work_item,
                 role=_role_from_registry(bundle.role_id, registry),
+                manifest=manifest,
             )
         )
     if bundle.task_toolkit is not None and project_lock is not None and registry is not None:
@@ -99,6 +107,23 @@ def _bundle_reports(
     return reports
 
 
+# Validators that apply to each artifact kind, beyond schema compatibility, which
+# applies to all of them. A validator listed here and not run for lack of an input is
+# reported as `not_run`; one that is not listed does not apply to the kind at all.
+_APPLICABLE_BY_KIND: dict[str, tuple[str, ...]] = {
+    "work-item": (claims.WORK_DEPENDENCY_GRAPH,),
+    "task-toolkit": (claims.TOOLKIT_COHERENCE,),
+    "execution-bundle": (
+        claims.EXECUTION_BUNDLE_COMPLETENESS,
+        claims.PROVENANCE_COMPLETENESS,
+        claims.WRITE_SCOPE_CONTAINMENT,
+        claims.TOOLKIT_COHERENCE,
+    ),
+    "evidence-bundle": (claims.EVIDENCE_BUNDLE_COMPLETENESS,),
+    "execution-receipt": (claims.RECEIPT_COMPLETENESS, claims.LIFECYCLE_SEPARATION),
+}
+
+
 def validate_artifact(
     kind: str,
     artifact: FoundryModel,
@@ -106,13 +131,18 @@ def validate_artifact(
     project_lock: ToolkitLock | None = None,
     registry: CapabilityRegistry | None = None,
     work_item: WorkItemContract | None = None,
-) -> list[ValidationReport]:
-    """Run every published validator that applies to *artifact*.
+    manifest: ProjectManifest | None = None,
+) -> SliceValidation:
+    """Run every published validator that applies to *artifact*, and say what did not.
 
-    A validator whose additional inputs were not supplied is skipped rather than
-    run against a stand-in: `validate_toolkit_coherence` without the pinned project
-    lock would compare a task toolkit to nothing and pass. What ran is visible in
-    the returned reports, so a skip reads as a smaller report, never as a pass.
+    A validator whose additional inputs were not supplied is *not* run against a
+    stand-in — `validate_toolkit_coherence` without the pinned project lock would
+    compare a task toolkit to nothing and pass — and it is not silently omitted either.
+    It is recorded in `not_run`, so a caller can tell a passing subset from a verdict.
+
+    This checks one artifact. The verdict over a whole compiled slice is
+    `agent_foundry.verify.validate_compiled_slice`, which covers every validator in the
+    catalog rather than the handful one artifact kind can support.
     """
     reports: list[ValidationReport] = [
         validate_contract_schema_compatibility([(kind, artifact)])
@@ -126,7 +156,7 @@ def validate_artifact(
             else []
         ),
         "execution-bundle": lambda bundle: _bundle_reports(
-            bundle, project_lock, registry, work_item
+            bundle, project_lock, registry, work_item, manifest
         ),
         "evidence-bundle": lambda bundle: [validate_evidence_bundle_completeness(bundle)],
         "execution-receipt": lambda receipt: [
@@ -141,7 +171,39 @@ def validate_artifact(
             f"unknown artifact kind {kind!r}; expected one of {', '.join(ARTIFACT_KINDS)}"
         )
     reports.extend(handler(artifact))
-    return reports
+
+    ran = {finding.validator_id for report in reports for finding in report.findings}
+    not_run = [
+        ValidatorNotRun(
+            validator_id=validator_id,
+            reason=_MISSING_INPUT_REASON.get(
+                validator_id, "a required input was not supplied"
+            ),
+        )
+        for validator_id in _APPLICABLE_BY_KIND.get(kind, ())
+        if validator_id not in ran
+    ]
+    return SliceValidation(
+        subject_id=f"{kind}:{_subject_id(artifact)}",
+        reports=reports,
+        not_run=sorted(not_run, key=lambda item: item.validator_id),
+    )
+
+
+_MISSING_INPUT_REASON: dict[str, str] = {
+    claims.TOOLKIT_COHERENCE: "--toolkit-lock was not supplied, so the task toolkit "
+    "has no pinned lock to be checked against",
+    claims.WRITE_SCOPE_CONTAINMENT: "--work-item was not supplied, so a granted write "
+    "path has no work item scope to be contained by",
+}
+
+
+def _subject_id(artifact: FoundryModel) -> str:
+    for attribute in ("work_item_id", "id", "project_name"):
+        value = getattr(artifact, attribute, None)
+        if value:
+            return str(value)
+    return "unknown"
 
 
 __all__ = [

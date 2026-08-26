@@ -76,7 +76,7 @@ _SPEC = integration_spec()
 _HEALTH = health("work-tracker", IntegrationHealthState.AUTHORIZED)
 _CLASSIFICATION = [
     ClassificationFinding(
-        dimension="External effect",
+        dimension="impact.external_effect",
         value="repository-write",
         provenance=Provenance(kind=ProvenanceKind.DECLARED, source_ref="intake.yaml"),
     )

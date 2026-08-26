@@ -26,6 +26,7 @@ from agent_foundry.toolkit.builtin_registry import (
     build_default_registry_budget_profiles,
     build_default_registry_permission_profiles,
 )
+from agent_foundry.models.common import ExternalEffectClass
 from agent_foundry.toolkit.ceiling import EFFECT_RANK, capability_min_external_effect
 
 
@@ -523,6 +524,25 @@ def compile_work_item(
         permission_profile,
         reg,
     )
+
+    # Fail closed rather than hand back a contract that authorizes nothing. Repository-
+    # write authority *is* the set of paths it may touch; with none, every structural
+    # check still passes and an executor holding the bundle cannot change a single
+    # file. Leaving that to a later `validate` call means the compile command reports
+    # success for work that cannot be done, which is the failure this refuses to emit.
+    if (
+        bundle.authority.external_effect == ExternalEffectClass.REPOSITORY_WRITE
+        and not bundle.write_scope
+    ):
+        declared = sorted(manifest.authority.write_scope)
+        role_scope = sorted(role.write_scope)
+        raise CompileError(
+            f"work item {work_item.id!r} compiles to repository-write authority with no "
+            f"write path: its scope {sorted(work_item.scope)!r} does not intersect the "
+            f"declared write bounds (project manifest authority.write_scope={declared!r}, "
+            f"role {role_id!r} write_scope={role_scope!r}). Declare the paths this work "
+            "may touch, or narrow the work item's authority class."
+        )
 
     return CompileResult(task_toolkit=task_toolkit, bundle=bundle)
 

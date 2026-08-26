@@ -60,7 +60,6 @@ def result() -> PipelineResult:
     return run_pipeline(
         support.REPO_ROOT,
         run_id="RUN-E2E-SELF-001",
-        registry=support.self_registry(),
     )
 
 
@@ -77,7 +76,7 @@ def test_the_whole_slice_leaves_this_repository_untouched() -> None:
     """
     before = _repo_snapshot()
     run_pipeline(
-        support.REPO_ROOT, run_id="RUN-E2E-READONLY", registry=support.self_registry()
+        support.REPO_ROOT, run_id="RUN-E2E-READONLY"
     )
     after = _repo_snapshot()
     assert before == after, {
@@ -258,6 +257,24 @@ def test_the_declared_manifest_is_this_repository_s_own(result: PipelineResult) 
     assert manifest.access.sensitivity is not None
 
 
+def test_the_brownfield_run_produces_keep_harden_and_wrap(
+    result: PipelineResult,
+) -> None:
+    """Three of the four brownfield actions AF8 was asked to demonstrate, here.
+
+    MIGRATE is the fourth, and it appears on the undeclared copy below: this repository
+    now carries the declaration that proposal asks for, so proposing it again would be
+    wrong.
+    """
+    by_action: dict[AdoptionAction, list[str]] = {}
+    for change in result.change_set.changes:
+        by_action.setdefault(change.action, []).append(change.target)
+
+    assert "foundry-project-declaration" in by_action[AdoptionAction.KEEP]
+    assert "test-harness" in by_action[AdoptionAction.HARDEN]
+    assert by_action[AdoptionAction.WRAP] == ["integration-surfaces"]
+
+
 def test_the_retrofit_is_additive_and_the_declaration_is_kept(
     result: PipelineResult,
 ) -> None:
@@ -274,6 +291,80 @@ def test_the_retrofit_is_additive_and_the_declaration_is_kept(
     }
     assert "foundry-project-declaration" in kept
     assert "package-metadata" in kept
+
+
+def test_the_task_toolkit_is_narrower_than_the_project_toolkit(
+    result: PipelineResult,
+) -> None:
+    """The Task Toolkit is the minimum subset, and the reduction is measured.
+
+    Before AF8's review round the two were identical on every input, so a Work Item
+    scoped to one file was handed every skill and role the project had. Least
+    capability is a safety property, so the subtraction is asserted rather than
+    described, and every subtraction says what it was.
+    """
+    lock = result.project_lock
+    task = result.task_toolkit
+    assert set(task.skill_ids) < set(lock.skill_ids)
+    assert set(task.role_ids) < set(lock.role_ids)
+    assert set(task.capability_ids) < set(lock.capability_ids)
+
+    subtracted = set(lock.skill_ids) - set(task.skill_ids)
+    for skill_id in subtracted:
+        reasons = [
+            decision.rationale
+            for decision in task.decisions
+            if decision.component_kind == "skill" and decision.component_id == skill_id
+        ]
+        assert reasons, f"{skill_id} was subtracted with no recorded reason"
+
+    # And the rendered contract discloses only what was selected.
+    assert {summary.skill_id for summary in result.bundle.skill_summaries} == set(
+        task.skill_ids
+    )
+
+
+def test_no_project_supplied_registry_is_needed_to_compile_this_repository(
+    result: PipelineResult,
+) -> None:
+    """The builtin registry is used as shipped.
+
+    An earlier version of this harness copied the builtin registry and replaced the
+    builder's `write_scope`, because that role hardcoded `["src/", "tests/"]` — a
+    project-shape assumption in core. The bound now comes from this project's own
+    `authority.write_scope` declaration, so the harness supplies no registry at all.
+    """
+    from agent_foundry.toolkit import default_registry
+
+    assert result.registry == default_registry()
+    builder = next(role for role in result.registry.roles if role.id == "builder")
+    assert builder.write_scope == [], (
+        "a builtin role must not carry a project's shape"
+    )
+    assert result.manifest.authority.write_scope, (
+        "this repository declares the paths agents may write"
+    )
+
+
+def test_compilation_refuses_when_the_envelope_grants_nothing() -> None:
+    """`compile` fails closed rather than emitting a contract validate must catch."""
+    from agent_foundry.compile import CompileError, compile_work_item
+    from agent_foundry.models import ProjectAuthority
+    from agent_foundry.toolkit import resolve_toolkit
+
+    intake = inspect_project(support.REPO_ROOT)
+    plan = plan_adoption(intake)
+    undeclared = plan.manifest.model_copy(update={"authority": ProjectAuthority()})
+    _, lock = resolve_toolkit(undeclared)
+
+    from tests.e2e.pipeline import decomposition_input
+    from agent_foundry.work import decompose_work
+
+    work_plan = decompose_work(decomposition_input(plan.change_set, "agent-foundry"))
+    work_item = work_plan.work_items[0]
+
+    with pytest.raises(CompileError, match="no write path"):
+        compile_work_item(work_item, undeclared, lock, "builder", "RUN-NO-ENVELOPE")
 
 
 def test_the_slice_produces_a_usable_bundle_over_this_repository(

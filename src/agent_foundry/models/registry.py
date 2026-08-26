@@ -7,7 +7,12 @@ from enum import StrEnum
 from pydantic import Field
 
 from agent_foundry.models.base import FoundryModel, VersionedContract
-from agent_foundry.models.common import ExternalEffectClass, PrimaryWorkMode, WorkClass
+from agent_foundry.models.common import (
+    EvidenceClass,
+    ExternalEffectClass,
+    PrimaryWorkMode,
+    WorkClass,
+)
 from agent_foundry.models.policy import PolicyRule
 
 
@@ -77,6 +82,15 @@ class SkillSpec(VersionedContract):
     permissions: SkillPermissions = Field(default_factory=SkillPermissions)
     inputs: list[str] = Field(default_factory=list)
     outputs: list[str] = Field(default_factory=list)
+    produces_evidence: list[EvidenceClass] = Field(default_factory=list)
+    """Typed evidence classes running this skill can produce.
+
+    `outputs` names artifacts for a human reader; this names what a Work Item's
+    `required_evidence` can be *satisfied by*, and it is what makes a skill needed
+    rather than merely permitted. A skill producing no closing evidence is not
+    thereby useless — it may still be required by a workflow, or be the read baseline
+    — but it is not selected because a Work Item asked for evidence it cannot give.
+    """
 
 
 class WorkflowSpec(VersionedContract):

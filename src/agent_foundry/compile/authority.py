@@ -163,6 +163,33 @@ def _forbidden_scopes(role_scopes: list[str], compiled_write_scope: list[str]) -
     return sorted(forbidden)
 
 
+def write_authority_bounds(
+    manifest: ProjectManifest,
+    role: RoleContract | None,
+) -> list[list[str]]:
+    """Every declared bound compiled write authority must fall inside, outermost first.
+
+    Two authorities can bound a write, and both are declarations rather than guesses:
+    the project's own `authority.write_scope`, and the role's, when the registry that
+    supplied the role narrows it further. A bound that is absent contributes nothing;
+    *all* bounds absent means nothing was granted, which the caller enforces.
+
+    This replaces a `write_scope=["src/", "tests/"]` default on the builtin builder
+    role. That default was a project-shape assumption living in core: every project
+    whose changes land elsewhere — an instruction surface, a build file, a CI config —
+    intersected to nothing and compiled to a bundle that authorized no change it could
+    make.
+    """
+    bounds: list[list[str]] = []
+    manifest_scope = list(manifest.authority.write_scope)
+    if manifest_scope:
+        bounds.append(manifest_scope)
+    role_scope = list(role.write_scope) if role is not None else []
+    if role_scope:
+        bounds.append(role_scope)
+    return bounds
+
+
 def compute_compiled_authority(
     work_item: WorkItemContract,
     manifest: ProjectManifest,
@@ -190,11 +217,20 @@ def compute_compiled_authority(
     for bound in (work_item_effect, toolkit_effect, role_effect):
         compiled_effect = tighten_ceiling(compiled_effect, bound)
 
-    role_write_scope = list(role.write_scope) if role is not None else []
-    compiled_write_scope = _intersect_write_scopes(role_write_scope, work_item.scope)
+    declared_bounds = write_authority_bounds(manifest, role)
+    compiled_write_scope = list(work_item.scope)
+    for bound in declared_bounds:
+        compiled_write_scope = _intersect_write_scopes(bound, compiled_write_scope)
+    if not declared_bounds:
+        # No authority declared the paths this work may touch. Silence is not
+        # permission, so nothing is granted.
+        compiled_write_scope = []
     if compiled_effect == ExternalEffectClass.READ_ONLY:
         compiled_write_scope = []
-    forbidden = _forbidden_scopes(role_write_scope, compiled_write_scope)
+    forbidden = _forbidden_scopes(
+        sorted({scope for bound in declared_bounds for scope in bound}),
+        compiled_write_scope,
+    )
 
     return CompiledAuthority(
         external_effect=compiled_effect,
@@ -260,18 +296,24 @@ def validate_execution_bundle_authority(
             f"bundle write_scope {authority.write_scope!r} != intersection {expected.write_scope!r}"
         )
 
-    role_write_scope = list(role.write_scope) if role is not None else []
+    declared_bounds = write_authority_bounds(manifest, role)
+    if authority.write_scope and not declared_bounds:
+        raise CompileAuthorityError(
+            f"bundle grants write_scope {authority.write_scope!r} but neither the "
+            "project manifest nor the role declares any write bound"
+        )
     for compiled_scope in authority.write_scope:
         if not _scope_contained_in_bounds(compiled_scope, work_item.scope):
             raise CompileAuthorityError(
                 f"bundle write_scope {compiled_scope!r} is not contained in work item scope "
                 f"{work_item.scope!r}"
             )
-        if not _scope_contained_in_bounds(compiled_scope, role_write_scope):
-            raise CompileAuthorityError(
-                f"bundle write_scope {compiled_scope!r} is not contained in role write_scope "
-                f"{role_write_scope!r}"
-            )
+        for bound in declared_bounds:
+            if not _scope_contained_in_bounds(compiled_scope, bound):
+                raise CompileAuthorityError(
+                    f"bundle write_scope {compiled_scope!r} is not contained in declared "
+                    f"write bound {bound!r}"
+                )
 
     manifest_ceiling = effective_permission_ceiling(manifest)
     if EFFECT_RANK[authority.external_effect] > EFFECT_RANK[manifest_ceiling]:

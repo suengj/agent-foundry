@@ -32,3 +32,17 @@ assurance:
     - independent-review
 access:
   sensitivity: public
+authority:
+  # Repository paths agents may write in this project. Compiled write authority is the
+  # intersection of this envelope with the Work Item scope, so anything absent here is
+  # never granted — including `LICENSE` and `.gitignore`, deliberately.
+  write_scope:
+    - .foundry/
+    - AGENTS.md
+    - CHANGELOG.md
+    - README.md
+    - docs/
+    - examples/
+    - pyproject.toml
+    - src/
+    - tests/

@@ -1,12 +1,21 @@
-"""Deliberately broken inputs, and the validator that has to catch each one.
+"""Deliberately broken runs, and the verdict that has to reject each one.
 
-A validation layer that passes everything is not evidence. Each test below takes a
-pipeline output that validation accepts, breaks exactly one property, and requires
-the named validator to reject it. The break is applied with `model_construct` where
-a model validator would otherwise refuse to build the artifact at all — the point is
-to check the *verifier*, not the producer's own gate.
+A validation layer that passes everything is not evidence — and neither is a set of
+validators that each reject correctly while the end-to-end verdict never consults
+them. This file proves both halves, in that order:
 
-Four failure classes, one section each:
+* **Whole-path.** The break is injected at the pipeline's *input*, the full path runs,
+  and `PipelineResult.accepted()` must be False. These are the tests that matter: an
+  earlier version of this harness aggregated four artifact checks and called the result
+  an acceptance, so a run carrying an unhealthy required integration reported
+  `accepted() == True` while the integration validator rejected the same inputs.
+* **Per-validator.** The same four classes against the individual validators, each with
+  a control asserting the unbroken case passes first, so a rejection cannot be an
+  artifact of a broken fixture. Breaks are applied with `model_construct` where a model
+  validator would otherwise refuse to build the artifact at all — the point is to check
+  the *verifier*, not the producer's own gate.
+
+Four failure classes, in both halves:
 
 1. policy violation — compiled authority exceeds a declared bound
 2. role-separation conflict — two roles hold the same write path, or a role reviews itself
@@ -18,6 +27,9 @@ from __future__ import annotations
 
 import pytest
 
+from agent_foundry.compile import CompileAuthorityError
+from agent_foundry.compile import api as compile_api
+from agent_foundry.compile import authority as compile_authority
 from agent_foundry.models import (
     EvidenceBundle,
     EvidenceClass,
@@ -28,9 +40,12 @@ from agent_foundry.models import (
     ReceiptContractError,
     ReviewDecision,
     ReviewOutcome,
+    SliceValidation,
     ValidationOutcome,
+    ValidatorNotRun,
 )
 from agent_foundry.verify import (
+    VALIDATOR_IDS,
     validate_authority_ceiling,
     validate_integration_preflight,
     validate_required_evidence,
@@ -49,11 +64,167 @@ def good() -> PipelineResult:
     return run_pipeline(
         support.SYNTHETIC,
         work_item_id=BUILDER_ITEM,
-        registry=support.synthetic_registry(),
         integrations=[support.tracker_integration()],
         desired_integration_ids=[support.TRACKER_INTEGRATION_ID],
         observed_health=[support.tracker_health()],
     )
+
+
+# ==========================================================================
+# Whole-path: the break enters at the pipeline input and must reach the verdict
+# ==========================================================================
+
+
+def _run(**overrides) -> PipelineResult:
+    """One full pipeline run over the synthetic fixture, with overrides applied."""
+    kwargs = dict(
+        work_item_id=BUILDER_ITEM,
+        integrations=[support.tracker_integration()],
+        desired_integration_ids=[support.TRACKER_INTEGRATION_ID],
+        observed_health=[support.tracker_health()],
+    )
+    kwargs.update(overrides)
+    return run_pipeline(support.SYNTHETIC, **kwargs)
+
+
+def test_the_unbroken_run_is_accepted_and_every_validator_ran(good: PipelineResult) -> None:
+    """The control for every whole-path test below.
+
+    Coverage is asserted, not assumed: the verdict names every validator in the
+    published catalog, and nothing was skipped. Without this, a rejection below could
+    mean the fixture is broken, and an acceptance could mean the check never ran.
+    """
+    assert good.accepted(), good.rejecting()
+    assert good.validation.not_run == []
+    assert set(good.ran()) == set(VALIDATOR_IDS)
+
+
+def test_whole_path_policy_violation_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Class 1. The producer refuses first; with its guard removed, the verdict still does.
+
+    Two properties in one test, because either alone is misleading. The compiler
+    intersects authority against every declared bound and raises rather than emitting a
+    widened one, so a policy violation cannot normally reach an artifact at all. That
+    makes it worth proving that when the producer's own guard is neutralized, the
+    independent `authority-ceiling` check catches what the producer let through.
+    """
+    real_compute = compile_authority.compute_compiled_authority
+
+    def widened(*args: object, **kwargs: object):
+        return real_compute(*args, **kwargs).model_copy(
+            update={"external_effect": ExternalEffectClass.PUBLICATION}
+        )
+
+    monkeypatch.setattr(compile_authority, "compute_compiled_authority", widened)
+    monkeypatch.setattr(compile_api, "compute_compiled_authority", widened)
+
+    with pytest.raises(CompileAuthorityError, match="exceeds manifest ceiling"):
+        _run()
+
+    # With the producer's structural guard removed the widened bundle is emitted, and
+    # the slice verdict rejects it anyway.
+    monkeypatch.setattr(
+        compile_api, "validate_execution_bundle_authority", lambda *a, **k: None
+    )
+    result = _run()
+    assert result.bundle.authority.external_effect is ExternalEffectClass.PUBLICATION
+    assert not result.accepted()
+    assert any(
+        message.startswith("authority-ceiling/BLOCKED") for message in result.rejecting()
+    ), result.rejecting()
+
+
+def test_whole_path_role_separation_conflict_is_rejected() -> None:
+    """Class 2. A project-supplied registry lets two roles write the same paths."""
+    result = _run(
+        registry=support.registry_granting_write_to("reviewer"),
+        also_compile_roles=["reviewer"],
+    )
+    assert not result.accepted()
+    rejecting = result.rejecting()
+    assert any("overlapping write scope" in message for message in rejecting), rejecting
+    assert any("review-only role" in message for message in rejecting), rejecting
+
+
+def test_whole_path_missing_evidence_is_rejected() -> None:
+    """Class 3. The run produced no evidence for the classes the Work Item requires."""
+    result = _run(satisfied_evidence=frozenset())
+    assert not result.accepted()
+    rejecting = result.rejecting()
+    for requirement in result.work_item.required_evidence:
+        assert any(
+            message.startswith("required-evidence/MISSING") and requirement in message
+            for message in rejecting
+        ), (requirement, rejecting)
+
+
+def test_whole_path_partial_evidence_is_rejected() -> None:
+    """Some evidence is not enough evidence, and the verdict says which class is short."""
+    result = _run(satisfied_evidence=frozenset({EvidenceClass.DETERMINISTIC_TEST.value}))
+    assert not result.accepted()
+    assert any(
+        message.startswith("required-evidence/") and "repository-revision" in message
+        for message in result.rejecting()
+    ), result.rejecting()
+
+
+def test_whole_path_unhealthy_required_integration_is_rejected() -> None:
+    """Class 4. The exact run an earlier version of this harness reported as accepted."""
+    result = _run(observed_health=[support.tracker_health(IntegrationHealthState.UNAVAILABLE)])
+    assert not result.accepted()
+    assert any(
+        message.startswith("integration-preflight/BLOCKED")
+        for message in result.rejecting()
+    ), result.rejecting()
+
+
+def test_whole_path_unobserved_required_integration_is_rejected() -> None:
+    """Unobserved is not healthy, all the way through to the verdict."""
+    result = _run(observed_health=[])
+    assert not result.accepted()
+    assert any(
+        "unobserved is not healthy" in message for message in result.rejecting()
+    ), result.rejecting()
+
+
+def test_a_silently_dropped_integration_does_not_read_as_not_required() -> None:
+    """Resolution subtracts an unhealthy integration; the verdict must still object.
+
+    The subtraction is correct — an integration below its required health does not
+    belong in a Task Toolkit. What must not happen is the compiled bundle carrying no
+    trace of the request, so preflight sees an empty required set and reports
+    NOT_REQUIRED for an integration the caller asked for and could not have.
+    """
+    result = _run(observed_health=[support.tracker_health(IntegrationHealthState.UNAVAILABLE)])
+    assert result.bundle.integration_ids == [], (
+        "an unhealthy integration must not reach the compiled bundle"
+    )
+    assert not result.accepted()
+
+
+def test_a_validator_that_cannot_run_is_not_an_acceptance(good: PipelineResult) -> None:
+    """The property the whole verdict rests on, checked directly.
+
+    `SliceValidation.accepted()` is False whenever an applicable validator had no input
+    to run against. A partial verdict is not a verdict, however many of the checks that
+    did run passed.
+    """
+    partial = SliceValidation(
+        subject_id=good.validation.subject_id,
+        reports=list(good.validation.reports),
+        not_run=[
+            ValidatorNotRun(
+                validator_id="required-evidence", reason="no evidence bundle supplied"
+            )
+        ],
+    )
+    assert all(report.accepted() for report in partial.reports)
+    assert not partial.accepted()
+
+
+# ==========================================================================
+# Per-validator: the same four classes, one validator at a time
+# ==========================================================================
 
 
 def _rejecting_messages(report) -> list[str]:
@@ -318,7 +489,6 @@ def test_the_broken_integration_reaches_the_pipeline_as_a_rejection() -> None:
     result = run_pipeline(
         support.SYNTHETIC,
         work_item_id=BUILDER_ITEM,
-        registry=support.synthetic_registry(),
         integrations=[support.tracker_integration()],
         desired_integration_ids=[support.TRACKER_INTEGRATION_ID],
         observed_health=[support.tracker_health(IntegrationHealthState.UNAVAILABLE)],

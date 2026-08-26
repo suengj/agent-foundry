@@ -52,13 +52,14 @@ are a checked projection of the current contracts rather than a snapshot that ag
 | `project-manifest.yaml` | adopt | Durable project characteristics, synthesized from the fixture's owner declaration |
 | `adoption-change-set.yaml` | adopt | The current -> proposed delta, kept separate from the manifest above |
 | `work-plan.yaml` | work | Causal Work Items derived from the actionable changes |
+| `work-item.yaml` | work | The single Work Item the rest of these artifacts were compiled for |
 | `toolkit-lock.yaml` | toolkit | Version-pinned Project Toolkit, with the decision record that produced it |
 | `task-toolkit.yaml` | toolkit | The minimum subset resolved for one Work Item |
 | `execution-bundle.yaml` | compile | The compiled execution contract for one role and one run |
 | `execution-contract.md` | render | The concise agent-facing projection of that bundle |
 | `evidence-bundle.yaml` | verify | Evidence for the run, typed by evidence class |
 | `execution-receipt.yaml` | verify | Receipt binding the run to the exact artifacts it consumed |
-| `validation-report.json` | verify | Every validator that ran, and what each returned |
+| `slice-validation.json` | verify | Every validator in the published catalog, what each returned, and anything that could not run |
 
 ## What these examples do NOT show
 
@@ -68,10 +69,10 @@ are a checked projection of the current contracts rather than a snapshot that ag
 * **No secret values.** `IntegrationSpec.auth.credential_ref` is a `SecretRef` naming a
   provider and a name. There is no position in any of these files where a credential
   value could be written.
-* **A project-supplied registry.** The builtin `builder` role declares
-  `write_scope: ["src/", "tests/"]`. Adoption work touches instruction surfaces and
-  build files, so these examples were produced with a registry whose builder write
-  scope matches the fixture. See the V0.1 readiness report for why that is a finding.
+* **A narrower grant than the Work Item asked for.** The compiled write scope is the
+  intersection of the Work Item scope with the envelope the fixture declares in
+  `.foundry/project.yaml` under `authority.write_scope`. Nothing here uses a custom
+  registry: the builtin one is used as shipped.
 """
 
 
@@ -84,7 +85,6 @@ def build_result() -> PipelineResult:
         support.SYNTHETIC,
         run_id="RUN-EXAMPLE-001",
         work_item_id=EXAMPLE_WORK_ITEM,
-        registry=support.synthetic_registry(),
         integrations=[support.tracker_integration()],
         desired_integration_ids=[support.TRACKER_INTEGRATION_ID],
         observed_health=[support.tracker_health()],
@@ -94,20 +94,21 @@ def build_result() -> PipelineResult:
 def rendered_examples() -> dict[str, bytes]:
     """Every example file, keyed by relative name."""
     result = build_result()
-    reports = [report.model_dump(mode="json") for report in result.validation_reports]
+    validation = result.validation.model_dump(mode="json")
     return {
         "README.md": README.encode("utf-8"),
         "project-manifest.yaml": dump_yaml(result.manifest),
         "adoption-change-set.yaml": dump_yaml(result.change_set),
         "work-plan.yaml": dump_yaml(result.work_plan),
+        "work-item.yaml": dump_yaml(result.work_item),
         "toolkit-lock.yaml": dump_yaml(result.project_lock),
         "task-toolkit.yaml": dump_yaml(result.task_toolkit),
         "execution-bundle.yaml": dump_yaml(result.bundle),
         "execution-contract.md": result.markdown.encode("utf-8"),
         "evidence-bundle.yaml": dump_yaml(result.evidence_bundle),
         "execution-receipt.yaml": dump_yaml(result.receipt),
-        "validation-report.json": (
-            json.dumps(reports, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        "slice-validation.json": (
+            json.dumps(validation, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
         ).encode("utf-8"),
     }
 

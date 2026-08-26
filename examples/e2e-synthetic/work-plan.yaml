@@ -15,6 +15,7 @@ packages:
   title: Adoption changes applied
   work_item_ids:
   - wi-38a82847d273
+  - wi-8ab952c795bd
   - wi-9faa032e39cd
   - wi-dcc714550913
 quality_issues: []
@@ -49,6 +50,36 @@ work_items:
   title: 'Adopt: instruction-surface-mentions'
   work_class: ADOPTION
   write_scope_id: scope-consolidate-instruction-surface-mentions
+- acceptance_criteria:
+  - WRAP applied to integration-surfaces
+  - regression evidence passes
+  authority_class: repository-write
+  consequence_class: high
+  current_facts:
+  - No IntegrationSpec declares how agents reach these surfaces, so credential coordinates
+    and required health are unstated; wrapping changes the access path, not the surface
+  dependencies: []
+  escalation_conditions: []
+  id: wi-8ab952c795bd
+  implementation_references: []
+  objective: Apply the planned adoption change set so agent execution in this repository
+    is bounded, evidenced, and reviewable.
+  out_of_scope: []
+  required_evidence:
+  - deterministic-test
+  - repository-revision
+  rollback_boundary_id: adopt-wrap-integration-surfaces
+  runtime_external_validation_requirement: 're-read the changed repository files from
+    the working tree after the change; evidence required before closure: deterministic-test,
+    repository-revision'
+  schema_version: '0.1'
+  scope:
+  - env.example
+  stop_conditions:
+  - blocked adoption path cannot be resolved within scope
+  title: 'Adopt: integration-surfaces'
+  work_class: ADOPTION
+  write_scope_id: scope-wrap-integration-surfaces
 - acceptance_criteria:
   - CONSOLIDATE applied to agent-instruction-surfaces
   - regression evidence passes

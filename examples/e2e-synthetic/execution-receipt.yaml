@@ -1,10 +1,10 @@
 adapter_versions: {}
 artifact_identities:
-- digest: 2afaf8fecf4d29d766b6797ddd7435d2abf158d6238210968ca5f5a27cb6b5f0
+- digest: 7ec9ccf8e48b2850ad8e2e6bdaa895dec9a6156a1bf9719d6142c300b37c6b8b
   kind: execution-bundle
   ref: wi-dcc714550913/RUN-EXAMPLE-001
   version: null
-- digest: 5edf704b39a0967d4064d03cf25f578ee2b8ff8e8f3b80e835200f135573a122
+- digest: e7da8dd6e25fd6d95c56b3d67d14c0a3c2223a4a1ceae33f4e0f5835f97eda78
   kind: task-toolkit
   ref: wi-dcc714550913
   version: null
@@ -12,7 +12,7 @@ artifact_identities:
   kind: toolkit-lock
   ref: orders-service
   version: '>=0.1,<0.2'
-- digest: baa09e79636e90b1ad146fd255e4ebd532552c27c9f28026eb0f95320cafe4bf
+- digest: b02e2f04857f088a37da86c95d6e13112c3ca2fe84cb5c9fc2d43cf6718785bd
   kind: capability-registry
   ref: builtin
   version: '>=0.1,<0.2'

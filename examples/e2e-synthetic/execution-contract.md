@@ -25,9 +25,7 @@ Apply the planned adoption change set so agent execution in this repository is b
 
 ## Forbidden scopes
 - .foundry/
-- .github/
 - AGENTS.md
-- CLAUDE.md
 - docs/
 - src/
 - tests/
@@ -38,8 +36,6 @@ Apply the planned adoption change set so agent execution in this repository is b
 - `deterministic-test`: Run project-approved deterministic tests and return normalized evidence
   - relevance: work_class=ADOPTION
 - `independent-review`: Perform independent review without implementation authority
-  - relevance: work_class=ADOPTION
-- `repository-inspection`: Inspect repository structure and conventions read-only
   - relevance: work_class=ADOPTION
 
 ## Required evidence
@@ -77,7 +73,6 @@ Apply the planned adoption change set so agent execution in this repository is b
 
 ## Selection provenance (summary)
 - budget-profile/default: budget profile selected by task toolkit resolution
-- capability/inspection.read: required by selected task skills
 - capability/repository.read: required by selected task skills
 - capability/repository.write: required by selected task skills
 - capability/validation.review: required by selected task skills
@@ -86,4 +81,5 @@ Apply the planned adoption change set so agent execution in this repository is b
 - convention/test-invocation: convention selected because its subject, pattern shares tokens with the work item scope, title (selection score=0.05)
 - convention/test-runner: convention selected because its subject, evidence shares tokens with the work item objective, title (selection score=0.07)
 - convention/test-runner: convention selected because its subject, evidence shares tokens with the work item objective, title (selection score=0.07)
-- ... and 29 further selection record(s); the ExecutionBundle `provenance` field carries all of them
+- integration/work-tracker: integration preflight health authorized meets required authorized within work item authority
+- ... and 25 further selection record(s); the ExecutionBundle `provenance` field carries all of them

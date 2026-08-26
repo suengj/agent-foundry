@@ -74,6 +74,11 @@ NON_AUTHORITY_TARGETS: frozenset[str] = frozenset(
         "foundry-project-declaration",
         "instruction-surface-mentions",
         "intake-mode",
+        # Wrapping changes how an existing surface is reached, not what the project may
+        # do: the autonomy level and external-effect class are untouched. It still
+        # carries `explicit-authority` as a change, because deciding that agent access
+        # runs through an adapter is an owner's call.
+        "integration-surfaces",
         "package-metadata",
         "runtime-deploy",
         "test-harness",

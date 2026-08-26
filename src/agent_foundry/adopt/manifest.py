@@ -28,6 +28,7 @@ from agent_foundry.models.project import (
     ClassificationFinding,
     ProjectAccess,
     ProjectAssurance,
+    ProjectAuthority,
     ProjectExecution,
     ProjectImpact,
     ProjectInfo,
@@ -177,6 +178,27 @@ def _manifest_list(
     return values
 
 
+def _manifest_string_list(
+    grouped: dict[str, list[ClassificationFinding]],
+    dimension: str,
+) -> list[str]:
+    """Promote a declared list of free-form strings.
+
+    Repository paths are not a vocabulary, so there is no member to reject — only a
+    declaration to honour or an absence to report. Containment and traversal are
+    checked where the paths are used to grant authority, not here: this layer records
+    what the owner wrote.
+    """
+    finding = _best_finding(grouped.get(dimension, []))
+    if finding is None or finding.value is None:
+        return []
+    if not _eligible_for_manifest(finding):
+        return []
+    if finding.value == "":
+        return []
+    return [item for item in finding.value.split(DECLARED_LIST_SEPARATOR) if item]
+
+
 def _manifest_name(grouped: dict[str, list[ClassificationFinding]]) -> str | None:
     """Promote the declared project name.
 
@@ -285,6 +307,9 @@ def synthesize_manifest(intake: ProjectIntake) -> ProjectManifest:
             grouped, "assurance.required", AssuranceMode, synthesis_readiness
         )
     )
+    authority = ProjectAuthority(
+        write_scope=_manifest_string_list(grouped, "authority.write_scope")
+    )
 
     readiness_findings = sorted(
         [*intake.readiness_findings, *synthesis_readiness],
@@ -303,6 +328,7 @@ def synthesize_manifest(intake: ProjectIntake) -> ProjectManifest:
         impact=impact,
         execution=execution,
         assurance=assurance,
+        authority=authority,
         access=access,
         observations=_synthesis_observations(intake),
         readiness_findings=readiness_findings,

@@ -45,6 +45,24 @@ changes:
     writes repository files and needs bounded write policy
   status: proposed
   target: test-harness
+- action: WRAP
+  authority_requirement: explicit-authority
+  evidence:
+    evidence_refs:
+    - env.example
+    provenance:
+      confidence: null
+      kind: observed
+      source_ref: env.example
+    summary: Retain existing integration and credential surfaces behind a declared
+      Foundry integration adapter
+    verbatim: null
+  priority: 4
+  rationale: No IntegrationSpec declares how agents reach these surfaces, so credential
+    coordinates and required health are unstated; wrapping changes the access path,
+    not the surface
+  status: proposed
+  target: integration-surfaces
 - action: KEEP
   authority_requirement: none
   evidence:

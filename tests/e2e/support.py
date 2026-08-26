@@ -1,8 +1,9 @@
 """Shared inputs for the end-to-end tests.
 
-Nothing here is a Foundry rule. It is the project-shaped configuration a consumer
-supplies — the registry override and the declared integration — plus the tree
-digest the read-only tests compare against.
+Nothing here is a Foundry rule, and nothing here supplies project shape the product
+cannot derive: both target projects declare their own `authority.write_scope`, so the
+harness runs against the builtin registry. What remains is the owner-declared
+integration a runtime would be given, and helpers the tests share.
 """
 
 from __future__ import annotations
@@ -18,52 +19,17 @@ from agent_foundry.models import (
 )
 from agent_foundry.models.base import FOUNDRY_SCHEMA_VERSION
 
-from tests.e2e.pipeline import FINISHED_AT, registry_with_builder_write_scope
+from tests.e2e.pipeline import FINISHED_AT
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "projects"
 SYNTHETIC = FIXTURES / "e2e-synthetic"
-
-# The synthetic project's own shape. The builtin `builder` role declares
-# `write_scope=["src/", "tests/"]`; adoption work touches instruction surfaces and
-# build files, so a project-appropriate registry is supplied the way a consumer would.
-SYNTHETIC_WRITE_SCOPE = [
-    ".foundry/",
-    ".github/",
-    "AGENTS.md",
-    "CLAUDE.md",
-    "Makefile",
-    "docs/",
-    "src/",
-    "tests/",
-]
-
-# This repository's own shape, for the brownfield run against itself.
-SELF_WRITE_SCOPE = [
-    ".foundry/",
-    ".github/",
-    "AGENTS.md",
-    "CHANGELOG.md",
-    "README.md",
-    "docs/",
-    "pyproject.toml",
-    "src/",
-    "tests/",
-]
 
 TRACKER_INTEGRATION_ID = "work-tracker"
 # The credential is a *position*, never a value: `env:ORDERS_TRACKER_TOKEN` names
 # where a secret lives. `tests/test_secret_boundary.py` owns the general proof; the
 # end-to-end tests check that this holds through a full compile and render.
 TRACKER_CREDENTIAL_REF = "env:ORDERS_TRACKER_TOKEN"
-
-
-def synthetic_registry():
-    return registry_with_builder_write_scope(SYNTHETIC_WRITE_SCOPE)
-
-
-def self_registry():
-    return registry_with_builder_write_scope(SELF_WRITE_SCOPE)
 
 
 def tracker_integration() -> IntegrationSpec:
@@ -90,6 +56,39 @@ def tracker_health(
         state=state,
         checked_at=FINISHED_AT,
     )
+
+
+def registry_granting_write_to(role_id: str):
+    """The builtin registry with an extra role allowed to write the repository.
+
+    A project supplies its own `CapabilityRegistry`, and a project can get it wrong.
+    This models the specific mistake role separation exists to catch: two roles
+    authorized to write the same paths in one run, one of them a review-only role.
+    """
+    from agent_foundry.toolkit import default_registry
+
+    builtin = default_registry()
+    roles = [
+        role.model_copy(
+            update={
+                "allowed_capabilities": sorted(
+                    {*role.allowed_capabilities, "repository.read", "repository.write"}
+                )
+            }
+        )
+        if role.id == role_id
+        else role
+        for role in builtin.roles
+    ]
+    skills = [
+        skill.model_copy(
+            update={"roles": skill.roles.model_copy(update={"allowed": sorted({*skill.roles.allowed, role_id})})}
+        )
+        if skill.id == "bounded-change"
+        else skill
+        for skill in builtin.skills
+    ]
+    return builtin.model_copy(update={"roles": roles, "skills": skills})
 
 
 def tree_snapshot(root: Path) -> dict[str, tuple[str, int, int]]:
