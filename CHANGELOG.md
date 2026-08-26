@@ -6,6 +6,10 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 
 ## [Unreleased]
 
+### Changed
+
+- `agent-foundry doctor` separates a package self-check from a target-project check. The project check resolves artifacts by discovering a project root upward from the working directory (or from an explicit `agent-foundry doctor PROJECT_PATH`), never from the installed package's own location. Exit codes distinguish the two: `1` when the installation itself is broken, `2` when a named project is missing expected artifacts, `0` when no project is in scope.
+
 ### Added
 
 - Work Item compiler (`agent_foundry.compile`) producing minimum Task Toolkit, role-specific `ExecutionBundle`, and provenance-bearing selections with authority intersection.
