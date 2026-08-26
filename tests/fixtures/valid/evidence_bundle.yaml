@@ -1,0 +1,7 @@
+schema_version: "0.1"
+work_item_id: WI-001
+run_id: RUN-001
+items:
+  - kind: test-report
+    ref: tests/output/pytest.log
+    description: Full pytest run

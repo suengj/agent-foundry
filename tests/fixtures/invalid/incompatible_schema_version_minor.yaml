@@ -1,0 +1,19 @@
+schema_version: "0.2"
+id: WI-005
+title: Newer minor
+work_class: CAPABILITY
+objective: Test
+current_facts:
+  - fact
+scope:
+  - scope
+out_of_scope:
+  - out
+acceptance_criteria:
+  - criteria
+authority_class: repository-write
+consequence_class: medium
+required_evidence:
+  - evidence
+stop_conditions:
+  - stop

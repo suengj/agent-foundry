@@ -1,0 +1,7 @@
+schema_version: "0.1"
+id: skill-bounded-change
+version: "1.0.0"
+description: Make bounded code changes with tests
+required_capabilities:
+  - cap-repo-read
+  - cap-test-run

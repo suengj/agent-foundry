@@ -1,0 +1,7 @@
+schema_version: "0.1"
+id: wf-builder-reviewer
+version: "1.0.0"
+description: Builder then independent reviewer
+node_ids:
+  - builder
+  - reviewer

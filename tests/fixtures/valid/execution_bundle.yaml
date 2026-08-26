@@ -1,0 +1,18 @@
+schema_version: "0.1"
+work_item_id: WI-001
+run_id: RUN-001
+role_id: builder
+objective: Implement typed contracts
+scope:
+  - models package
+out_of_scope:
+  - CLI changes
+acceptance_criteria:
+  - pytest green
+allowed_capabilities:
+  - cap-repo-read
+write_scope:
+  - src/agent_foundry/models
+required_evidence:
+  - pytest
+integration_ids: []

@@ -1,0 +1,20 @@
+schema_version: "0.1"
+id: WI-001
+title: Test
+work_class: CAPABILITY
+objective: Test objective
+current_facts:
+  - fact
+scope:
+  - scope
+out_of_scope:
+  - out
+acceptance_criteria:
+  - criteria
+authority_class: repository-write
+consequence_class: medium
+required_evidence:
+  - evidence
+stop_conditions:
+  - stop
+unexpected_field: true

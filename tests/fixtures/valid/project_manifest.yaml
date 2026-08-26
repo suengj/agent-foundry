@@ -1,0 +1,41 @@
+schema_version: "0.1"
+project:
+  name: sample-service
+  intake_mode: brownfield
+  work_modes:
+    primary: build
+    secondary:
+      - operate
+state:
+  persistence: external-shared
+  temporal_mode: long-running
+impact:
+  external_effect: runtime-mutation
+  reversibility: rollback-required
+  consequence: high
+execution:
+  autonomy: bounded-external-write
+  ambiguity: bounded-judgment
+  concurrency: single-writer
+assurance:
+  required:
+    - deterministic-tests
+    - independent-review
+    - runtime-readback
+access:
+  sensitivity: internal
+observations:
+  - subject: test-harness
+    content: pytest entrypoint present
+    provenance:
+      kind: observed
+      confidence: 0.9
+      source_ref: tests/test_smoke.py
+readiness_findings:
+  - dimension: testability
+    severity: medium
+    message: Deterministic checks available
+    blocker: false
+    provenance:
+      kind: inferred
+      confidence: 0.75

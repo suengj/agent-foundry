@@ -1,0 +1,28 @@
+schema_version: "0.1"
+project:
+  name: sample-service
+  intake_mode: brownfield
+  work_modes:
+    primary: build
+state:
+  persistence: external-shared
+  temporal_mode: long-running
+impact:
+  external_effect: runtime-mutation
+  reversibility: rollback-required
+  consequence: high
+execution:
+  autonomy: bounded-external-write
+  ambiguity: bounded-judgment
+  concurrency: single-writer
+assurance:
+  required:
+    - deterministic-tests
+access:
+  sensitivity: internal
+readiness_findings:
+  - dimension: testability
+    severity: unknown-severity
+    message: Invalid severity value
+    provenance:
+      kind: observed
