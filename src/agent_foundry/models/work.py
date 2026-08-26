@@ -52,7 +52,7 @@ class WorkPackage(FoundryModel):
     outcome_id: str
     title: str
     description: str
-    work_item_ids: list[str] = Field(default_factory=list)
+    work_item_ids: tuple[str, ...] = Field(default_factory=tuple)
 
 
 class WorkItemContract(VersionedContract):
@@ -62,18 +62,18 @@ class WorkItemContract(VersionedContract):
     title: str
     work_class: WorkClass
     objective: str
-    current_facts: list[str]
-    scope: list[str]
-    out_of_scope: list[str]
-    acceptance_criteria: list[str]
-    dependencies: list[DependencySpec] = Field(default_factory=list)
+    current_facts: tuple[str, ...]
+    scope: tuple[str, ...]
+    out_of_scope: tuple[str, ...]
+    acceptance_criteria: tuple[str, ...]
+    dependencies: tuple[DependencySpec, ...] = Field(default_factory=tuple)
     authority_class: ExternalEffectClass
     consequence_class: ConsequenceClass
-    required_evidence: list[str]
-    stop_conditions: list[str]
-    escalation_conditions: list[str] = Field(default_factory=list)
+    required_evidence: tuple[str, ...]
+    stop_conditions: tuple[str, ...]
+    escalation_conditions: tuple[str, ...] = Field(default_factory=tuple)
     runtime_external_validation_requirement: str | None = None
-    implementation_references: list[str] = Field(default_factory=list)
+    implementation_references: tuple[str, ...] = Field(default_factory=tuple)
     rollback_boundary_id: str | None = None
     write_scope_id: str | None = None
 
@@ -117,18 +117,21 @@ class EvidenceStateSnapshot(FoundryModel):
 
     work_item_id: str
     run_id: str | None = None
-    evidence_states: list[EvidenceState] = Field(default_factory=list)
+    evidence_states: tuple[EvidenceState, ...] = Field(default_factory=tuple)
 
 
 class WorkItemExecutionContext(FoundryModel):
     """Work Item contract with attachable execution runs.
 
-    The contract object is not replaced when runs are attached, but list fields
-    remain ordinarily mutable in Python unless callers treat them as read-only.
+    Attaching a run returns a new context and never edits the contract. The
+    contract is authority-bearing — `scope` bounds what a compiled bundle may
+    write — so its sequence fields are tuples: `frozen=True` alone stops
+    rebinding an attribute but leaves a `list` field open to in-place edit, and
+    a scope widened that way would be invisible to every later authority check.
     """
 
     contract: WorkItemContract
-    runs: list[ExecutionRunRef] = Field(default_factory=list)
+    runs: tuple[ExecutionRunRef, ...] = Field(default_factory=tuple)
 
 
 class AdoptionGap(FoundryModel):
@@ -160,21 +163,21 @@ class CapabilityUnit(FoundryModel):
     write_scope_id: str
     discovery_only: bool = False
     mutates_external: bool = False
-    scope: list[str] = Field(default_factory=list)
-    out_of_scope: list[str] = Field(default_factory=list)
-    acceptance_criteria: list[str] = Field(default_factory=list)
-    required_evidence: list[str] = Field(default_factory=list)
-    stop_conditions: list[str] = Field(default_factory=list)
-    escalation_conditions: list[str] = Field(default_factory=list)
-    depends_on: list[str] = Field(default_factory=list)
-    mechanical_steps: list[str] = Field(default_factory=list)
-    current_facts: list[str] = Field(default_factory=list)
+    scope: tuple[str, ...] = Field(default_factory=tuple)
+    out_of_scope: tuple[str, ...] = Field(default_factory=tuple)
+    acceptance_criteria: tuple[str, ...] = Field(default_factory=tuple)
+    required_evidence: tuple[str, ...] = Field(default_factory=tuple)
+    stop_conditions: tuple[str, ...] = Field(default_factory=tuple)
+    escalation_conditions: tuple[str, ...] = Field(default_factory=tuple)
+    depends_on: tuple[str, ...] = Field(default_factory=tuple)
+    mechanical_steps: tuple[str, ...] = Field(default_factory=tuple)
+    current_facts: tuple[str, ...] = Field(default_factory=tuple)
 
 
 class DecompositionQualityFlag(StrEnum):
     """Quality warnings detected during decomposition."""
 
-    MEGA_ITEM = "mega-item"
+    CROSS_OUTCOME_IDENTITY_COLLISION = "cross-outcome-identity-collision"
     FILE_SHAPED_DECOMPOSITION = "file-shaped-decomposition"
     ROLE_SHAPED_DECOMPOSITION = "role-shaped-decomposition"
     MIXED_DISCOVERY_AND_MUTATION = "mixed-discovery-and-mutation"
@@ -188,26 +191,26 @@ class DecompositionQualityIssue(FoundryModel):
     flag: DecompositionQualityFlag
     work_item_id: str | None = None
     message: str
-    related_ids: list[str] = Field(default_factory=list)
+    related_ids: tuple[str, ...] = Field(default_factory=tuple)
 
 
 class WorkPlan(VersionedContract):
     """Full tracker-neutral work hierarchy produced by decomposition."""
 
     objective: WorkObjective
-    outcomes: list[OutcomeCapability] = Field(default_factory=list)
-    packages: list[WorkPackage] = Field(default_factory=list)
-    work_items: list[WorkItemContract] = Field(default_factory=list)
-    quality_issues: list[DecompositionQualityIssue] = Field(default_factory=list)
+    outcomes: tuple[OutcomeCapability, ...] = Field(default_factory=tuple)
+    packages: tuple[WorkPackage, ...] = Field(default_factory=tuple)
+    work_items: tuple[WorkItemContract, ...] = Field(default_factory=tuple)
+    quality_issues: tuple[DecompositionQualityIssue, ...] = Field(default_factory=tuple)
 
 
 class DecompositionInput(FoundryModel):
     """Structured input for the decomposition engine."""
 
     objective: WorkObjective
-    outcomes: list[OutcomeCapability]
-    capability_units: list[CapabilityUnit] = Field(default_factory=list)
-    adoption_gaps: list[AdoptionGap] = Field(default_factory=list)
+    outcomes: tuple[OutcomeCapability, ...]
+    capability_units: tuple[CapabilityUnit, ...] = Field(default_factory=tuple)
+    adoption_gaps: tuple[AdoptionGap, ...] = Field(default_factory=tuple)
 
 
 def default_schema_version() -> str:

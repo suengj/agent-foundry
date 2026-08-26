@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections import defaultdict
 
 from agent_foundry.models.base import WorkDecompositionError
-from agent_foundry.models.common import DependencyRelation, Reversibility
+from agent_foundry.models.common import (
+    DependencyRelation,
+    ExternalEffectClass,
+    Reversibility,
+)
 from agent_foundry.models.work import (
     AdoptionGap,
     CapabilityUnit,
@@ -37,6 +41,13 @@ from agent_foundry.work.validate import validate_dependency_graph
 
 
 def _assert_unique_work_item_ids(work_items: list[WorkItemContract]) -> None:
+    """Post-condition, deliberately kept even though grouping cannot violate it.
+
+    One work item per group key makes a duplicate id unreachable today. It stays
+    because the id is a truncated digest of that key: a future key change, or a
+    shorter digest, would collide silently and merge two causally distinct items
+    under one contract. This turns that into a named failure at the seam.
+    """
     ids = [item.id for item in work_items]
     if len(set(ids)) != len(ids):
         duplicates = sorted({item_id for item_id in ids if ids.count(item_id) > 1})
@@ -49,6 +60,7 @@ def _validate_declared_outcomes(
     outcomes: list[OutcomeCapability],
     units: list[CapabilityUnit],
 ) -> None:
+    """Reject units pointing at an outcome nobody declared. Sole check site."""
     declared_ids = {outcome.id for outcome in outcomes}
     orphan_outcomes = sorted(
         {unit.outcome_id for unit in units if unit.outcome_id not in declared_ids}
@@ -58,6 +70,64 @@ def _validate_declared_outcomes(
             "capability units reference undeclared outcomes: "
             + ", ".join(orphan_outcomes)
         )
+
+
+# What "runtime/external validation" means depends entirely on what the item is
+# authorized to touch. Keyed on authority class so a new ExternalEffectClass member
+# is a named test failure, not a silently wrong sentence on every work item.
+_EXTERNAL_VALIDATION_BY_AUTHORITY: dict[ExternalEffectClass, str | None] = {
+    ExternalEffectClass.READ_ONLY: None,
+    ExternalEffectClass.REPOSITORY_WRITE: (
+        "re-read the changed repository files from the working tree after the change"
+    ),
+    ExternalEffectClass.SHARED_SERVICE_WRITE: (
+        "read the written state back from the shared service after apply"
+    ),
+    ExternalEffectClass.DATA_MUTATION: (
+        "read the mutated records back from the system of record after apply"
+    ),
+    ExternalEffectClass.RUNTIME_MUTATION: (
+        "read the runtime state back from the running system after apply"
+    ),
+    ExternalEffectClass.PUBLICATION: (
+        "fetch the published artifact back from its published location after apply"
+    ),
+}
+
+
+def unmapped_external_effect_classes() -> list[str]:
+    """ExternalEffectClass members with no external-validation clause, by value."""
+    return sorted(
+        effect.value
+        for effect in ExternalEffectClass
+        if effect not in _EXTERNAL_VALIDATION_BY_AUTHORITY
+    )
+
+
+def external_validation_requirement(
+    authority_class: ExternalEffectClass,
+    required_evidence: list[str],
+) -> str | None:
+    """Runtime/external validation this item actually needs, or None if it needs none.
+
+    A READ_ONLY item mutates nothing outside the run, so there is no external
+    state to read back and the field stays unset rather than carrying a sentence
+    that is true of every work item and therefore informative about none.
+    """
+    try:
+        clause = _EXTERNAL_VALIDATION_BY_AUTHORITY[authority_class]
+    except KeyError:
+        raise WorkDecompositionError(
+            "no external validation requirement is defined for authority class "
+            f"{authority_class.value!r}; add it to _EXTERNAL_VALIDATION_BY_AUTHORITY "
+            "in agent_foundry.work.decompose"
+        ) from None
+    if clause is None:
+        return None
+    evidence = sorted(set(required_evidence))
+    if not evidence:
+        return clause
+    return f"{clause}; evidence required before closure: {', '.join(evidence)}"
 
 
 def _merge_units(
@@ -132,7 +202,10 @@ def _merge_units(
         escalation_conditions=sorted(set(escalation_conditions)),
         rollback_boundary_id=primary.rollback_boundary_id,
         write_scope_id=primary.write_scope_id,
-        runtime_external_validation_requirement="required evidence must be produced before closure",
+        runtime_external_validation_requirement=external_validation_requirement(
+            primary.authority_class,
+            evidence,
+        ),
         implementation_references=sorted(set(mechanical)),
     )
 
@@ -176,16 +249,6 @@ def _packages_for_outcomes(
     work_items: list[WorkItemContract],
     unit_id_to_work_item: dict[str, str],
 ) -> list[WorkPackage]:
-    declared_ids = {outcome.id for outcome in outcomes}
-    orphan_outcomes = sorted(
-        {unit.outcome_id for unit in units if unit.outcome_id not in declared_ids}
-    )
-    if orphan_outcomes:
-        raise WorkDecompositionError(
-            "capability units reference undeclared outcomes: "
-            + ", ".join(orphan_outcomes)
-        )
-
     items_by_outcome: dict[str, set[str]] = defaultdict(set)
     for unit in sorted(units, key=lambda u: u.id):
         items_by_outcome[unit.outcome_id].add(unit_id_to_work_item[unit.id])
@@ -208,6 +271,11 @@ def _packages_for_outcomes(
             )
         )
 
+    # Post-condition, deliberately kept even though it cannot fail today: every
+    # unit carries a declared outcome_id and every unit maps to a work item, so
+    # packaging is total. It stays because a work item that reaches an executor
+    # without a package has no outcome to be closed against, and that is worth a
+    # named failure at the seam rather than a silent orphan downstream.
     packaged_ids = {item_id for package in packages for item_id in package.work_item_ids}
     work_item_ids = {item.id for item in work_items}
     unpackaged = sorted(work_item_ids - packaged_ids)
@@ -300,12 +368,22 @@ def attach_execution_run(
     *,
     run_id: str,
 ) -> WorkItemExecutionContext:
-    """Attach a new execution run; the Work Item contract payload is not modified."""
+    """Append one execution run; the Work Item contract payload is not modified.
+
+    Runs keep attach order, which is the only order this function knows to be
+    true: they are successive attempts against one Work Item. Sorting by id
+    instead ordered them lexically, so `run-9` preceded `run-049` and the run
+    sequence read as a history that never happened. `ExecutionRunRef.id` is an
+    opaque string, so there is no numeric collation to recover.
+    """
+    existing = list(context.runs)
+    if any(run.id == run_id for run in existing):
+        raise WorkDecompositionError(
+            f"execution run {run_id!r} is already attached to work item "
+            f"{context.contract.id}; run ids identify one attempt and cannot repeat"
+        )
     contract = context.contract.model_copy(deep=True)
-    runs = list(context.runs) + [
-        ExecutionRunRef(id=run_id, work_item_id=contract.id)
-    ]
     return WorkItemExecutionContext(
         contract=contract,
-        runs=sorted(runs, key=lambda r: r.id),
+        runs=(*existing, ExecutionRunRef(id=run_id, work_item_id=contract.id)),
     )
