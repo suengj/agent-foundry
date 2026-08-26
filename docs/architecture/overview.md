@@ -1,68 +1,114 @@
-# Architecture overview — Agent Foundry (M0)
+# Architecture overview — Agent Foundry
 
-Frozen product boundary remains owned by SUE-294. The `docs/foundry/` tree now defines the longer-term operating model for downstream implementation; it does not claim those components are already implemented.
+The detailed operating model lives under `docs/foundry/`. This overview summarizes the intended architecture; it does not imply that all downstream components are already implemented.
 
 ## Positioning
 
 ```text
-AI Dev Playbook (knowledge / reusable constitution)
-        ↓ pinned adoption
-Agent Foundry (classification / toolkit / execution compiler)
+Human objective / existing project
         ↓
-Real projects (project-local constitution, context, toolkit, tasks, evidence)
+Agent Foundry
+  inspect / classify / adopt
+  model work
+  resolve toolkit
+  compile execution
+  validate / reconcile
+        ↓
+Existing agent CLIs, tools, trackers, repositories, runtimes and services
 ```
 
-Agent Foundry is **not** a Playbook fork. It operationalizes Playbook principles through schemas, registries, resolution, compilation, validation and provider adapters.
+Agent Foundry is a project-to-agent compiler/control layer, not a replacement for authoritative work trackers, repositories, runtimes, credential providers, or agent execution products.
 
 ## Long-term flow
 
 ```text
-Human Goal
+Project description or existing repository/system
     ↓
-Project Definition + Verified Project Truth
+Project Intake + Verified Project Truth
     ↓
-Domain-neutral Project Classification
+Domain-neutral Classification + Readiness Assessment
     ↓
-Project Manifest
+Project Manifest + optional Adoption Plan
     ↓
-Capability Requirements
+Objective → Outcome → Work Package → Work Item
     ↓
-Project Toolkit Resolution + Pinning
+Project Toolkit Resolution + Version Lock
     ↓
-Project Bootstrap / Work Graph
+Current Work Item + Fresh Tracker / Repository / Runtime Truth
     ↓
-Current Task + Fresh GitHub / Runtime Truth
-    ↓
-Task Toolkit + Dynamic Harness
+Task Toolkit + Dynamic Controls
     ↓
 Provider-neutral Execution Bundle
     ↓
-Agent / Agent Graph
+Agent / Agent Graph through adapters
     ↓
-Validation / Independent Review
+Validation / Independent Review when required
     ↓
-Integration / Apply / Runtime Read-back as applicable
+Integration / Apply / External Read-back as applicable
     ↓
 Evidence Bundle / Execution Receipt
+    ↓
+Reconciliation + Learning
+```
+
+## Project intake
+
+Foundry supports two first-class intake modes.
+
+```text
+Greenfield
+→ bootstrap minimum project contracts and toolkit
+
+Brownfield
+→ inventory existing truth
+→ assess AI-native readiness
+→ preserve valid authority surfaces
+→ consolidate/wrap/harden/migrate gaps
+→ progressive autonomy
+```
+
+Brownfield adoption distinguishes:
+
+```text
+observed behavior
+!= declared intent
+!= inferred intent
+!= normative approved rule
 ```
 
 ## Project classification philosophy
 
-Classification is compositional rather than domain-hardcoded. A project is characterized using operational dimensions such as:
+Classification is compositional rather than domain-hardcoded. Operational dimensions include:
 
-- primary work mode / artifact
+- primary work mode and durable artifact/state
 - state persistence
 - external effect
 - reversibility
 - autonomy
 - consequence severity
-- assurance / verification mode
-- ambiguity / discovery level
+- assurance/verification mode
+- ambiguity/discovery level
 - data/access sensitivity
 - temporal mode
 - collaboration/concurrency
 
-Domain labels remain context tags, but they do not directly grant authority or choose a toolkit.
+Domain labels remain optional context tags. They do not directly grant authority or choose a toolkit.
+
+## Work architecture
+
+Foundry defines a tracker-neutral hierarchy:
+
+```text
+Objective
+→ Outcome / Capability
+→ Work Package
+→ Work Item
+→ Execution Run
+```
+
+Trackers are adapters to this causal work model. Work Item decomposition follows independent acceptance, dependency, authority, rollback, ownership, and retry boundaries rather than arbitrary file/agent splits.
+
+Tracker lifecycle, agent execution state, and evidence state remain separate state machines.
 
 ## Toolkit architecture
 
@@ -73,54 +119,108 @@ Project Manifest
         ↓
 Project Toolkit
         ↓
-Task Contract + current truth
+Work Item + current truth
         ↓
 Task Toolkit
         ↓
 Execution Bundle
 ```
 
-The Capability Registry contains roles, workflows, Skills, tools, connectors, validators, permission profiles, context sources and provider capability profiles. The Project Toolkit is an approved/pinned subset. The Task Toolkit is the minimum subset needed for one execution.
+The Capability Registry can contain roles, workflows, Skills, tools, integrations, validators, permission/budget profiles, context sources, and provider capability profiles.
+
+The Project Toolkit is an approved/pinned subset. The Task Toolkit is the minimum subset needed for one Work Item/run.
+
+## Integration and credential architecture
+
+External tools and services are integration boundaries.
+
+```text
+Task Toolkit / Execution Bundle
+        ↓
+Integration Adapter
+        ↓
+Credential reference / delegated identity
+        ↓
+External system
+```
+
+Foundry configuration declares capability/authority requirements and credential references. Actual secret values belong to external credential providers or the execution environment.
+
+Integration health is distinct from configuration presence:
+
+```text
+DESIRED → INSTALLED → CONFIGURED → AUTHENTICATED → AUTHORIZED → HEALTHY
+```
 
 ## Communication / interaction
 
-Agent communication is a cross-cutting protocol, not another hierarchy layer. Material handoffs should carry typed task identity, verified state, changes/findings, evidence, unresolved risks, requested decisions and provenance. Important state transitions should not depend on free-form `done` messages.
+Agent interaction is a cross-cutting protocol. Material transitions should carry typed:
 
-See `docs/foundry/02-roles-and-interaction.md`.
+- Work Item/run identity
+- role and authority
+- current verified state
+- change/finding summary
+- evidence references
+- unknowns/risks/assumptions
+- requested action or decision
+- revision/runtime provenance
 
-## M0 repository layout
+Important state transitions must not depend on free-form `done` messages.
+
+See `docs/foundry/05-orchestration-and-interaction.md`.
+
+## Trust and controls
+
+The control model separates:
 
 ```text
-src/agent_foundry/     # provider-neutral CLI core (bootstrap only)
-docs/contracts/        # frozen product/authority contracts
-docs/ai/               # constitution + project context
-docs/foundry/          # operating model / future compiler contracts
-tests/                 # smoke + contract freeze validation
+trusted contracts
+trusted fresh state
+untrusted external content
+secret/credential material
+```
+
+Hard rules should use schemas, preflight checks, permission boundaries, sandboxes, and external enforcement when practical. Execution budgets constrain agents/retries/tool use/cost escalation in addition to semantic policy.
+
+## Repository layout
+
+```text
+src/agent_foundry/     # provider-neutral package; currently minimal bootstrap
+
+docs/contracts/        # product/authority contracts
+docs/ai/               # repository-local constitution + project context
+docs/foundry/          # operating model and implementation contracts
+docs/architecture/     # architecture summaries
+tests/                 # smoke / contract validation
 ```
 
 ## Detailed operating model
 
 Start at `docs/foundry/00-overview.md`.
 
-The detailed design is split into:
-
 ```text
-Governance / Harness
-→ Roles / Interaction
-→ Project Classification
-→ Toolkit Composition
-→ Workflow / Compilation
-→ Execution / Evidence / Learning
-→ Implementation Direction
+Governance / Control
+→ Project Intake / Adoption
+→ Work Model / Decomposition
+→ Toolkit / Integrations
+→ Orchestration / Interaction
+→ Verification / Reconciliation / Learning
+→ Implementation Contracts
 ```
 
 ## Design constraints
 
-- Thin task/work-order delta; durable contracts and structured configuration are canonical upstream sources
+- Public, self-contained architecture with no private upstream dependency
+- Thin execution delta; durable structured contracts are canonical
 - No duplicate current-state mirrors
-- External mutation: preview/dry-run → explicit apply
-- Adapters stay at the edges; core stays provider-neutral
+- Causal Work Items rather than file-shaped tasks
+- Greenfield and brownfield both supported
+- External mutation is preview-first unless explicitly authorized otherwise
+- Provider/tool/tracker/runtime integrations stay at the edges
 - Role before provider/model
 - Project Toolkit before Task Toolkit
-- Hard rules should become executable controls where practical
-- Structured config should generate Markdown views rather than create parallel hand-maintained truth
+- Least privilege and least capability
+- Secret references instead of raw credentials
+- Hard rules become executable controls where practical
+- Structured config generates Markdown views rather than parallel hand-maintained truth
+- Schema/toolkit/adapter upgrades are versioned and explicit
