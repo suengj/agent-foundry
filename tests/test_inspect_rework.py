@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from agent_foundry.inspect import inspect_project
+from agent_foundry.inspect.traversal import GIT_METADATA_MAX_BYTES
 from agent_foundry.models import ProvenanceKind, dump_json
 from agent_foundry.models.common import IntakeMode
 
@@ -246,3 +247,21 @@ def test_r10_declared_intake_mode_from_foundry_project_yaml() -> None:
     ]
     assert declared
     assert declared[0].value == IntakeMode.BROWNFIELD.value
+
+
+def test_git_head_ref_with_overlong_name_does_not_raise(tmp_path: Path) -> None:
+    """A repo-controlled ref name can exceed the OS name limit; stat() must not escape."""
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "pyproject.toml").write_text('[project]\nname="x"\nversion="0.1"\n')
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/" + "a" * 1000 + "\n")
+    assert inspect_project(str(repo)).repository_revision is None
+
+
+def test_oversized_git_head_is_not_read_into_memory(tmp_path: Path) -> None:
+    """git metadata is bounded like every other read; a huge HEAD must not be slurped."""
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "pyproject.toml").write_text('[project]\nname="x"\nversion="0.1"\n')
+    (repo / ".git" / "HEAD").write_text("a" * (GIT_METADATA_MAX_BYTES + 1))
+    assert inspect_project(str(repo)).repository_revision is None

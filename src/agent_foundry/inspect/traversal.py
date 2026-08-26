@@ -221,31 +221,52 @@ def read_entry_text(
     return read_text_bounded(resolved, max_bytes=max_bytes)
 
 
+# git metadata files hold a ref name or a 40-char SHA; anything larger is not one.
+GIT_METADATA_MAX_BYTES = 4096
+
+
+def _is_existing_file(path: Path) -> bool:
+    """Probe a path without letting an OS-level error escape.
+
+    The path is built from repo-controlled content, so a hostile or merely broken
+    .git/HEAD can produce a name that stat() rejects outright (ENAMETOOLONG).
+    """
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _read_git_metadata(root: Path, candidate: Path) -> str | None:
+    resolved = _resolve_inside_root(root, candidate)
+    if resolved is None or not _is_existing_file(resolved):
+        return None
+    text = read_text_bounded(resolved, max_bytes=GIT_METADATA_MAX_BYTES)
+    return None if text is None else text.strip()
+
+
 def git_head_revision(root: Path) -> str | None:
     """Return current git HEAD SHA when readable inside *root*; never mutates the repository."""
     root = root.resolve()
     git_resolved = _resolve_inside_root(root, root / ".git")
-    if git_resolved is None or not git_resolved.exists():
-        return None
-    head_resolved = _resolve_inside_root(root, git_resolved / "HEAD")
-    if head_resolved is None or not head_resolved.is_file():
+    if git_resolved is None:
         return None
     try:
-        head_ref = head_resolved.read_text(encoding="utf-8").strip()
+        if not git_resolved.exists():
+            return None
     except OSError:
         return None
+
+    head_ref = _read_git_metadata(root, git_resolved / "HEAD")
+    if head_ref is None:
+        return None
+
     if head_ref.startswith("ref: "):
         ref_name = head_ref[5:].strip()
-        if ".." in Path(ref_name).parts:
+        if not ref_name or ".." in Path(ref_name).parts:
             return None
-        ref_resolved = _resolve_inside_root(root, git_resolved / ref_name)
-        if ref_resolved is None or not ref_resolved.is_file():
-            return None
-        try:
-            value = ref_resolved.read_text(encoding="utf-8").strip()
-        except OSError:
-            return None
-        return value if _is_git_sha(value) else None
+        value = _read_git_metadata(root, git_resolved / ref_name)
+        return value if value is not None and _is_git_sha(value) else None
     return head_ref if _is_git_sha(head_ref) else None
 
 
