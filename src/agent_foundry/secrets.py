@@ -46,12 +46,17 @@ _OPENAI_STYLE_KEY_RE = re.compile(
 )
 
 # Real project/service-account keys are base64url, so the body may contain "-". A hyphenated
-# body cannot be distinguished from a dictionary phrase ("sk-live-feature-toggle-enabled") by
-# shape alone, so a hyphenated body additionally requires a digit and an upper-case character.
-# Prose keeps serializing; a genuine base64url key of 16+ chars effectively always qualifies.
+# body has to be told apart from ordinary vocabulary ("sk-live-Feature-Toggle-2024") by shape
+# alone. Real keys are long with sparse hyphens; dictionary phrases are short with a hyphen
+# every few characters. So a hyphenated body must be 24+ chars, keep hyphens under one in ten,
+# and carry a digit and an upper-case character.
 _OPENAI_HYPHENATED_KEY_RE = re.compile(
     _TOKEN_BOUNDARY + rf"sk-{_OPENAI_KNOWN_LABELS}-([A-Za-z0-9_-]{{16,}})"
 )
+
+
+_HYPHENATED_MIN_BODY = 24
+_HYPHENATED_MAX_HYPHEN_DENSITY = 0.1
 
 
 def _match_openai_style_key(value: str) -> bool:
@@ -59,6 +64,10 @@ def _match_openai_style_key(value: str) -> bool:
         return True
     for match in _OPENAI_HYPHENATED_KEY_RE.finditer(value):
         body = match.group(1)
+        if len(body) < _HYPHENATED_MIN_BODY:
+            continue
+        if body.count("-") / len(body) >= _HYPHENATED_MAX_HYPHEN_DENSITY:
+            continue
         if any(c.isdigit() for c in body) and any(c.isupper() for c in body):
             return True
     return False
@@ -184,7 +193,7 @@ def _is_jwt(value: str) -> bool:
     # misses any issuer that emits typ/kid first. Parse and look the member up instead.
     try:
         header = json.loads(decoded)
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError, TypeError):
         return False
     return isinstance(header, dict) and "alg" in header
 
@@ -289,7 +298,7 @@ def format_json_path(segments: tuple[PathSegment, ...]) -> str:
         if isinstance(segment, KeyPathMarker):
             rendered.append("[key]")
         elif isinstance(segment, bool) or not isinstance(segment, (str, int)):
-            # Defensive: a non-str/int mapping key must never crash the guard.
+            # Defensive: a caller-built segment tuple may still hold an odd type.
             rendered.append(_escape_path_segment(str(segment)))
         elif isinstance(segment, int):
             rendered.append(f"[{segment}]")
@@ -383,6 +392,22 @@ def _is_sequence(value: Any) -> bool:
     return isinstance(value, (list, tuple, set, frozenset))
 
 
+def _coerce_key_segment(key: Any) -> PathSegment:
+    """Render a mapping key as the string the JSON document will actually emit.
+
+    Keeping the raw object would make the reported path disagree with the emitted
+    key, and would leave an int key indistinguishable from a list index.
+    """
+    if isinstance(key, str):
+        return key
+    from agent_foundry.models.io import _json_key
+
+    try:
+        return _json_key(key)
+    except TypeError:
+        return str(key)
+
+
 def _scan_node(value: Any) -> list[SecretFinding]:
     findings: list[SecretFinding] = []
     # Ancestors travel with each stack entry: a container may legitimately appear at several
@@ -401,7 +426,7 @@ def _scan_node(value: Any) -> list[SecretFinding]:
             for key, child in current.items():
                 if isinstance(key, str):
                     findings.extend(_scan_key(_key_path_segments(segments), key))
-                stack.append(((*segments, key), child, ancestors))
+                stack.append(((*segments, _coerce_key_segment(key)), child, ancestors))
             continue
 
         if _is_sequence(current):

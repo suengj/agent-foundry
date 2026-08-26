@@ -19,7 +19,7 @@ from agent_foundry.models import (
     parse_yaml,
     scan_for_embedded_secrets,
 )
-from agent_foundry.secrets import _match_tier_a
+from agent_foundry.secrets import _match_tier_a, parse_allow_path
 
 GITHUB_TOKEN = "ghp_" + "0aZ9bY8cX7dW6eV5fU4gT3hS2iR1jQ"
 
@@ -125,9 +125,10 @@ def test_credential_shaped_ancestor_key_is_not_echoed_in_a_descendant_path() -> 
 @pytest.mark.parametrize(
     "value",
     [
-        "sk-proj-aB3dE-f9hIjKlMnOpqrst",
-        "sk-svcacct-aB-3dEf9hIjKlMnOp",
-        "sk-admin-aB3-dEf9hIjKlMnOpqr",
+        # Realistic shapes: long base64url bodies with sparse hyphens.
+        "sk-proj-aB3dEf9hIjKlMnOpqrStUvWx-YzAbCdEf9hIjKlMnOpQrStUv",
+        "sk-svcacct-aB3dEf9hIjKlMnOpqrStUvWxYz-AbCdEf9hIjKlMn",
+        "sk-admin-aB3dEf9hIjKlMnOpqrStUvWx-YzAbCdEf9h",
         "sk-proj-" + "aB3" * 30,
     ],
 )
@@ -145,6 +146,15 @@ def test_hyphenated_openai_project_key_is_detected(value: str) -> None:
         "sk-proj-feature-toggle",
         "sk-live-feature-toggle-enabled-for-prod",
         "sk-test-rollout-plan-for-next-quarter",
+        # Title-Case vocabulary satisfies "has a digit and an upper-case char".
+        "sk-live-Feature-Toggle-2024",
+        "sk-test-Migration-Plan-V2",
+        "sk-proj-Agent-Foundry-V2-Spec",
+        "sk-live-SUE-318-Serialization",
+        "sk-live-2024-Q3-Release-Notes",
+        "sk-live-Feature-Toggle-2024-Release-Candidate",
+        "refs/heads/sk-live-Feature-Toggle-2024",
+        "the sk-live-Feature-Toggle-2024 flag is on",
     ],
 )
 def test_hyphenated_prose_still_serializes(value: str) -> None:
@@ -182,3 +192,36 @@ def test_non_jwt_three_part_token_is_not_flagged_as_jwt() -> None:
 )
 def test_private_key_armor_variants_are_detected(armor: str) -> None:
     assert _match_tier_a(armor) == "pem-private-key"
+
+
+def test_deeply_nested_jwt_candidate_does_not_raise_recursion_error() -> None:
+    """json.loads raises RecursionError, which is not a ValueError — it must not escape."""
+    encoded = base64.urlsafe_b64encode(b"[" * 2000).rstrip(b"=").decode()
+    payload = {"note": f"{encoded}.aaaa.bbbb"}
+    assert scan_for_embedded_secrets(payload) == []
+    dump_json_raw(payload)
+    dump_yaml_raw(payload)
+
+
+@pytest.mark.parametrize("key", [None, True, False, 1.5, 7])
+def test_non_string_key_diagnostic_path_is_addressable_by_allow_paths(key: object) -> None:
+    """A reported path is only useful if it can actually be pasted back into allow_paths."""
+    payload = {key: {"tok": GITHUB_TOKEN}}
+    findings = scan_for_embedded_secrets(payload)
+    assert findings, f"expected a finding under key {key!r}"
+    reported = findings[0].json_path
+    assert GITHUB_TOKEN not in reported
+
+    # Round-trips structurally, and actually suppresses the finding at that path.
+    assert parse_allow_path(reported) == findings[0].path_segments
+    dump_json_raw(payload, allow_paths=(reported,))
+
+
+def test_int_key_uses_int_repr_not_str() -> None:
+    """int.__repr__ is what json.encoder uses; a subclass may override __str__."""
+
+    class Weird(int):
+        def __str__(self) -> str:
+            return "WEIRD"
+
+    assert dump_json_raw({Weird(5): "a"}).decode().strip() == '{"5":"a"}'

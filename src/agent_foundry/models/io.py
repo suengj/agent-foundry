@@ -44,7 +44,7 @@ def _json_key(key: Any) -> str:
     if key is None:
         return "null"
     if isinstance(key, int):
-        return str(key)
+        return int.__repr__(key)
     if isinstance(key, float):
         if key != key:
             return "NaN"
