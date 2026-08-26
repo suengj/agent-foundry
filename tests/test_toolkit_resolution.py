@@ -1725,3 +1725,149 @@ def test_work_read_is_read_only_and_work_write_is_shared_service_write() -> None
     assert (
         by_id["work.read"].min_external_effect == by_id["runtime.verify"].min_external_effect
     ), "reading an external system is classified the same way regardless of which system"
+
+
+# --- SUE-338 follow-up: absent health evidence is not a health observation ----------------
+
+
+def _integration_no_auth(required: IntegrationHealthState) -> IntegrationSpec:
+    """Integration declaring no auth — the shape that used to self-report as configured."""
+    return IntegrationSpec(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        id="repository",
+        kind=IntegrationKind.INTEGRATION,
+        transport=IntegrationTransport.LOCAL_SERVICE,
+        version="1",
+        capabilities=["repository.read", "repository.write"],
+        permissions=IntegrationPermissions(write_requires=AuthorityRequirement.BOUNDED_POLICY),
+        auth=None,
+        health=IntegrationHealthRequirement(required=required),
+    )
+
+
+def _repository_write_manifest() -> ProjectManifest:
+    return _sample_manifest(
+        impact={
+            "external_effect": "repository-write",
+            "reversibility": "versioned",
+            "consequence": "medium",
+        },
+        assurance={"required": ["deterministic-tests"]},
+    )
+
+
+def _repository_lock(spec: IntegrationSpec) -> ToolkitLock:
+    _, lock = resolve_toolkit(_repository_write_manifest(), integrations=[spec])
+    assert lock.integration_ids == ["repository"]
+    return lock
+
+
+def test_unobserved_integration_without_auth_is_not_reported_configured() -> None:
+    spec = _integration_no_auth(IntegrationHealthState.CONFIGURED)
+    health = check_integrations([spec], required_ids=["repository"], observed_health=[])
+    assert health[0].state != IntegrationHealthState.CONFIGURED
+    assert health[0].state == IntegrationHealthState.DESIRED
+    assert "not observed" in (health[0].message or "")
+
+
+def test_unobserved_integration_without_auth_does_not_reach_task_toolkit() -> None:
+    spec = _integration_no_auth(IntegrationHealthState.CONFIGURED)
+    lock = _repository_lock(spec)
+    work_item = _sample_work_item(authority_class="repository-write")
+    task = resolve_task_toolkit_for_work_item(
+        work_item,
+        lock,
+        integrations=[spec],
+        integration_health=[],
+    )
+    assert task.integration_ids == []
+    exclude = [
+        decision
+        for decision in task.decisions
+        if decision.action == ResolutionAction.EXCLUDE
+        and decision.component_kind == "integration"
+        and decision.component_id == "repository"
+    ]
+    assert exclude and "desired" in exclude[0].rationale
+
+
+def test_auth_shape_does_not_decide_unobserved_health_state() -> None:
+    """The declaration shape says nothing about the world; only the diagnostic differs."""
+    without_auth = _integration_no_auth(IntegrationHealthState.CONFIGURED)
+    with_auth = _integration_work_tracker()
+
+    no_auth_health = check_integrations(
+        [without_auth], required_ids=["repository"], observed_health=[]
+    )[0]
+    auth_health = check_integrations(
+        [with_auth], required_ids=["work-tracker"], observed_health=[]
+    )[0]
+
+    assert no_auth_health.state == auth_health.state == IntegrationHealthState.DESIRED
+    assert no_auth_health.message != auth_health.message
+
+
+def test_declared_no_health_bar_is_distinct_from_unobserved_health() -> None:
+    """Absent evidence and a declared "no verification needed" are different states.
+
+    Same absent evidence on the observation side; the outcome is decided by what the
+    IntegrationSpec actually declared, never by what was left unsaid.
+    """
+    work_item = _sample_work_item(authority_class="repository-write")
+
+    bar_declared = _integration_no_auth(IntegrationHealthState.CONFIGURED)
+    unobserved = resolve_task_toolkit_for_work_item(
+        work_item,
+        _repository_lock(bar_declared),
+        integrations=[bar_declared],
+        integration_health=[],
+    )
+    assert unobserved.integration_ids == [], "unobserved health must not clear a declared bar"
+
+    no_bar = _integration_no_auth(IntegrationHealthState.DESIRED)
+    waived = resolve_task_toolkit_for_work_item(
+        work_item,
+        _repository_lock(no_bar),
+        integrations=[no_bar],
+        integration_health=[],
+    )
+    assert waived.integration_ids == ["repository"], (
+        "health.required=desired is the explicit declared way to waive verification"
+    )
+
+    observed = resolve_task_toolkit_for_work_item(
+        work_item,
+        _repository_lock(bar_declared),
+        integrations=[bar_declared],
+        integration_health=[
+            IntegrationHealth(
+                integration_id="repository",
+                state=IntegrationHealthState.CONFIGURED,
+            )
+        ],
+    )
+    assert observed.integration_ids == ["repository"], "a real observation clears the bar"
+
+
+def test_project_lock_pins_declared_integration_independently_of_volatile_health() -> None:
+    """The lock is the approved universe and must stay reproducible.
+
+    Health is volatile, so gating the lock on it would make one manifest resolve
+    differently run to run. Subtraction of unusable integrations happens at task time
+    (docs/foundry/04 §4), which is what the preceding tests pin down.
+    """
+    spec = _integration_no_auth(IntegrationHealthState.CONFIGURED)
+    manifest = _repository_write_manifest()
+    _, unobserved_lock = resolve_toolkit(manifest, integrations=[spec])
+    _, observed_lock = resolve_toolkit(
+        manifest,
+        integrations=[spec],
+        integration_health=[
+            IntegrationHealth(
+                integration_id="repository",
+                state=IntegrationHealthState.HEALTHY,
+            )
+        ],
+    )
+    assert unobserved_lock.integration_ids == observed_lock.integration_ids == ["repository"]
+    assert dump_json(unobserved_lock) == dump_json(observed_lock)

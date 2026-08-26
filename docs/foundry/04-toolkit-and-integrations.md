@@ -297,6 +297,23 @@ A Task Toolkit requiring `work.write` must fail preflight if the required integr
 
 Health classification and external-effect classification are different axes and must not be conflated. `health.required` says how live and authorized an integration must be; a capability's `min_external_effect` says what class of state exercising it can change. Reading a work tracker is `read-only` on the effect axis even though it needs an authenticated integration on the health axis.
 
+### Observed state versus declared bar
+
+Two states that look alike must stay separable, because only one of them is evidence:
+
+| Situation | Reported state | Reaches the Task Toolkit? |
+|---|---|---|
+| Integration id not declared anywhere | `unavailable` | no |
+| Declared, health never observed | `desired` | only where the spec declared `required: desired` |
+| Observed at or above the declared bar | the observed state | yes |
+| Observed below the declared bar, or `unavailable` | the observed state | no |
+
+**A declaration cannot supply a lifecycle state it never established.** Nothing about the shape of an `IntegrationSpec` — including a `null` `auth` block — reports on the world. "This integration needs no credentials" and "this integration was checked and is configured" are different claims, and only the second is a health observation. An unobserved integration is therefore `desired` whether or not it declares `auth`; the auth shape changes only the diagnostic message.
+
+**Waiving verification is a declaration, not an inference.** `health: {required: desired}` is the one supported way to say "this integration needs no health verification". It is a decision someone recorded in `.foundry/integrations.yaml` and is visible in the resolution decisions, which is categorically different from a bar that went unchecked because nobody supplied evidence. Everything above `desired` requires an actual observation.
+
+**The Project Toolkit lock does not gate on health.** The lock is the approved, version-pinned universe and must resolve identically from the same manifest on every run; health is volatile, so folding it into the lock would break reproducibility. Subtraction of unusable integrations happens at Task Toolkit resolution (§4), where volatility is correct.
+
 ## 13. Configuration split
 
 Recommended project-side separation:
