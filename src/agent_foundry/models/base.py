@@ -47,6 +47,21 @@ class EmbeddedSecretError(FoundryModelError):
         )
 
 
+class WorkDecompositionError(FoundryModelError):
+    """Base error for work decomposition failures."""
+
+
+class DependencyGraphError(WorkDecompositionError):
+    """Raised when the work-item dependency graph is invalid."""
+
+    def __init__(self, message: str, *, node_ids: list[str] | None = None) -> None:
+        self.node_ids = sorted(node_ids or [])
+        detail = message
+        if self.node_ids:
+            detail = f"{message}: {', '.join(self.node_ids)}"
+        super().__init__(detail)
+
+
 def parse_schema_version(version: str) -> tuple[int, int]:
     parts = version.split(".")
     if len(parts) != 2:

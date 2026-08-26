@@ -2,6 +2,7 @@
 
 from agent_foundry.models.base import (
     FOUNDRY_SCHEMA_VERSION,
+    DependencyGraphError,
     FreeFormMapping,
     FoundryModel,
     FoundryModelError,
@@ -9,6 +10,7 @@ from agent_foundry.models.base import (
     RawSecretError,
     SchemaCompatibilityError,
     VersionedContract,
+    WorkDecompositionError,
     lint_no_raw_secrets,
     parse_schema_version,
     serialize_datetime_utc,
@@ -122,13 +124,6 @@ from agent_foundry.models.work import (
     WorkspaceLeaseRef,
     WriteLeaseRef,
 )
-from agent_foundry.work import (
-    DependencyGraphError,
-    WorkDecompositionError,
-    attach_execution_run,
-    decompose_work,
-    validate_dependency_graph,
-)
 
 __all__ = [
     "FOUNDRY_SCHEMA_VERSION",
@@ -227,8 +222,6 @@ __all__ = [
     "WorkflowSpec",
     "WorkspaceLeaseRef",
     "WriteLeaseRef",
-    "attach_execution_run",
-    "decompose_work",
     "dump_json",
     "dump_json_raw",
     "dump_yaml",
@@ -241,6 +234,5 @@ __all__ = [
     "parse_yaml",
     "scan_for_embedded_secrets",
     "serialize_datetime_utc",
-    "validate_dependency_graph",
     "validate_schema_compatibility",
 ]

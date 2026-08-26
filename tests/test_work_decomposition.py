@@ -31,8 +31,8 @@ from agent_foundry.models.work import (
     WorkObjective,
     OutcomeCapability,
 )
+from agent_foundry.models import DependencyGraphError
 from agent_foundry.work import attach_execution_run, decompose_work, validate_dependency_graph
-from agent_foundry.work.errors import DependencyGraphError
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

@@ -6,7 +6,7 @@ from collections import defaultdict
 
 from agent_foundry.models.common import DependencyRelation
 from agent_foundry.models.work import WorkItemContract
-from agent_foundry.work.errors import DependencyGraphError
+from agent_foundry.models.base import DependencyGraphError
 
 _EDGE_RELATIONS = frozenset(
     {
