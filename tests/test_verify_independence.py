@@ -19,6 +19,14 @@ Three things have to stay true for the AF7 validators to be worth anything:
    protected the day it is written.
 3. Every validator must publish what it proves and what it cannot, and those claims
    must stay in one-to-one correspondence with the code.
+
+The scan here is syntactic, and syntactic scanning can never be complete: a call
+assembled at runtime through `getattr` or `__import__` is invisible to it. That is
+not a gap to be closed by enumerating dynamic spellings — it is a losing arms race.
+`tests/test_verify_producer_tripwire.py` answers it behaviorally instead, by wrapping
+the producer rules and observing whether a validator actually calls one. This file
+stays because it is fast and catches the ordinary static regression; the two guards
+together are the same two-derivations principle the rest of AF7 rests on.
 """
 
 from __future__ import annotations

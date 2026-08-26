@@ -251,6 +251,13 @@ EVIDENCE_STATE_PROGRESSION: tuple[EvidenceState, ...] = (
 on it, and giving it a position would let "exempt" out-rank "proven".
 """
 
+EXEMPTION_MARKER = "NOT_REQUIRED"
+"""The one evidence-state name that is a marker rather than a rung.
+
+Spelled once here so both halves of the partition check agree on what it means, and
+so neither half has to special-case it from memory.
+"""
+
 
 # --- rules re-derived from the durable contract, not from the producer ---------
 #
@@ -331,6 +338,17 @@ def finding_obligation_violations(finding: dict[str, object], *, label: str) -> 
     ]
 
 
+def unrecognised_members(values: list[str], vocabulary: set[str]) -> list[str]:
+    """Values that name nothing in the vocabulary they are drawn from.
+
+    One helper, applied to *every* list in a sibling pair, because checking one list
+    and not the other is how an unrecognised value reads as safe. A caller that
+    validates `attained` must validate `not_required` with the same call; a test
+    enumerates the pairs so a new one cannot be added half-checked.
+    """
+    return sorted(set(values) - vocabulary)
+
+
 def evidence_state_partition_conflicts(
     *,
     attained: list[str],
@@ -346,6 +364,14 @@ def evidence_state_partition_conflicts(
 
     docs/foundry/06 §4: a Work Item declares which states are required and which are
     NOT_REQUIRED. The two answers are exclusive, so the lists must be disjoint.
+
+    **Both lists are checked against the vocabulary, and an unrecognised value in
+    either is a violation rather than an omission.** An exemption is a positive claim
+    that some obligation does not apply; a value naming no evidence state identifies
+    nothing that could be exempt, so the record is not incomplete — an empty list
+    would be that — it is wrong. Checking `attained` and letting `not_required`
+    through unexamined is exactly how "unknown reads as safe" gets shipped, and this
+    project has now done that five times.
     """
     ladder = {state.value for state in EVIDENCE_STATE_PROGRESSION}
     violations: list[str] = []
@@ -356,14 +382,27 @@ def evidence_state_partition_conflicts(
             f"evidence states {overlap} are declared both attained and not-required"
         )
 
-    off_ladder = sorted(set(attained) - ladder)
-    for state in off_ladder:
-        if state == "NOT_REQUIRED":
-            violations.append("NOT_REQUIRED is an exemption, not an attained evidence state")
+    for state in unrecognised_members(attained, ladder):
+        if state == EXEMPTION_MARKER:
+            violations.append(
+                f"{EXEMPTION_MARKER} is an exemption, not an attained evidence state"
+            )
         else:
             violations.append(
                 f"{state!r} is not a position on the evidence progression and cannot "
                 "have been attained"
+            )
+
+    for state in unrecognised_members(not_required, ladder):
+        if state == EXEMPTION_MARKER:
+            violations.append(
+                f"{EXEMPTION_MARKER} is the exemption marker itself and names no "
+                "evidence state that could be exempt"
+            )
+        else:
+            violations.append(
+                f"{state!r} is not an evidence state and cannot be declared "
+                "not-required; an exemption must name the obligation it lifts"
             )
 
     return violations

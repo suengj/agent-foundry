@@ -68,6 +68,7 @@ from agent_foundry.verify.independent import (
     parse_major_minor,
     parse_release_version,
     path_within,
+    unrecognised_members,
 )
 
 # Relations that mean "the target must be closed first". Restated from
@@ -557,20 +558,28 @@ def validate_toolkit_coherence(
                     )
                 )
 
-    registry_membership: list[tuple[str, list[str], set[str]]] = [
-        ("capability", task_toolkit.capability_ids, capabilities),
-        ("skill", task_toolkit.skill_ids, set(skills_by_id)),
-        ("role", task_toolkit.role_ids, roles),
-        ("validator", task_toolkit.validator_ids, validators),
+    # Both toolkits are selections, so both are checked against the registry. The
+    # task subset was checked and the project lock was not, which let a lock select a
+    # component that does not exist and still read as coherent.
+    registry_membership: list[tuple[str, str, list[str], set[str]]] = [
+        ("task toolkit", "capability", task_toolkit.capability_ids, capabilities),
+        ("task toolkit", "skill", task_toolkit.skill_ids, set(skills_by_id)),
+        ("task toolkit", "role", task_toolkit.role_ids, roles),
+        ("task toolkit", "validator", task_toolkit.validator_ids, validators),
+        ("project lock", "capability", project_lock.capability_ids, capabilities),
+        ("project lock", "skill", project_lock.skill_ids, set(skills_by_id)),
+        ("project lock", "workflow", project_lock.workflow_ids, set(workflows_by_id)),
+        ("project lock", "role", project_lock.role_ids, roles),
+        ("project lock", "validator", project_lock.validator_ids, validators),
     ]
-    for kind, ids, available in registry_membership:
+    for owner, kind, ids, available in registry_membership:
         for unknown in sorted(set(ids) - available):
             findings.append(
                 _finding(
                     validator_id,
                     ValidationOutcome.BLOCKED,
                     f"{kind}:{unknown}",
-                    f"task toolkit {kind} {unknown!r} is not declared in the registry",
+                    f"{owner} {kind} {unknown!r} is not declared in the registry",
                 )
             )
 
@@ -906,6 +915,18 @@ def validate_write_scope_containment(
     for raw in sorted(authority.forbidden_scopes):
         resolved = normalize_repository_path(raw)
         if resolved is None:
+            # Sibling of the granted-path check above, which rejects exactly this.
+            # A forbidden bound that resolves to nothing denies nothing, while
+            # reading as a denial to anyone auditing the bundle.
+            findings.append(
+                _finding(
+                    validator_id,
+                    ValidationOutcome.BLOCKED,
+                    raw,
+                    f"forbidden write path {raw!r} does not resolve to a usable "
+                    "repository-relative bound, so it denies nothing",
+                )
+            )
             continue
         if resolved in granted_resolved:
             findings.append(
@@ -1237,17 +1258,40 @@ def validate_required_evidence(
             findings=findings,
         )
 
-    exempt = {item.value for item in evidence_bundle.not_required_classes}
+    # Read the serialized payload, not the attributes. A bundle built with
+    # `model_construct` carries raw strings where the field type promises an enum,
+    # and reaching for `.value` on one raises instead of rejecting it — a validator
+    # that crashes on a forged artifact has not rejected it.
+    bundle_data = _payload(evidence_bundle)
+    declared_exempt = [str(value) for value in bundle_data.get("not_required_classes") or []]
+    exempt = set(declared_exempt)
     required_classes = {
         _EVIDENCE_CLASS_BY_VALUE[requirement.strip()].value
         for requirement in work_item.required_evidence
         if requirement.strip() in _EVIDENCE_CLASS_BY_VALUE
     }
+
+    # The requirement side is already checked against the vocabulary below. The
+    # exemption side is its sibling and gets the same check: an exemption naming no
+    # evidence class lifts no obligation, and must never be reported as satisfied.
+    unknown_exempt = unrecognised_members(declared_exempt, set(_EVIDENCE_CLASS_BY_VALUE))
+    for unknown in unknown_exempt:
+        findings.append(
+            _finding(
+                validator_id,
+                ValidationOutcome.BLOCKED,
+                unknown,
+                f"{unknown!r} is declared not-required but names no known evidence "
+                "class; an exemption must name the obligation it lifts",
+            )
+        )
+
     satisfying: dict[str, list[str]] = defaultdict(list)
-    for item in evidence_bundle.items:
-        if item.evidence_class is None or item.result != EvidenceResult.PASS:
+    for item in bundle_data.get("items") or []:
+        declared_class = item.get("evidence_class")
+        if declared_class is None or item.get("result") != EvidenceResult.PASS.value:
             continue
-        satisfying[item.evidence_class.value].append(item.ref)
+        satisfying[str(declared_class)].append(str(item.get("ref")))
 
     for requirement in sorted(work_item.required_evidence):
         typed = _EVIDENCE_CLASS_BY_VALUE.get(requirement.strip())
@@ -1285,11 +1329,11 @@ def validate_required_evidence(
             )
             continue
         unproven = [
-            item.ref
-            for item in evidence_bundle.items
-            if item.evidence_class == typed
-            and item.result == EvidenceResult.PASS
-            and not item.proves_revision
+            str(item.get("ref"))
+            for item in bundle_data.get("items") or []
+            if item.get("evidence_class") == typed.value
+            and item.get("result") == EvidenceResult.PASS.value
+            and not item.get("proves_revision")
         ]
         if len(unproven) == len(refs):
             findings.append(
@@ -1313,6 +1357,10 @@ def validate_required_evidence(
         )
 
     for exempt_class in sorted(exempt):
+        if exempt_class in unknown_exempt:
+            # Already reported as BLOCKED above; it must not also read as an
+            # accepted exemption.
+            continue
         if exempt_class not in required_classes:
             findings.append(
                 _finding(
@@ -1404,12 +1452,41 @@ def validate_evidence_bundle_completeness(bundle: EvidenceBundle) -> ValidationR
                 )
             )
 
+    # Both lists name evidence classes, so both are checked against the vocabulary.
+    # Checking the items and letting the exemptions through — or the reverse — is the
+    # asymmetry that lets an unrecognised value read as safe.
+    known_classes = set(_EVIDENCE_CLASS_BY_VALUE)
+    declared_exempt = [str(value) for value in data.get("not_required_classes") or []]
+    declared_item_classes = [
+        str(item.get("evidence_class")) for item in items if item.get("evidence_class")
+    ]
+    for unknown in unrecognised_members(declared_item_classes, known_classes):
+        findings.append(
+            _finding(
+                validator_id,
+                ValidationOutcome.BLOCKED,
+                subject,
+                f"evidence item declares class {unknown!r}, which is not a known "
+                "evidence class; it satisfies no requirement",
+            )
+        )
+    for unknown in unrecognised_members(declared_exempt, known_classes):
+        findings.append(
+            _finding(
+                validator_id,
+                ValidationOutcome.BLOCKED,
+                subject,
+                f"{unknown!r} is declared not-required but names no known evidence "
+                "class; an exemption must name the obligation it lifts",
+            )
+        )
+
     attained = {
         item.get("evidence_class")
         for item in items
         if item.get("evidence_class") and item.get("result") == EvidenceResult.PASS.value
     }
-    for exempt in data.get("not_required_classes") or []:
+    for exempt in declared_exempt:
         if exempt in attained:
             findings.append(
                 _finding(
@@ -1664,6 +1741,20 @@ def validate_execution_bundle_completeness(bundle: ExecutionBundle) -> Validatio
                     ValidationOutcome.BLOCKED,
                     subject,
                     f"allowed capability {escaped!r} is not in the task toolkit",
+                )
+            )
+        # Sibling of the allowed-capability check above. A denial naming something
+        # the toolkit never granted is not a denial; it is noise that reads as one.
+        for stray in sorted(
+            set(data.get("forbidden_capabilities") or []) - toolkit_capabilities
+        ):
+            findings.append(
+                _finding(
+                    validator_id,
+                    ValidationOutcome.BLOCKED,
+                    subject,
+                    f"forbidden capability {stray!r} is not in the task toolkit, so "
+                    "forbidding it denies nothing",
                 )
             )
         toolkit_validators = set(task_toolkit.get("validator_ids") or [])

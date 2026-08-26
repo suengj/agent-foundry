@@ -9,10 +9,22 @@ contract and shares no implementation with anything that produces or gates the
 artifact — including the pydantic model validators, which are producers: they decide
 whether an artifact may exist at all. Two entries here were wrongly marked True in
 the first version of this change because their obligations were delegated to a
-model-validator helper; the dependency test in `tests/test_verify_independence.py`
-now reads the import graph of every module in `verify/` and discovers producer-owned
-rules from `models/` rather than from a list, so a claim of independence cannot be
-made in code that quietly calls the producer.
+model-validator helper.
+
+Two guards now hold that line, on purpose:
+
+* `tests/test_verify_independence.py` reads the import graph of every module in
+  `verify/` and discovers producer-owned rules from `models/` rather than from a
+  list. Cheap, fast, and catches the ordinary regression — but it is syntactic, so a
+  call assembled at runtime is invisible to it.
+* `tests/test_verify_producer_tripwire.py` wraps every producer rule and runs the
+  whole validation surface, failing if validation logic calls one by any route:
+  dynamic import, re-export, `getattr`, or function-local import. It distinguishes
+  that from the legitimate case — pydantic constructing a model — by which boundary
+  the call stack crosses first.
+
+A claim of independence therefore rests on observed behavior, not on how the source
+happens to be spelled.
 """
 
 from __future__ import annotations
@@ -203,12 +215,15 @@ VALIDATOR_CLAIMS: tuple[ValidatorClaim, ...] = (
         proves=(
             "work lifecycle, execution state and evidence state are recorded as three "
             "independent fields with disjoint vocabularies, that a receipt does not "
-            "collapse them into one status, that no state is both attained and exempt, "
+            "collapse them into one status, that every value in BOTH evidence lists "
+            "names a real evidence state, that no state is both attained and exempt, "
             "and that a lifecycle claiming closure is backed by the evidence states the "
-            "work item requires. The attained/exempt partition is derived from the "
-            "evidence progression in verify.independent — NOT_REQUIRED has no rung, so "
-            "it cannot have been attained — rather than from the ExecutionReceipt model "
-            "validator that gates construction"
+            "work item requires. The partition is derived from the evidence progression "
+            "in verify.independent — NOT_REQUIRED has no rung, so it cannot have been "
+            "attained, and it cannot exempt itself either — rather than from the "
+            "ExecutionReceipt model validator that gates construction. Both lists are "
+            "checked against the vocabulary: an unrecognised exemption is BLOCKED, "
+            "because an exemption naming no evidence state lifts no obligation"
         ),
         cannot_prove=(
             "that the three recorded values were observed independently; it detects "

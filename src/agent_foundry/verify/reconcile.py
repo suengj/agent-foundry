@@ -67,19 +67,33 @@ def _finding(
     )
 
 
-def required_evidence_states(
-    work_item: WorkItemContract,
+def _partition_declarations(
     tracker: TrackerProjection,
-) -> tuple[list[EvidenceState], list[EvidenceState]]:
-    """Which evidence states this work item requires, and which it exempts.
+) -> tuple[list[EvidenceState], list[EvidenceState], list[str]]:
+    """Split a tracker's two declarations into recognised states and unrecognised names.
 
-    The tracker projection is the declaring authority. If it declares neither list,
-    the requirement is unspecified — and an unspecified requirement is reported as
-    such rather than defaulted to "nothing is needed".
+    Both lists get the same treatment. A projection built with `model_construct`, or
+    read from a tracker whose vocabulary has drifted, can carry a raw string where the
+    field type promises an `EvidenceState`; reaching for `.value` on one raises rather
+    than rejecting it, and a reconciliation that crashes has concluded nothing.
     """
-    required = list(tracker.declared_required_evidence_states)
-    exempt = list(tracker.declared_not_required_evidence_states)
-    return required, exempt
+    known = {state.value: state for state in EvidenceState}
+    required: list[EvidenceState] = []
+    exempt: list[EvidenceState] = []
+    unrecognised: list[str] = []
+
+    for values, bucket in (
+        (tracker.declared_required_evidence_states, required),
+        (tracker.declared_not_required_evidence_states, exempt),
+    ):
+        for value in values:
+            resolved = known.get(getattr(value, "value", str(value)))
+            if resolved is None:
+                unrecognised.append(str(value))
+            else:
+                bucket.append(resolved)
+
+    return required, exempt, sorted(set(unrecognised))
 
 
 def reconcile_work_item(
@@ -98,7 +112,7 @@ def reconcile_work_item(
     findings: list[ReconciliationFinding] = []
     proposals: list[StateProposal] = []
 
-    required, exempt = required_evidence_states(work_item, tracker)
+    required, exempt, unrecognised_states = _partition_declarations(tracker)
 
     findings.extend(_identity_findings(work_item, tracker, repository))
     lifecycle_findings, lifecycle_proposals = _lifecycle_findings(
@@ -106,7 +120,9 @@ def reconcile_work_item(
     )
     findings.extend(lifecycle_findings)
     proposals.extend(lifecycle_proposals)
-    findings.extend(_evidence_findings(work_item, repository, required, exempt))
+    findings.extend(
+        _evidence_findings(work_item, repository, required, exempt, unrecognised_states)
+    )
     findings.extend(_runtime_findings(work_item, repository, runtime, required, exempt))
     findings.extend(_integration_findings(work_item, runtime))
 
@@ -336,12 +352,25 @@ def _evidence_findings(
     repository: RepositoryEvidence,
     required: list[EvidenceState],
     exempt: list[EvidenceState],
+    unrecognised: list[str] = [],
 ) -> list[ReconciliationFinding]:
     dimension = ReconciliationDimension.EVIDENCE_STATE
     authorities = [_REPOSITORY]
 
+    unrecognised_findings = [
+        _finding(
+            dimension,
+            ValidationOutcome.BLOCKED,
+            state,
+            f"{state!r} is declared as an evidence state but names none; a declaration "
+            "that identifies no obligation can neither be required nor exempted",
+            [_TRACKER],
+        )
+        for state in unrecognised
+    ]
+
     if not required and not exempt:
-        return [
+        return unrecognised_findings + [
             _finding(
                 dimension,
                 ValidationOutcome.MISSING,
@@ -353,7 +382,7 @@ def _evidence_findings(
         ]
 
     attained = _attained_states(repository, required)
-    findings: list[ReconciliationFinding] = []
+    findings: list[ReconciliationFinding] = list(unrecognised_findings)
     for state in sorted(set(required) | set(exempt), key=lambda item: item.value):
         if state in exempt:
             findings.append(
