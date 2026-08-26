@@ -1,121 +1,144 @@
 ---
-constitution_version: 1
+constitution_version: 2
 project: Agent Foundry
-playbook:
-  repository: suengj/ai-agent-dev-playbook
-  ref: daa487c874822921ae07b968671e5852e41f728f
-adopted_at: 2026-08-26
-owner: suengj
 status: active
-linear_project: Agent Foundry · M0 Personal MVP
-foundation_issue: SUE-294
 ---
 
 # Agent Foundry — Project Agent Constitution
 
-> Project-local constitutional entrypoint. Does **not** copy the central playbook.
+> Project-local constitutional entrypoint for this repository.
 
 ## 1. Project purpose
 
-- **Product/system:** Executable toolbox applying AI Dev Playbook principles to real projects
-- **User-visible objective (M0):** Personal MVP first — bootstrap projects, freeze authority, emit provider-neutral work orders
-- **Critical domains:** authority classification, artifact ownership, external-write safety
-- **Out-of-scope sibling systems:** Playbook (knowledge only), production runtimes of other products
+- **Product/system:** provider-neutral tooling that converts new or existing projects into bounded AI-native execution environments
+- **Primary objective:** inspect/classify projects, model work, resolve least-capability toolkits, compile execution contracts, and verify/reconcile evidence
+- **Critical domains:** authority classification, artifact ownership, work decomposition, external-write safety, integration/credential boundaries, evidence integrity
+- **Non-goals:** secret vault, generic project-management database, monolithic agent runtime, SaaS control plane
 
-## 2. Authority and inheritance
-
-This project adopts the central Agent Constitution at the pinned `playbook.ref`.
+## 2. Authority hierarchy
 
 ```text
-Human objective / authority
-→ ChatGPT governor / architecture
+Human / project owner objective and reserved authority
 → this Project Constitution
-→ docs/contracts/*
-→ Linear Task Contract (active issue)
-→ agent execution defaults
+→ durable product / Foundry contracts
+→ configured Work Item contract
+→ role / workflow / Task Toolkit contracts
+→ agent inference and defaults
 ```
-
-Playbook updates do **not** apply until this project explicitly bumps `playbook.ref`.  
-Do **not copy** playbook documents wholesale into this repository.
 
 Factual truth resolution:
 
 ```text
-runtime/external read-back
-→ code/config/schema (GitHub)
-→ tests/CI/evidence
-→ Linear current work state
-→ chat/history (non-authoritative)
+runtime / external-system read-back
+→ current repository code/config/schema
+→ deterministic tests / generated evidence
+→ current work-tracker state
+→ agent report / chat history
 ```
+
+A lower factual layer cannot silently rewrite a higher normative contract. If current behavior conflicts with approved rules, treat it as drift, defect, or an explicit amendment decision.
 
 ## 3. P0 invariants
 
-1. **Personal MVP first;** business toolbox second.
-2. **Single owner per artifact class** — no duplicate current state across Linear, docs, prompts, adapters.
-3. **External writes default to preview/dry-run** unless an explicit apply is authorized and evidenced.
-4. **Provider-neutral core** — Cursor, Codex, Claude are adapters only.
-5. **Linear = Work SSOT; GitHub = Implementation SSOT.**
-6. **Evidence over agent self-report** — DONE requires validation artifacts.
+1. **Single canonical owner per volatile artifact class.** Do not mirror current work, implementation, runtime, or credential state into competing sources.
+2. **External writes are preview-first by default.** Apply requires explicit authority unless a narrower bounded policy has already granted it.
+3. **Provider-neutral core.** Provider/model/tool-specific behavior belongs at adapter boundaries.
+4. **Role before provider.** Resolve responsibility and logical capability before provider/model selection.
+5. **Project Toolkit before Task Toolkit.** Tasks receive the minimum capability subset required for their Work Item.
+6. **Causal work decomposition.** Split work by independently closable outcomes, authority/rollback boundaries, dependencies, and ownership surfaces—not by files or agent roles alone.
+7. **Brownfield is first-class.** Existing projects are inspected and progressively retrofitted; observed behavior is not automatically treated as intended policy.
+8. **Evidence over agent self-report.** Completion requires the declared evidence classes.
+9. **Tracker, execution, and evidence state remain distinct.** One overloaded `Done` signal must not substitute for all three.
+10. **Secrets are referenced, never embedded.** Raw credentials do not belong in version-controlled Foundry configuration or generated Markdown.
+11. **Hard rules should become executable controls where practical.** Important safety/integrity properties must not depend only on prompt interpretation.
+12. **Public contracts are self-contained.** Do not introduce dependencies on private repositories, private project names, personal paths, real credentials, or unpublished policy sources.
 
-## 4. Canonical owners
+## 4. Canonical ownership
 
-| Concept | Canonical owner | Delegate only | Forbidden duplicate |
-|---|---|---|---|
-| Objective / priority | Human | ChatGPT proposes | README, constitution |
-| Work intent / status | Linear | — | GitHub docs, AGENTS.md |
-| Implementation | GitHub | agents | Linear descriptions |
-| Production truth | Runtime | read-back adapters | static docs |
-| Reusable constitution | AI Dev Playbook (pinned ref) | — | full copy in repo |
-| Project behavior / safety | This constitution | AGENTS.md navigation | playbook fork |
-| Technical environment | project-context.md | — | scattered path notes |
-| Agent behavior per task | Work Order / prompt | — | constitution bloat |
-| Foundry-generated artifacts | per product-boundary.md | preview surfaces | multi-place mirrors |
+| Concept | Canonical owner | Foundry role |
+|---|---|---|
+| Objective / reserved authority | Human / project owner | interpret and compile bounded contracts |
+| Work intent / priority / dependency / lifecycle | configured work tracker or Work Item source | adapt/reconcile, not duplicate |
+| Implementation | repository | inspect, compile, validate, reference |
+| Applied/live truth | runtime / external system | read back and verify |
+| Secret values / identity material | credential provider / execution environment | reference via `SecretRef`-style abstraction |
+| Foundry project characteristics | Project Manifest | classify/validate |
+| Approved capabilities | Project Toolkit / toolkit lock | resolve/pin |
+| Current execution delta | Work Item + Execution Bundle | compile/render |
+| Agent interaction state | typed handoff/evidence/receipt artifacts | validate/reconcile |
+| Durable Foundry behavior | this constitution + `docs/foundry/*` | canonical repository contract |
 
 ## 5. Generated artifact rule
 
-Foundry outputs must not replicate current state in multiple places.
+Generated Markdown is a projection of canonical structured inputs where possible.
 
-| State | Owner |
-|---|---|
-| Current issue / priority | Linear only |
-| Technical context | `docs/ai/project-context.md` |
-| Agent behavior | This constitution + AGENTS.md |
-| Execution delta | Work Order |
-| Implementation | GitHub |
-| Runtime result | Runtime evidence |
+```text
+structured project/work/toolkit/interaction data
+→ renderer
+→ concise agent/human-readable Markdown
+```
+
+Do not independently maintain the generated view as a second source of truth.
 
 ## 6. External write contract
 
-Any future Foundry capability that mutates Linear, GitHub, or the filesystem:
+Any capability that mutates a repository, work tracker, shared service, data store, runtime, public surface, or other external state must have:
 
-1. **Preview / dry-run** (default)
-2. **Explicit apply** (authorized, logged, evidenced)
+1. declared external-effect class
+2. scoped authority
+3. applicable permission/integration profile
+4. preview/dry-run when required
+5. explicit apply semantics
+6. required evidence/read-back
+7. rollback or failure interpretation where applicable
 
-Silent or implicit writes are forbidden.
+Silent privilege expansion or implicit writes are forbidden.
 
-## 7. Entry points
+## 7. Work contract rule
+
+A Work Item must be independently understandable and closable without hidden conversation history.
+
+Minimum concerns:
+
+- objective / expected outcome
+- current verified facts
+- scope / out of scope
+- acceptance criteria
+- dependencies / blockers
+- authority / consequence class
+- required evidence
+- stop / escalation conditions
+
+## 8. Integration and credential rule
+
+Configuration may declare integrations and credential references, but must not contain raw credentials.
+
+```text
+Execution Bundle
+→ scoped Integration Adapter
+→ credential reference / delegated identity
+→ external system
+```
+
+Credential availability never grants task authority by itself.
+
+## 9. Entry points
 
 ### Always read
 
 - `AGENTS.md`
 - this file
-- active Linear issue
+- the active Work Item / explicit current task contract
 
 ### Read by task
 
-| Task | Path |
+| Concern | Path |
 |---|---|
-| Product scope / M0 boundary | `docs/contracts/product-boundary.md` |
+| Product boundary | `docs/contracts/product-boundary.md` |
 | Architecture | `docs/architecture/overview.md` |
 | Environment / commands | `docs/ai/project-context.md` |
+| Detailed operating model | `docs/foundry/00-overview.md` and applicable linked contract |
 
-## 8. M0 metrics (dogfood targets)
+## 10. Change rule
 
-Recorded in `docs/contracts/product-boundary.md` for future measurement:
-
-- planning elapsed time
-- manual correction rate
-- generated-task acceptance rate
-- duplicate/stale-context detection rate
-- authority-boundary miss rate
-- evidence completeness
+Routine implementation work must not silently change project-level authority, autonomy, external-effect, reversibility, credential boundaries, or constitutional invariants. Such changes require an explicit contract amendment or equivalent authorized decision.
