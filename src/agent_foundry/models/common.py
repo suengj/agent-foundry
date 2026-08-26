@@ -47,7 +47,7 @@ class SecretProvider(StrEnum):
 
 class IntegrationHealthState(StrEnum):
     DESIRED = "desired"
-    INSTALLED = "installed"
+    AVAILABLE = "available"
     CONFIGURED = "configured"
     AUTHENTICATED = "authenticated"
     AUTHORIZED = "authorized"
