@@ -309,54 +309,181 @@ def test_brownfield_autonomy_widening_requires_explicit_authority() -> None:
     )
 
 
-@pytest.mark.parametrize("fixture", ALL_FIXTURES, ids=lambda path: path.name)
-def test_planned_changes_are_never_both_widening_and_auto_applicable(fixture: Path) -> None:
+def _declared_autonomy_intake(
+    base: Path = BROWNFIELD,
+    autonomy: Autonomy = Autonomy.SUGGEST,
+) -> ProjectIntake:
+    """Intake for a project whose owner has declared `execution.autonomy`.
+
+    `brownfield-sample/.foundry/project.yaml` really does declare
+    `execution.autonomy: suggest`, but AF2's classifier extracts only
+    `project.intake_mode` from that file and emits every other dimension as
+    unknown. So no on-disk fixture can reach `_authority_proposal_changes`, and
+    `manifest.execution.autonomy` is None for all seven of them — which is exactly
+    why this property test was vacuous. The declared finding is attached here
+    rather than by widening AF2's classifier, which is out of scope for SUE-337.
+    """
+    intake = inspect_project(base)
+    declared = ClassificationFinding(
+        dimension="execution.autonomy",
+        value=autonomy.value,
+        provenance=Provenance(kind=ProvenanceKind.DECLARED, source_ref=".foundry/project.yaml"),
+        evidence_refs=[".foundry/project.yaml"],
+    )
+    return intake.model_copy(
+        update={"classification_findings": [*intake.classification_findings, declared]}
+    )
+
+
+def _planner_inputs() -> list[tuple[str, ProjectIntake]]:
+    """Every intake the adoption property tests run over."""
+    inputs = [(path.name, inspect_project(path)) for path in ALL_FIXTURES]
+    inputs.append(("declared-suggest-autonomy", _declared_autonomy_intake()))
+    return inputs
+
+
+def _widening_changes(result: object) -> list[AdoptionChangeItem]:
+    """Changes the guard considers authority-widening for this plan's baseline."""
+    return [
+        change
+        for change in result.change_set.changes  # type: ignore[attr-defined]
+        if change_widens_authority(
+            change,
+            current_autonomy=result.manifest.execution.autonomy,  # type: ignore[attr-defined]
+            proposed_autonomy=proposed_autonomy_for_change(change),
+            current_external_effect=result.manifest.impact.external_effect,  # type: ignore[attr-defined]
+            proposed_external_effect=proposed_external_effect_for_change(change),
+        )
+    ]
+
+
+def test_planner_corpus_actually_produces_an_authority_widening_change() -> None:
+    """Anti-vacuity guard for the property test below.
+
+    All seven on-disk fixtures emit ZERO authority-widening changes, so a property
+    that only inspects widening changes passed no matter how they were labelled.
+    If this assertion ever fails, the property test has gone vacuous again.
+    """
+    widening = {
+        name: [change.target for change in _widening_changes(plan_adoption(intake))]
+        for name, intake in _planner_inputs()
+    }
+    covered = {name: targets for name, targets in widening.items() if targets}
+    assert covered, (
+        "no planner input produces an authority-widening change, so "
+        "test_planned_changes_are_never_both_widening_and_auto_applicable asserts nothing. "
+        f"targets per input: {widening}"
+    )
+    assert "execution.autonomy" in {
+        target for targets in covered.values() for target in targets
+    }, f"expected an execution.autonomy widening change, got {covered}"
+
+
+def test_planned_changes_are_never_both_widening_and_auto_applicable() -> None:
     """End-to-end property over real `plan_adoption` output, not a hand-built change.
 
     `test_inference_cannot_silently_widen_authority` constructs the change itself and
     calls the guard directly, so it proves nothing about what the planner emits.
+
+    The `examined` assertion is load-bearing: without it this test passed while every
+    input produced zero widening changes.
     """
-    result = plan_adoption(inspect_project(fixture))
-    assert result.change_set.changes, f"no changes planned for {fixture.name}"
+    offenders: list[tuple[str, str, str, str]] = []
+    examined: list[tuple[str, str]] = []
 
-    offenders = []
-    for change in result.change_set.changes:
-        widens = change_widens_authority(
-            change,
-            current_autonomy=result.manifest.execution.autonomy,
-            proposed_autonomy=proposed_autonomy_for_change(change),
-            current_external_effect=result.manifest.impact.external_effect,
-            proposed_external_effect=proposed_external_effect_for_change(change),
-        )
-        if not widens:
-            continue
-        if (
-            change.authority_requirement == AuthorityRequirement.NONE
-            or change.status == AdoptionChangeStatus.AUTO_APPLICABLE
-        ):
-            offenders.append(
-                (change.target, change.authority_requirement.value, change.status.value)
-            )
+    for name, intake in _planner_inputs():
+        result = plan_adoption(intake)
+        assert result.change_set.changes, f"no changes planned for {name}"
+        for change in _widening_changes(result):
+            examined.append((name, change.target))
+            if (
+                change.authority_requirement == AuthorityRequirement.NONE
+                or change.status == AdoptionChangeStatus.AUTO_APPLICABLE
+            ):
+                offenders.append(
+                    (
+                        name,
+                        change.target,
+                        change.authority_requirement.value,
+                        change.status.value,
+                    )
+                )
 
+    assert examined, (
+        "vacuous: no planner input produced an authority-widening change to check"
+    )
     assert offenders == [], (
-        f"{fixture.name}: authority-widening changes labelled as needing no authority "
-        f"or as auto-applicable: {offenders}"
+        f"authority-widening changes labelled as needing no authority or as "
+        f"auto-applicable: {offenders}"
     )
 
 
-@pytest.mark.parametrize("fixture", ALL_FIXTURES, ids=lambda path: path.name)
-def test_every_planned_target_is_classified_by_the_authority_guard(fixture: Path) -> None:
+ARTIFACT_PRODUCING_ACTIONS: frozenset[AdoptionAction] = frozenset(
+    {
+        AdoptionAction.MIGRATE,
+        AdoptionAction.HARDEN,
+        AdoptionAction.CONSOLIDATE,
+        AdoptionAction.WRAP,
+    }
+)
+"""Actions that can only be carried out by writing to the repository.
+
+KEEP retains what is already there, DEFER defers, BLOCK blocks — none of those
+touch a file, which is why they may legitimately be auto-applicable.
+"""
+
+
+def test_artifact_producing_changes_are_never_auto_applicable() -> None:
+    """An adoption change that must write files may not claim it needs no authority.
+
+    Derived from the change's ACTION rather than from the label under test, so it
+    is not a restatement of what each `_change(...)` call site already says.
+    AGENTS.md defaults external writes to preview -> explicit apply.
+    """
+    offenders: list[tuple[str, str, str, str, str]] = []
+    examined: list[tuple[str, str]] = []
+
+    for name, intake in _planner_inputs():
+        for change in plan_adoption(intake).change_set.changes:
+            if change.action not in ARTIFACT_PRODUCING_ACTIONS:
+                continue
+            examined.append((name, change.target))
+            if (
+                change.authority_requirement == AuthorityRequirement.NONE
+                or change.status == AdoptionChangeStatus.AUTO_APPLICABLE
+            ):
+                offenders.append(
+                    (
+                        name,
+                        change.target,
+                        change.action.value,
+                        change.authority_requirement.value,
+                        change.status.value,
+                    )
+                )
+
+    assert examined, "vacuous: no planner input produced an artifact-producing change"
+    assert offenders == [], (
+        f"changes that write repository files but are labelled as needing no "
+        f"authority or as auto-applicable: {offenders}"
+    )
+
+
+def test_every_planned_target_is_classified_by_the_authority_guard() -> None:
     """A new `_change(...)` call site must be classified, not silently unreviewed."""
-    result = plan_adoption(inspect_project(fixture))
-    unclassified = sorted(
-        {
-            change.target
-            for change in result.change_set.changes
-            if not is_classified_target(change.target)
-        }
-    )
-    assert unclassified == [], (
-        f"{fixture.name}: targets unknown to the authority guard: {unclassified}. "
+    unclassified: dict[str, list[str]] = {}
+    seen: set[str] = set()
+
+    for name, intake in _planner_inputs():
+        targets = {change.target for change in plan_adoption(intake).change_set.changes}
+        seen |= targets
+        unknown = sorted(target for target in targets if not is_classified_target(target))
+        if unknown:
+            unclassified[name] = unknown
+
+    assert seen, "no targets produced by any planner input"
+    assert unclassified == {}, (
+        f"targets unknown to the authority guard: {unclassified}. "
         "Add them to NON_AUTHORITY_TARGETS or to an AuthorityAxis."
     )
 

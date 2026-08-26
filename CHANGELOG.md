@@ -19,7 +19,8 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 
 ### Added
 
-- End-to-end adoption property tests: over every project fixture, no planned change is both authority-widening and `auto-applicable`/`none`, and every planned target is classified by the authority guard, so a new `_change(...)` call site cannot silently escape review.
+- End-to-end adoption property tests over a planner-input corpus: no planned change is both authority-widening and `auto-applicable`/`none`; no change whose action requires writing repository files (MIGRATE/HARDEN/CONSOLIDATE/WRAP) is `auto-applicable`/`none`; and every planned target is classified by the authority guard, so a new `_change(...)` call site cannot silently escape review.
+- The adoption property tests assert their own coverage. Every on-disk fixture emits zero authority-widening changes, so a property that only inspects widening changes passes however they are labelled; the corpus now includes an input that reaches the planner's authority-proposal path, and a named guard test fails if the corpus ever stops producing one.
 - The adopt determinism test now compares output across PYTHONHASHSEED and working directory instead of running both subprocesses with the same environment and comparing a run to itself.
 
 - Work Item compiler (`agent_foundry.compile`) producing minimum Task Toolkit, role-specific `ExecutionBundle`, and provenance-bearing selections with authority intersection.
