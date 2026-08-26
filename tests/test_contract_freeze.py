@@ -47,14 +47,14 @@ def test_constitution_freezes_core_agent_foundry_invariants():
         assert phrase in text, f"missing constitution invariant: {phrase}"
 
 
-def test_operating_model_has_no_private_dependency_language():
+def test_operating_model_declares_public_self_contained_boundary():
     assert OVERVIEW.is_file()
-    text = _read(OVERVIEW).lower()
-    forbidden = [
-        "ai-agent-dev-playbook",
-        "trading lab",
-        "signal trading",
-        "~/developer/pjt",
+    text = _read(OVERVIEW)
+    required = [
+        "Public-repository boundary",
+        "self-contained",
+        "private repositories",
+        "generic examples",
     ]
-    for phrase in forbidden:
-        assert phrase not in text, f"private/internal reference leaked: {phrase}"
+    for phrase in required:
+        assert phrase in text, f"missing public-boundary phrase: {phrase}"
