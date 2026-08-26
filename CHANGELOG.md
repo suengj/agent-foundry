@@ -6,13 +6,11 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 
 ## [Unreleased]
 
-### Changed
-
-- Pre-release vocabulary correction: removed `external-shared` from `Statefulness` (use `persistent-shared-external`); removed `deterministic` from `AssuranceMode` (use `deterministic-tests`).
-
 ### Added
 
 - `agent-foundry inspect <path>` CLI and Core API for read-only project inventory, classification candidates, convention discovery, and readiness findings.
+- Tracker-neutral work decomposition engine (`agent_foundry.work`) with causal grouping, dependency graph validation, and quality checks.
+- Work hierarchy extension points: `OutcomeCapability`, `ExecutionRunRef`, `WorkspaceLeaseRef`, `WriteLeaseRef`, and distinct lifecycle/execution/evidence snapshots.
 - Write/render boundary embedded-secret guard: Tier A (known vendor credential formats in values and keys) hard-fails serialization; Tier B (value entropy) is advisory only and does not block.
 - Embedded-secret guard covers hyphenated OpenAI project/service-account keys, JOSE headers with `alg` in any position, and PGP private-key armor; credential-shaped mapping keys are redacted out of diagnostic paths.
 - Clean public architecture baseline for Agent Foundry.
@@ -22,6 +20,10 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 - Project Profile Synthesis, provenance/confidence, convention-discovery, and benchmark-derived design direction.
 - MCP direction as an optional facade over protocol-neutral Foundry Core.
 - Public release/versioning policy and MIT License.
+
+### Changed
+
+- Pre-release vocabulary correction: removed `external-shared` from `Statefulness` (use `persistent-shared-external`); removed `deterministic` from `AssuranceMode` (use `deterministic-tests`).
 
 ### In progress
 
