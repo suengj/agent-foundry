@@ -97,11 +97,24 @@ Before public visibility, verify all of the following:
 ### Public hygiene
 
 - No private repository dependencies in public contracts.
-- No private project names or internal tracker identifiers in durable public content.
-- No personal filesystem paths.
+- No private project names in durable public content.
+- No tracker content or tracker addresses in durable public content, and no tracker identifiers in consumer-facing documentation. See §4.1.
+- No personal filesystem paths — including inside captured command output. A verification transcript pasted into a durable document is durable public content, and transcripts are where this leaks.
 - No real secrets, API keys, tokens, credentials, or private fixture data.
 - Examples are synthetic/public-safe.
 - README, LICENSE, CHANGELOG, release notes, and contributor-facing install instructions are coherent.
+
+### 4.1 Tracker identifiers: what is prohibited, and the one carve-out
+
+This clause originally read "no private project names or internal tracker identifiers in durable public content", unqualified. Preparing the first public release showed that to be both too broad and too vague to apply, so it is stated exactly here rather than left to be interpreted differently each time.
+
+**Prohibited unconditionally: tracker content and tracker addresses.** An issue description, a comment thread, a review document, or any URL into the tracker. This is the leak the rule exists to prevent. A bare key reveals only that an item exists; a URL or a pasted description reveals what is in it and where to find more, and it exposes the workspace itself. An automated linkback that publishes issue bodies into a public repository falls here, whoever configured it.
+
+**Prohibited in consumer-facing documentation.** A reader of the release cannot open an internal issue. In a README, a release note, or any report written for that reader, a tracker key is a dead pointer: it costs attention and returns nothing. State the fact the key stands for instead. If the fact is not worth stating, the reference was not worth making.
+
+**Permitted: a bare tracker key as source-level provenance.** A comment naming the Work Item that caused a regression test to exist answers a question the code cannot otherwise answer — *why does this test exist?* — and it is read by a contributor, not a consumer. This project treats evidence that supports its own claim as a first-class property; severing the causal link between a regression test and the defect that produced it removes exactly that. A bare key is opaque, carries no content, and the same keys are already permanent in merged pull-request titles, so deleting them from source would not make them unpublished. The same permission covers commit messages and pull-request metadata, under the same limit: the key alone, never a URL and never pasted content.
+
+The distinction is provenance versus reference. A key that records *why a durable artifact is the way it is* is provenance and may stay. A key used as an incidental label, or as a stand-in for a fact the text could simply state, is a reference and should go.
 
 ### GitHub history / object hygiene
 
