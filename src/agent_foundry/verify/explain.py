@@ -37,6 +37,7 @@ from agent_foundry.verify import claims
 from agent_foundry.verify.independent import (
     EXTERNAL_EFFECT_ASCENDING,
     malformed_vocabulary_report,
+    materialize_sequence,
 )
 
 _AUTONOMY_ASCENDING: tuple[Autonomy, ...] = (
@@ -98,6 +99,26 @@ def _manifest_axis_value(manifest: ProjectManifest, axis: str) -> str | None:
     return None if autonomy is None else str(getattr(autonomy, "value", autonomy))
 
 
+def _materialized_findings(classification_findings: object) -> list:
+    """Read the findings once, and refuse a shape that is not a sequence of them.
+
+    These two functions are producers: they return a trace and a tightening list, so
+    there is no `ValidationReport` in which to record a caller error. The choice is
+    therefore between raising and silently treating a malformed argument as empty —
+    and empty is the worse answer, because "no declared baseline" is exactly what
+    makes an inference look like widening. A producer fails loudly; the public
+    validation path (`validate_decision_explainability`) gates before it gets here, so
+    the validator surface still never raises.
+    """
+    items, shape_messages = materialize_sequence(
+        classification_findings, label="classification_findings"
+    )
+    if shape_messages:
+        raise ValueError("; ".join(shape_messages))
+    return items
+
+
+
 def assess_inferred_fact_tightening(
     manifest: ProjectManifest,
     classification_findings: list[ClassificationFinding],
@@ -109,6 +130,11 @@ def assess_inferred_fact_tightening(
     synthesized profile actually carries. If the manifest sits above the baseline, an
     inference widened the envelope — which inference is never allowed to do.
     """
+    # Read once. Two axes are evaluated below, and a caller's generator consumed by
+    # the first would leave the second with nothing and report it as "no declared
+    # baseline" — a widening verdict produced by a bug rather than by the facts.
+    classification_findings = _materialized_findings(classification_findings)
+
     results: list[AuthorityTightening] = []
     for axis, dimension in AUTHORITY_AXES:
         order = _AXIS_ORDERS[axis]
@@ -162,6 +188,8 @@ def build_decision_trace(
     receipt: ExecutionReceipt | None = None,
 ) -> DecisionTrace:
     """Project a compiled bundle into a traceable audit record."""
+    classification_findings = _materialized_findings(classification_findings)
+
     entries = [
         DecisionTraceEntry(
             component_kind=record.component_kind,
@@ -192,7 +220,7 @@ def build_decision_trace(
     provenance: list[Provenance] = []
     if manifest is not None:
         provenance = [observation.provenance for observation in manifest.observations]
-    for finding in classification_findings or []:
+    for finding in classification_findings:
         provenance.append(finding.provenance)
 
     return DecisionTrace(
@@ -229,6 +257,9 @@ def validate_decision_explainability(
     # manifest or bundle carrying a value from no known vocabulary cannot support any
     # statement about why a decision was made, and ranking or dereferencing it below
     # would raise.
+    supplied_findings, shape_messages = materialize_sequence(
+        classification_findings, label="classification_findings"
+    )
     malformed = malformed_vocabulary_report(
         validator_id,
         "execution-bundle",
@@ -239,12 +270,14 @@ def validate_decision_explainability(
             "receipt": receipt,
             **{
                 f"classification_findings[{index}]": item
-                for index, item in enumerate(classification_findings or [])
+                for index, item in enumerate(supplied_findings)
             },
         },
+        shape_messages=shape_messages,
     )
     if malformed is not None:
         return malformed
+    classification_findings = supplied_findings
 
     findings: list[ValidationFinding] = []
     trace = build_decision_trace(

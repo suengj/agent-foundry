@@ -67,6 +67,8 @@ from agent_foundry.verify.independent import (
     finding_obligation_violations,
     health_satisfies,
     is_contract_like,
+    materialize_mapping,
+    materialize_sequence,
     normalize_repository_path,
     parse_major_minor,
     parse_release_version,
@@ -197,7 +199,13 @@ def validate_contract_schema_compatibility(
 
     current_release = parse_release_version(running_version)
 
-    for name, contract in contracts:
+    supplied, shape_messages = materialize_sequence(contracts, label="contracts")
+    findings.extend(
+        _finding(validator_id, ValidationOutcome.BLOCKED, "contract-set", message)
+        for message in shape_messages
+    )
+
+    for name, contract in supplied:
         seen += 1
         if not is_contract_like(contract):
             findings.append(
@@ -305,17 +313,16 @@ def validate_contract_schema_compatibility(
                 )
 
     if seen == 0:
+        findings.append(
+            _finding(
+                validator_id,
+                ValidationOutcome.MISSING,
+                "contract-set",
+                "no contracts supplied; nothing was checked",
+            )
+        )
         return ValidationReport(
-            subject_kind="contract-set",
-            subject_id="schema",
-            findings=[
-                _finding(
-                    validator_id,
-                    ValidationOutcome.MISSING,
-                    "contract-set",
-                    "no contracts supplied; nothing was checked",
-                )
-            ],
+            subject_kind="contract-set", subject_id="schema", findings=findings
         )
 
     return _report(
@@ -340,14 +347,17 @@ def validate_work_dependency_graph(work_items: list[WorkItemContract]) -> Valida
     through, and this walk still finds the cycle.
     """
     validator_id = claims.WORK_DEPENDENCY_GRAPH
+    items, shape_messages = materialize_sequence(work_items, label="work_items")
     malformed = malformed_vocabulary_report(
         validator_id,
         "work-plan",
         "dependency-graph",
-        {f"work_item[{index}]": item for index, item in enumerate(work_items)},
+        {f"work_item[{index}]": item for index, item in enumerate(items)},
+        shape_messages=shape_messages,
     )
     if malformed is not None:
         return malformed
+    work_items = items
     findings: list[ValidationFinding] = []
 
     if not work_items:
@@ -1029,17 +1039,28 @@ def validate_role_separation(
 ) -> ValidationReport:
     """Check that concurrently authorized roles do not overlap or self-review."""
     validator_id = claims.ROLE_SEPARATION
+    supplied_bundles, bundle_shape = materialize_sequence(bundles, label="bundles")
+    supplied_reviews, review_shape = materialize_sequence(
+        review_decisions, label="review_decisions"
+    )
+    supplied_roles, role_shape = materialize_sequence(
+        review_only_role_ids, label="review_only_role_ids"
+    )
     malformed = malformed_vocabulary_report(
         validator_id,
         "execution-bundle-set",
         "role-separation",
         {
             f"input[{index}]": item
-            for index, item in enumerate([*bundles, *(review_decisions or [])])
+            for index, item in enumerate([*supplied_bundles, *supplied_reviews])
         },
+        shape_messages=[*bundle_shape, *review_shape, *role_shape],
     )
     if malformed is not None:
         return malformed
+    bundles = supplied_bundles
+    review_decisions = supplied_reviews
+    review_only_role_ids = frozenset(supplied_roles)
     findings: list[ValidationFinding] = []
 
     if not bundles:
@@ -1111,7 +1132,7 @@ def validate_role_separation(
                     )
                 )
 
-    for decision in review_decisions or []:
+    for decision in review_decisions:
         if decision.implementing_role_id is None:
             findings.append(
                 _finding(
@@ -1165,20 +1186,27 @@ def validate_integration_preflight(
     plus an observation that positively evidences it.
     """
     validator_id = claims.INTEGRATION_PREFLIGHT
+    supplied_specs, spec_shape = materialize_sequence(integrations, label="integrations")
+    supplied_health, health_shape = materialize_sequence(
+        observed_health, label="observed_health"
+    )
+    supplied_ids, id_shape = materialize_sequence(required_ids, label="required_ids")
     malformed = malformed_vocabulary_report(
         validator_id,
         "integration-set",
         "preflight",
         {
             f"{type(item).__name__}[{index}]": item
-            for index, item in enumerate([*integrations, *(observed_health or [])])
+            for index, item in enumerate([*supplied_specs, *supplied_health])
         },
+        shape_messages=[*spec_shape, *health_shape, *id_shape],
     )
     if malformed is not None:
         return malformed
+    required_ids = supplied_ids
     findings: list[ValidationFinding] = []
-    by_id = {spec.id: spec for spec in integrations}
-    observed = {item.integration_id: item for item in (observed_health or [])}
+    by_id = {spec.id: spec for spec in supplied_specs}
+    observed = {item.integration_id: item for item in supplied_health}
 
     if not required_ids:
         return ValidationReport(
@@ -1956,12 +1984,16 @@ def validate_lifecycle_separation(
     subject = (
         f"{getattr(receipt, 'work_item_id', None)}/{getattr(receipt, 'run_id', None)}"
     )
+    required_states, shape_messages = materialize_sequence(
+        required_evidence_states, label="required_evidence_states"
+    )
     malformed = malformed_vocabulary_report(
         validator_id,
         "execution-receipt",
         subject,
         {"receipt": receipt},
-        {"required_evidence_states": (required_evidence_states, EvidenceState)},
+        {"required_evidence_states": (required_states, EvidenceState)},
+        shape_messages=shape_messages,
     )
     if malformed is not None:
         return malformed
@@ -2004,7 +2036,9 @@ def validate_lifecycle_separation(
     ):
         findings.append(_finding(validator_id, ValidationOutcome.BLOCKED, subject, message))
 
-    required = [state.value for state in required_evidence_states]
+    # The materialized copy, not the caller's iterable: reading it a second time would
+    # hand this an exhausted iterator and silently make every requirement vanish.
+    required = [str(getattr(state, "value", state)) for state in required_states]
     unmet = sorted(set(required) - set(attained) - set(not_required))
 
     if lifecycle in _TERMINAL_WORK_STATES:
@@ -2060,11 +2094,16 @@ def validate_receipt_completeness(
     subject = (
         f"{getattr(receipt, 'work_item_id', None)}/{getattr(receipt, 'run_id', None)}"
     )
+    supplied_artifacts, shape_messages = materialize_mapping(artifacts, label="artifacts")
     malformed = malformed_vocabulary_report(
         validator_id,
         "execution-receipt",
         subject,
-        {"receipt": receipt, **{f"artifacts[{k}]": v for k, v in (artifacts or {}).items()}},
+        {
+            "receipt": receipt,
+            **{f"artifacts[{key}]": value for key, value in supplied_artifacts.items()},
+        },
+        shape_messages=shape_messages,
     )
     if malformed is not None:
         return malformed
@@ -2115,7 +2154,7 @@ def validate_receipt_completeness(
         )
 
     by_kind = {entry.get("kind"): entry for entry in identities}
-    for kind, artifact in sorted((artifacts or {}).items()):
+    for kind, artifact in sorted(supplied_artifacts.items()):
         entry = by_kind.get(kind)
         if entry is None:
             findings.append(

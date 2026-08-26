@@ -158,23 +158,34 @@ def test_every_enum_typed_parameter_is_either_swept_or_explained():
 VALIDATOR_SOURCES = ("validators.py", "explain.py")
 
 
-def _gate_region(source: str, function_name: str) -> str:
-    """The text of a validator's vocabulary gate, and nothing else.
+ENTRY_OPENERS = (
+    "materialize_sequence(",
+    "materialize_mapping(",
+    "malformed_vocabulary_report(",
+    "vocabulary_findings(",
+)
 
-    Deliberately excludes the signature. An earlier version of this test sliced from
-    `def name(` and so found the parameter in its own annotation — it would have
-    passed with the parameter removed from the gate, which is exactly the mutation it
-    exists to catch.
+
+def _gate_region(source: str, function_name: str) -> str:
+    """A validator's entry block: normalization plus the vocabulary gate.
+
+    Deliberately excludes the signature. An earlier version sliced from `def name(`
+    and so found the parameter in its own annotation — it would have passed with the
+    gate emptied, which is the mutation it exists to catch.
+
+    The region starts at the first normalization or gate call, because a parameter
+    now reaches the gate through its materialized copy: `materialize_sequence(
+    work_items, ...)` names the parameter, and the gate below it names the list.
     """
     start = source.index(f"def {function_name}(")
     body_end = source.find("\ndef ", start + 1)
     body = source[start : body_end if body_end != -1 else len(source)]
-    for opener in ("malformed_vocabulary_report(", "vocabulary_findings("):
-        if opener in body:
-            gate_start = body.index(opener)
-            closer = body.find("if malformed", gate_start)
-            return body[gate_start : closer if closer != -1 else len(body)]
-    return ""
+    starts = [body.index(opener) for opener in ENTRY_OPENERS if opener in body]
+    if not starts:
+        return ""
+    gate_start = min(starts)
+    closer = body.find("if malformed", gate_start)
+    return body[gate_start : closer if closer != -1 else len(body)]
 
 
 def _validator_source(name: str) -> str | None:
@@ -253,18 +264,27 @@ def test_the_receipt_builder_refuses_an_off_vocabulary_state():
             build_execution_receipt(**kwargs)
 
 
-def test_the_shared_parameter_helper_accepts_both_shapes():
-    """A caller may hand a bare value or a sequence; both are checked."""
-    from agent_foundry.models import EvidenceState
-    from agent_foundry.verify.independent import enum_value_violations
+def test_the_two_normalization_helpers_split_shape_from_vocabulary():
+    """Shape is `materialize_sequence`'s job; vocabulary is checked on the result.
 
-    assert enum_value_violations(None, EvidenceState, label="x") == []
+    They used to be one call that wrapped "a bare value or a sequence" in a list,
+    which is what mishandled a generator and a bare string at the same time.
+    """
+    from agent_foundry.models import EvidenceState
+    from agent_foundry.verify.independent import enum_value_violations, materialize_sequence
+
+    # Shape.
+    assert materialize_sequence(None, label="x") == ([], [])
+    assert materialize_sequence([], label="x") == ([], [])
+    items, violations = materialize_sequence((s for s in ["VALIDATED"]), label="x")
+    assert items == ["VALIDATED"] and violations == []
+    assert materialize_sequence("VALIDATED", label="x")[1], "a bare string is not a sequence"
+    assert materialize_sequence(7, label="x")[1], "a non-iterable is not a sequence"
+
+    # Vocabulary, over an already-materialized list.
     assert enum_value_violations([], EvidenceState, label="x") == []
-    assert enum_value_violations(
-        [EvidenceState.VALIDATED], EvidenceState, label="x"
-    ) == []
+    assert enum_value_violations([EvidenceState.VALIDATED], EvidenceState, label="x") == []
     assert enum_value_violations(["VALIDATED"], EvidenceState, label="x") == []
-    assert enum_value_violations(OFF_VOCABULARY, EvidenceState, label="x")
     assert enum_value_violations([OFF_VOCABULARY], EvidenceState, label="x")
 
 

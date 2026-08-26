@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections import Counter
 
 from agent_foundry.models.common import FailureCategory
+from agent_foundry.verify.independent import materialize_sequence
 from agent_foundry.models.verification import (
     FailureClassification,
     FailureSignal,
@@ -100,6 +101,18 @@ def classify_failure(signal: FailureSignal) -> FailureClassification:
 
 def classify_repeated_failures(signals: list[FailureSignal]) -> RepeatedFailureAssessment:
     """Assess a run of failures for a dominant, repeating class."""
+    # Read once: the run ids are collected below from the same list the
+    # classifications came from. Re-reading a caller's generator would report the
+    # right category against an empty set of runs.
+    supplied, shape_messages = materialize_sequence(signals, label="signals")
+    if shape_messages:
+        return RepeatedFailureAssessment(
+            category=FailureCategory.UNKNOWN,
+            occurrences=0,
+            rationale="; ".join(shape_messages),
+        )
+    signals = supplied
+
     classifications = [classify_failure(signal) for signal in signals]
     run_ids = sorted({signal.run_id for signal in signals})
 

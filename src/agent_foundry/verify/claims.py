@@ -49,7 +49,11 @@ than asserted here:
   (`tests/test_verify_parameter_vocabulary.py`);
 * *model-typed parameters* — every model argument a validator takes must appear in
   that validator's own vocabulary gate, checked against the gate text rather than the
-  signature.
+  signature;
+* *parameter shape* — every sequence parameter is materialized once at the entry
+  point, so a caller's generator gives the same answer as the equivalent list, and a
+  bare string is rejected rather than read one character at a time. Both directions
+  are checked: valid input must not be rejected, and invalid input must not pass.
 
 Not vocabularies, and deliberately not swept: free-form identifier parameters
 (`required_ids`, `review_only_role_ids`), version strings (already parsed

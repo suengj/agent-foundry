@@ -516,28 +516,70 @@ def vocabulary_violations(model: object, *, path: str = "") -> list[str]:
     return violations
 
 
+def materialize_sequence(values: object, *, label: str) -> tuple[list, list[str]]:
+    """Read a caller-supplied sequence exactly once, and say so when it is not one.
+
+    Returns the materialized items plus any shape violations. Every entry point calls
+    this at its door and uses the returned list everywhere afterwards.
+
+    Two bugs this exists to prevent, both introduced by checking a parameter without
+    normalizing it first:
+
+    * **Consuming a generator twice.** A guard that iterates the caller's iterable to
+      check it, then hands the same exhausted iterator to the real logic, turns valid
+      input into an empty sequence. That reads as a clean PASS over nothing — a
+      validator rejecting valid input, or worse, accepting it for the wrong reason.
+      One pass, one list, used by both.
+    * **Treating a bare string as a sequence.** `str` is iterable, so a caller who
+      passes `"VALIDATED"` where a list of states belongs gets it read character by
+      character. That is never what was meant, so it is a shape violation reported as
+      a finding — not an exception, and not a silent misread.
+
+    A non-iterable is reported the same way rather than raising: a caller error must
+    still produce a verdict.
+    """
+    if values is None:
+        return [], []
+    if isinstance(values, (str, bytes)):
+        return [], [
+            f"{label} is a {type(values).__name__}, not a sequence of values; a bare "
+            "string would be read one character at a time"
+        ]
+    try:
+        return list(values), []
+    except TypeError:
+        return [], [f"{label} is not iterable and cannot be read as a sequence"]
+
+
+def materialize_mapping(value: object, *, label: str) -> tuple[dict, list[str]]:
+    """The mapping counterpart of `materialize_sequence`, with the same guarantees."""
+    from collections.abc import Mapping
+
+    if value is None:
+        return {}, []
+    if isinstance(value, Mapping):
+        return dict(value), []
+    return {}, [f"{label} is not a mapping and cannot be read as one"]
+
+
 def enum_value_violations(
-    values: object,
+    items: list,
     enum_type: type,
     *,
     label: str,
 ) -> list[str]:
-    """Caller-supplied values that name nothing in the vocabulary they must come from.
+    """Materialized values that name nothing in the vocabulary they must come from.
 
     The parameter analogue of `vocabulary_violations`, which walks a model. A
     vocabulary value can reach a validator two ways — carried on the artifact under
     examination, or handed in as an argument — and both need the same check before
-    the value is ranked, compared, or dereferenced. Covering only the artifact is how
-    `required_evidence_states=['SOMEDAY']` came to raise instead of returning a
-    verdict.
+    the value is ranked, compared, or dereferenced.
 
-    Accepts a bare value or a sequence, since a caller may pass either, and reads
-    through `getattr(..., "value", ...)` because an argument arriving from a config
-    file or another process is a plain string.
+    Takes an already-materialized list. It used to accept "a bare value or a
+    sequence" and wrap whatever it was given, which silently mishandled both a
+    generator and a bare string; normalizing is `materialize_sequence`'s job, done
+    once at the entry point.
     """
-    if values is None:
-        return []
-    items = list(values) if isinstance(values, (list, tuple, set, frozenset)) else [values]
     vocabulary = {member.value for member in enum_type}
     raw = [str(getattr(item, "value", item)) for item in items]
     return [
@@ -594,7 +636,8 @@ def malformed_vocabulary_report(
     subject_kind: str,
     subject: str,
     inputs: dict[str, object],
-    parameters: dict[str, tuple[object, type]] | None = None,
+    parameters: dict[str, tuple[list, type]] | None = None,
+    shape_messages: list[str] = [],
 ) -> ValidationReport | None:
     """Reject an artifact whose vocabulary is malformed, before examining anything else.
 
@@ -612,7 +655,11 @@ def malformed_vocabulary_report(
     for that. A *supplied* value naming nothing in its vocabulary is a positive claim
     that is wrong, and it can never establish the state it purports to.
     """
-    findings = vocabulary_findings(validator_id, subject, inputs)
+    findings = [
+        _gate_finding(validator_id, ValidationOutcome.BLOCKED, subject, message)
+        for message in shape_messages
+    ]
+    findings.extend(vocabulary_findings(validator_id, subject, inputs))
     # A vocabulary value reaches a validator two ways: carried on the artifact, or
     # handed in as an argument. Both are checked here, because both are ranked,
     # compared, and dereferenced by the same downstream code.
