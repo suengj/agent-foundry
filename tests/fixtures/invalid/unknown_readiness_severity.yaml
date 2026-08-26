@@ -4,8 +4,6 @@ project:
   intake_mode: brownfield
   work_modes:
     primary: build
-    secondary:
-      - operate
 state:
   persistence: external-shared
   temporal_mode: long-running
@@ -20,22 +18,11 @@ execution:
 assurance:
   required:
     - deterministic-tests
-    - independent-review
-    - runtime-readback
 access:
   sensitivity: internal
-observations:
-  - subject: test-harness
-    content: pytest entrypoint present
-    provenance:
-      kind: observed
-      confidence: 0.9
-      source_ref: tests/test_smoke.py
 readiness_findings:
   - dimension: testability
-    severity: medium
-    message: Deterministic checks available
-    blocker: false
+    severity: unknown-severity
+    message: Invalid severity value
     provenance:
-      kind: inferred
-      confidence: 0.75
+      kind: observed

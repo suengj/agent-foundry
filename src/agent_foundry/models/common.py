@@ -4,11 +4,24 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from pydantic import Field
+
+from agent_foundry.models.base import FoundryModel
+
+
 class ProvenanceKind(StrEnum):
     OBSERVED = "observed"
     DECLARED = "declared"
     INFERRED = "inferred"
     NORMATIVE = "normative"
+
+
+class Provenance(FoundryModel):
+    """Reusable provenance envelope for observations and findings."""
+
+    kind: ProvenanceKind
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    source_ref: str | None = None
 
 
 class AdoptionAction(StrEnum):

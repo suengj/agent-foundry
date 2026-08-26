@@ -17,7 +17,7 @@ from agent_foundry.models.common import (
     IntakeMode,
     PrimaryArtifactState,
     PrimaryWorkMode,
-    ProvenanceKind,
+    Provenance,
     Reversibility,
     Statefulness,
     TemporalMode,
@@ -29,17 +29,17 @@ class ProjectObservation(FoundryModel):
 
     subject: str
     content: str
-    provenance: ProvenanceKind
-    source_ref: str | None = None
+    provenance: Provenance
 
 
 class ReadinessFinding(FoundryModel):
     """Readiness assessment finding."""
 
     dimension: str
-    severity: str
+    severity: ConsequenceClass
     message: str
     blocker: bool = False
+    provenance: Provenance
 
 
 class WorkModes(FoundryModel):
