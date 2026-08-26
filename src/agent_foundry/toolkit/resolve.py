@@ -111,6 +111,53 @@ def _retract_include(
     ]
 
 
+def _retract_exclude(
+    decisions: list[ResolutionDecision],
+    component_kind: str,
+    component_id: str,
+) -> None:
+    decisions[:] = [
+        decision
+        for decision in decisions
+        if not (
+            decision.action == ResolutionAction.EXCLUDE
+            and decision.component_kind == component_kind
+            and decision.component_id == component_id
+        )
+    ]
+
+
+def _record_include(
+    decisions: list[ResolutionDecision],
+    component_kind: str,
+    component_id: str,
+    rationale: str,
+    source: ResolutionSource,
+    *,
+    project_fact: str | None = None,
+    policy_id: str | None = None,
+) -> None:
+    _retract_exclude(decisions, component_kind, component_id)
+    if any(
+        decision.action == ResolutionAction.INCLUDE
+        and decision.component_kind == component_kind
+        and decision.component_id == component_id
+        for decision in decisions
+    ):
+        return
+    decisions.append(
+        _decision(
+            ResolutionAction.INCLUDE,
+            component_kind,
+            component_id,
+            rationale,
+            source,
+            project_fact=project_fact,
+            policy_id=policy_id,
+        )
+    )
+
+
 def _record_exclude(
     decisions: list[ResolutionDecision],
     component_kind: str,
@@ -397,6 +444,8 @@ def _decision(
 
 def _policy_matches(manifest: ProjectManifest, rule: PolicyRule) -> bool:
     when = rule.when
+    # Consequence is not substituted when unknown: fail-closed substitute would be CRITICAL,
+    # which would over-provision or refuse every under-specified project.
     if when.consequence is not None:
         if manifest.impact.consequence != when.consequence:
             return False
@@ -440,51 +489,43 @@ def _collect_policy_constraints(
             continue
         for cap in rule.require_capabilities:
             require["capabilities"].add(cap)
-            decisions.append(
-                _decision(
-                    ResolutionAction.INCLUDE,
-                    "capability",
-                    cap,
-                    f"policy {rule.id} requires capability",
-                    ResolutionSource.POLICY,
-                    policy_id=rule.id,
-                )
+            _record_include(
+                decisions,
+                "capability",
+                cap,
+                f"policy {rule.id} requires capability",
+                ResolutionSource.POLICY,
+                policy_id=rule.id,
             )
         for skill in rule.require_skills:
             require["skills"].add(skill)
-            decisions.append(
-                _decision(
-                    ResolutionAction.INCLUDE,
-                    "skill",
-                    skill,
-                    f"policy {rule.id} requires skill",
-                    ResolutionSource.POLICY,
-                    policy_id=rule.id,
-                )
+            _record_include(
+                decisions,
+                "skill",
+                skill,
+                f"policy {rule.id} requires skill",
+                ResolutionSource.POLICY,
+                policy_id=rule.id,
             )
         for workflow in rule.require_workflows:
             require["workflows"].add(workflow)
-            decisions.append(
-                _decision(
-                    ResolutionAction.INCLUDE,
-                    "workflow",
-                    workflow,
-                    f"policy {rule.id} requires workflow",
-                    ResolutionSource.POLICY,
-                    policy_id=rule.id,
-                )
+            _record_include(
+                decisions,
+                "workflow",
+                workflow,
+                f"policy {rule.id} requires workflow",
+                ResolutionSource.POLICY,
+                policy_id=rule.id,
             )
         for role in rule.require_roles:
             require["roles"].add(role)
-            decisions.append(
-                _decision(
-                    ResolutionAction.INCLUDE,
-                    "role",
-                    role,
-                    f"policy {rule.id} requires role",
-                    ResolutionSource.POLICY,
-                    policy_id=rule.id,
-                )
+            _record_include(
+                decisions,
+                "role",
+                role,
+                f"policy {rule.id} requires role",
+                ResolutionSource.POLICY,
+                policy_id=rule.id,
             )
         for cap in rule.forbid_capabilities:
             forbid["capabilities"].add(cap)
@@ -522,151 +563,175 @@ def _manifest_fact_requirements(
 
     if code_signal:
         require["capabilities"].add("repository.read")
-        decisions.append(
-            _decision(
-                ResolutionAction.INCLUDE,
-                "capability",
-                "repository.read",
-                "code-centric project requires repository read",
-                ResolutionSource.PROJECT_FACT,
-                project_fact="project.primary_artifact=code or work_modes.primary=build",
-            )
+        _record_include(
+            decisions,
+            "capability",
+            "repository.read",
+            "code-centric project requires repository read",
+            ResolutionSource.PROJECT_FACT,
+            project_fact="project.primary_artifact=code or work_modes.primary=build",
         )
         if external_effect is None:
-            decisions.append(
-                _decision(
-                    ResolutionAction.EXCLUDE,
-                    "skill",
-                    "bounded-change",
-                    "impact.external_effect is unknown; cannot authorize write skill",
-                    ResolutionSource.PROJECT_FACT,
-                    project_fact="impact.external_effect is unknown",
-                )
+            _record_exclude(
+                decisions,
+                "skill",
+                "bounded-change",
+                "impact.external_effect is unknown; cannot authorize write skill",
+                ResolutionSource.PROJECT_FACT,
+                project_fact="impact.external_effect is unknown",
             )
-            decisions.append(
-                _decision(
-                    ResolutionAction.EXCLUDE,
-                    "role",
-                    "builder",
-                    "impact.external_effect is unknown; cannot authorize builder role",
-                    ResolutionSource.PROJECT_FACT,
-                    project_fact="impact.external_effect is unknown",
-                )
+            _record_exclude(
+                decisions,
+                "role",
+                "builder",
+                "impact.external_effect is unknown; cannot authorize builder role",
+                ResolutionSource.PROJECT_FACT,
+                project_fact="impact.external_effect is unknown",
             )
         elif manifest_external_effect_allows_repository_write(manifest):
             require["skills"].add("bounded-change")
             require["roles"].add("builder")
-            decisions.append(
-                _decision(
-                    ResolutionAction.INCLUDE,
-                    "skill",
-                    "bounded-change",
-                    "code-centric project with repository-write authority requires bounded change",
-                    ResolutionSource.PROJECT_FACT,
-                    project_fact=f"impact.external_effect={external_effect.value}",
-                )
+            _record_include(
+                decisions,
+                "skill",
+                "bounded-change",
+                "code-centric project with repository-write authority requires bounded change",
+                ResolutionSource.PROJECT_FACT,
+                project_fact=f"impact.external_effect={external_effect.value}",
             )
-            decisions.append(
-                _decision(
-                    ResolutionAction.INCLUDE,
-                    "role",
-                    "builder",
-                    "code-centric project with repository-write authority requires builder role",
-                    ResolutionSource.PROJECT_FACT,
-                    project_fact=f"impact.external_effect={external_effect.value}",
-                )
+            _record_include(
+                decisions,
+                "role",
+                "builder",
+                "code-centric project with repository-write authority requires builder role",
+                ResolutionSource.PROJECT_FACT,
+                project_fact=f"impact.external_effect={external_effect.value}",
             )
         else:
-            decisions.append(
-                _decision(
-                    ResolutionAction.EXCLUDE,
-                    "skill",
-                    "bounded-change",
-                    "repository write exceeds declared external effect ceiling",
-                    ResolutionSource.PROJECT_FACT,
-                    project_fact=f"impact.external_effect={external_effect.value}",
-                )
+            _record_exclude(
+                decisions,
+                "skill",
+                "bounded-change",
+                "repository write exceeds declared external effect ceiling",
+                ResolutionSource.PROJECT_FACT,
+                project_fact=f"impact.external_effect={external_effect.value}",
             )
-            decisions.append(
-                _decision(
-                    ResolutionAction.EXCLUDE,
-                    "role",
-                    "builder",
-                    "builder role exceeds declared external effect ceiling",
-                    ResolutionSource.PROJECT_FACT,
-                    project_fact=f"impact.external_effect={external_effect.value}",
-                )
+            _record_exclude(
+                decisions,
+                "role",
+                "builder",
+                "builder role exceeds declared external effect ceiling",
+                ResolutionSource.PROJECT_FACT,
+                project_fact=f"impact.external_effect={external_effect.value}",
             )
     else:
         if artifact is None:
-            decisions.append(
-                _decision(
-                    ResolutionAction.EXCLUDE,
-                    "capability",
-                    "repository.read",
-                    "project.primary_artifact is unknown",
-                    ResolutionSource.PROJECT_FACT,
-                    project_fact="project.primary_artifact is unknown",
-                )
+            _record_exclude(
+                decisions,
+                "capability",
+                "repository.read",
+                "project.primary_artifact is unknown",
+                ResolutionSource.PROJECT_FACT,
+                project_fact="project.primary_artifact is unknown",
             )
         if primary_mode is None:
-            decisions.append(
-                _decision(
-                    ResolutionAction.EXCLUDE,
-                    "skill",
-                    "bounded-change",
-                    "project.work_modes.primary is unknown",
-                    ResolutionSource.PROJECT_FACT,
-                    project_fact="project.work_modes.primary is unknown",
-                )
+            _record_exclude(
+                decisions,
+                "skill",
+                "bounded-change",
+                "project.work_modes.primary is unknown",
+                ResolutionSource.PROJECT_FACT,
+                project_fact="project.work_modes.primary is unknown",
             )
-            decisions.append(
-                _decision(
-                    ResolutionAction.EXCLUDE,
-                    "role",
-                    "builder",
-                    "project.work_modes.primary is unknown",
-                    ResolutionSource.PROJECT_FACT,
-                    project_fact="project.work_modes.primary is unknown",
-                )
+            _record_exclude(
+                decisions,
+                "role",
+                "builder",
+                "project.work_modes.primary is unknown",
+                ResolutionSource.PROJECT_FACT,
+                project_fact="project.work_modes.primary is unknown",
             )
 
     if primary_mode == PrimaryWorkMode.ANALYZE:
         require["skills"].add("repository-inspection")
         require["roles"].add("explorer")
-        decisions.append(
-            _decision(
-                ResolutionAction.INCLUDE,
-                "skill",
-                "repository-inspection",
-                "analyze work mode requires inspection skill",
-                ResolutionSource.PROJECT_FACT,
-                project_fact="project.work_modes.primary=analyze",
-            )
+        _record_include(
+            decisions,
+            "skill",
+            "repository-inspection",
+            "analyze work mode requires inspection skill",
+            ResolutionSource.PROJECT_FACT,
+            project_fact="project.work_modes.primary=analyze",
         )
-        decisions.append(
-            _decision(
-                ResolutionAction.INCLUDE,
-                "role",
-                "explorer",
-                "analyze work mode requires explorer role",
-                ResolutionSource.PROJECT_FACT,
-                project_fact="project.work_modes.primary=analyze",
-            )
+        _record_include(
+            decisions,
+            "role",
+            "explorer",
+            "analyze work mode requires explorer role",
+            ResolutionSource.PROJECT_FACT,
+            project_fact="project.work_modes.primary=analyze",
         )
     elif primary_mode is None:
-        decisions.append(
-            _decision(
-                ResolutionAction.EXCLUDE,
-                "skill",
-                "repository-inspection",
-                "project.work_modes.primary is unknown",
-                ResolutionSource.PROJECT_FACT,
-                project_fact="project.work_modes.primary is unknown",
-            )
+        _record_exclude(
+            decisions,
+            "skill",
+            "repository-inspection",
+            "project.work_modes.primary is unknown",
+            ResolutionSource.PROJECT_FACT,
+            project_fact="project.work_modes.primary is unknown",
         )
 
     return require, decisions
+
+
+def _policy_requirement_signature(rule: PolicyRule) -> tuple:
+    return (
+        rule.when.consequence,
+        rule.when.assurance,
+        tuple(sorted(rule.require_capabilities)),
+        tuple(sorted(rule.require_skills)),
+        tuple(sorted(rule.require_roles)),
+    )
+
+
+def _validate_policy_effect_coverage(
+    policy_rules: list[PolicyRule],
+    *,
+    contract_name: str = "CapabilityRegistry",
+) -> None:
+    covered_signatures: set[tuple] = set()
+    for rule in policy_rules:
+        if not any(
+            [
+                rule.require_capabilities,
+                rule.require_skills,
+                rule.require_workflows,
+                rule.require_roles,
+            ]
+        ):
+            continue
+        if rule.when.external_effect is None or rule.when.external_effect == ExternalEffectClass.READ_ONLY:
+            covered_signatures.add(_policy_requirement_signature(rule))
+
+    for rule in policy_rules:
+        effect = rule.when.external_effect
+        if effect is None or effect == ExternalEffectClass.READ_ONLY:
+            continue
+        if not any(
+            [
+                rule.require_capabilities,
+                rule.require_skills,
+                rule.require_workflows,
+                rule.require_roles,
+            ]
+        ):
+            continue
+        signature = _policy_requirement_signature(rule)
+        if signature not in covered_signatures:
+            raise ToolkitResolutionError(
+                f"{contract_name}: policy rule {rule.id!r} lacks read-only or "
+                f"effect-agnostic sibling for requirements {signature}"
+            )
 
 
 def _validate_registry_ids(
@@ -732,14 +797,12 @@ def _expand_skill_capabilities(
         for cap in skill.required_capabilities:
             if cap not in capabilities:
                 capabilities.add(cap)
-                decisions.append(
-                    _decision(
-                        ResolutionAction.INCLUDE,
-                        "capability",
-                        cap,
-                        f"required by skill {skill_id}",
-                        ResolutionSource.REGISTRY,
-                    )
+                _record_include(
+                    decisions,
+                    "capability",
+                    cap,
+                    f"required by skill {skill_id}",
+                    ResolutionSource.REGISTRY,
                 )
 
 
@@ -759,26 +822,22 @@ def _expand_workflow_requirements(
         for skill_id in workflow.required_skills:
             if skill_id not in skills:
                 skills.add(skill_id)
-                decisions.append(
-                    _decision(
-                        ResolutionAction.INCLUDE,
-                        "skill",
-                        skill_id,
-                        f"required by workflow {workflow_id}",
-                        ResolutionSource.REGISTRY,
-                    )
+                _record_include(
+                    decisions,
+                    "skill",
+                    skill_id,
+                    f"required by workflow {workflow_id}",
+                    ResolutionSource.REGISTRY,
                 )
         for role_id in workflow.required_roles:
             if role_id not in roles:
                 roles.add(role_id)
-                decisions.append(
-                    _decision(
-                        ResolutionAction.INCLUDE,
-                        "role",
-                        role_id,
-                        f"required by workflow {workflow_id}",
-                        ResolutionSource.REGISTRY,
-                    )
+                _record_include(
+                    decisions,
+                    "role",
+                    role_id,
+                    f"required by workflow {workflow_id}",
+                    ResolutionSource.REGISTRY,
                 )
 
 
@@ -854,6 +913,7 @@ def resolve_project_toolkit(
     """Resolve a version-pinned Project Toolkit lock from manifest and registry."""
     assert_registry_compat(registry.foundry_compat)
     _validate_registry_ids(registry)
+    _validate_policy_effect_coverage(registry.policy_rules)
 
     index = _index_registry(registry)
     forbid, policy_require, policy_decisions = _collect_policy_constraints(

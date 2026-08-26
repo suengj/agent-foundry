@@ -72,7 +72,9 @@ from agent_foundry.toolkit.ceiling import (
 from agent_foundry.toolkit.resolve import (
     _decision,
     _record_exclude,
+    _record_include,
     _retract_include,
+    _retract_exclude,
     resolve_project_toolkit,
     resolve_task_toolkit,
 )
@@ -975,6 +977,112 @@ def test_unknown_external_effect_critical_requires_independent_review() -> None:
     assert "builder-reviewer" not in lock.workflow_ids
 
 
+def _decision_contradictions(lock) -> dict[tuple[str, str], set[str]]:
+    by_component: dict[tuple[str, str], set[str]] = {}
+    for decision in lock.decisions:
+        key = (decision.component_kind, decision.component_id)
+        by_component.setdefault(key, set()).add(decision.action.value)
+    return {key: actions for key, actions in by_component.items() if len(actions) > 1}
+
+
+def test_unknown_project_shape_no_stale_exclude_after_policy_include() -> None:
+    manifest = _sample_manifest(
+        project={
+            "name": "sample-service",
+            "intake_mode": "brownfield",
+        },
+        impact={
+            "external_effect": "repository-write",
+            "reversibility": "versioned",
+            "consequence": "high",
+        },
+        assurance={"required": ["deterministic-tests", "independent-review"]},
+    )
+    _, lock = resolve_toolkit(manifest)
+    assert "repository.read" in lock.capability_ids
+    assert "builder" in lock.role_ids
+    assert "bounded-change" in lock.skill_ids
+    assert "builder-reviewer" in lock.workflow_ids
+    assert _decision_contradictions(lock) == {}
+
+
+def test_record_include_retracts_prior_exclude() -> None:
+    decisions = [
+        _decision(
+            ResolutionAction.EXCLUDE,
+            "skill",
+            "bounded-change",
+            "project facts unknown",
+            ResolutionSource.PROJECT_FACT,
+        ),
+    ]
+    _record_include(
+        decisions,
+        "skill",
+        "bounded-change",
+        "required by workflow builder-reviewer",
+        ResolutionSource.REGISTRY,
+    )
+    assert not any(
+        decision.action == ResolutionAction.EXCLUDE and decision.component_id == "bounded-change"
+        for decision in decisions
+    )
+    assert any(
+        decision.action == ResolutionAction.INCLUDE and decision.component_id == "bounded-change"
+        for decision in decisions
+    )
+
+
+def test_retract_exclude_removes_only_matching_component() -> None:
+    decisions = [
+        _decision(
+            ResolutionAction.EXCLUDE,
+            "capability",
+            "repository.write",
+            "excluded",
+            ResolutionSource.PROJECT_FACT,
+        ),
+        _decision(
+            ResolutionAction.EXCLUDE,
+            "capability",
+            "repository.read",
+            "excluded",
+            ResolutionSource.PROJECT_FACT,
+        ),
+    ]
+    _retract_exclude(decisions, "capability", "repository.write")
+    assert len(decisions) == 1
+    assert decisions[0].component_id == "repository.read"
+
+
+_PROJECT_SHAPES = [
+    {"primary_artifact": "code", "work_modes": {"primary": "build"}},
+    {"primary_artifact": "code", "work_modes": None},
+    {"primary_artifact": None, "work_modes": {"primary": "build"}},
+    {"primary_artifact": None, "work_modes": None},
+]
+
+
+def _manifest_for_shape(
+    shape: dict[str, object | None],
+    impact: dict[str, str],
+    assurance: list[str],
+) -> ProjectManifest:
+    project: dict[str, object] = {
+        "name": "sample-service",
+        "intake_mode": "brownfield",
+    }
+    if shape.get("primary_artifact") is not None:
+        project["primary_artifact"] = shape["primary_artifact"]
+    if shape.get("work_modes") is not None:
+        project["work_modes"] = shape["work_modes"]
+    return _sample_manifest(
+        project=project,
+        impact=impact,
+        assurance={"required": assurance},
+    )
+
+
 def test_assurance_sweep_none_axes_assurance_never_dropped() -> None:
     external_effects: list[str | None] = [
         None,
@@ -992,22 +1100,34 @@ def test_assurance_sweep_none_axes_assurance_never_dropped() -> None:
             continue
         for external_effect in external_effects:
             for consequence in consequences:
-                impact: dict[str, str] = {"reversibility": "trivial"}
-                if external_effect is not None:
-                    impact["external_effect"] = external_effect
-                if consequence is not None:
-                    impact["consequence"] = consequence
-                manifest = _sample_manifest(
-                    impact=impact,
-                    assurance={"required": assurance},
-                )
+                for shape in _PROJECT_SHAPES:
+                    impact: dict[str, str] = {"reversibility": "trivial"}
+                    if external_effect is not None:
+                        impact["external_effect"] = external_effect
+                    if consequence is not None:
+                        impact["consequence"] = consequence
+                    manifest = _manifest_for_shape(shape, impact, assurance)
+                    try:
+                        _, lock = resolve_toolkit(manifest)
+                        if "independent-review" not in lock.skill_ids:
+                            dropped += 1
+                    except PolicyViolationError:
+                        pass
+    assert dropped == 0
+
+
+def test_decision_sweep_zero_contradictions_with_project_shape_axis() -> None:
+    contradictions = 0
+    for assurance in _ASSURANCE_SWEEP_SETS:
+        for impact in _IMPACT_COMBINATIONS:
+            for shape in _PROJECT_SHAPES:
+                manifest = _manifest_for_shape(shape, impact, assurance)
                 try:
                     _, lock = resolve_toolkit(manifest)
-                    if "independent-review" not in lock.skill_ids:
-                        dropped += 1
-                except PolicyViolationError:
-                    pass
-    assert dropped == 0
+                except (PolicyViolationError, ToolkitResolutionError):
+                    continue
+                contradictions += len(_decision_contradictions(lock))
+    assert contradictions == 0
 
 
 def test_validate_toolkit_lock_against_ceiling_rejects_forged_capability() -> None:

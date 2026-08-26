@@ -85,6 +85,7 @@ def _independent_review_policy_rules() -> list[PolicyRule]:
                 ),
                 require_skills=["independent-review"],
                 require_workflows=["builder-reviewer"],
+                require_roles=["reviewer"],
             )
         )
     rules.append(
