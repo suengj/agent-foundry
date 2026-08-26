@@ -8,6 +8,12 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 
 ### Added
 
+- Capability registry and deterministic two-stage toolkit resolver (`agent_foundry.toolkit`) with explainable include/exclude decisions.
+- `agent-foundry resolve-toolkit` and `agent-foundry integration-check` CLI subcommands.
+- Extended registry/toolkit contracts: skill trigger metadata, policy rules, version-pinned `ToolkitLock`, and integration preflight health states.
+
+### Added (prior)
+
 - `agent-foundry adopt <path>` CLI and Core API for greenfield bootstrap and brownfield adoption planning from inspection evidence.
 - `agent-foundry inspect <path>` CLI and Core API for read-only project inventory, classification candidates, convention discovery, and readiness findings.
 - Tracker-neutral work decomposition engine (`agent_foundry.work`) with causal grouping, dependency graph validation, and quality checks.

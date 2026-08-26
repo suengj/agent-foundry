@@ -1,0 +1,410 @@
+"""Toolkit registry and deterministic resolution tests."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from agent_foundry.models import (
+    AssuranceMode,
+    AuthorityRequirement,
+    ConsequenceClass,
+    ExternalEffectClass,
+    IntegrationAuthMethod,
+    IntegrationHealthState,
+    IntegrationKind,
+    IntegrationTransport,
+    PolicyRule,
+    PolicyPredicate,
+    PolicyViolationError,
+    ProjectAccess,
+    ProjectAssurance,
+    ProjectExecution,
+    ProjectImpact,
+    ProjectInfo,
+    ProjectManifest,
+    ProjectState,
+    ResolutionAction,
+    SchemaCompatibilityError,
+    SecretRef,
+    ToolkitResolutionError,
+    WorkClass,
+    WorkItemContract,
+    dump_json,
+    dump_yaml,
+    load_yaml,
+)
+from agent_foundry.models.io import dump_yaml_raw
+from agent_foundry.models.base import FOUNDRY_SCHEMA_VERSION
+from agent_foundry.models.integrations import (
+    IntegrationAuth,
+    IntegrationHealth,
+    IntegrationHealthRequirement,
+    IntegrationPermissions,
+    IntegrationSpec,
+)
+from agent_foundry.models.policy import BudgetProfile, PermissionProfile
+from agent_foundry.models.project import WorkModes
+from agent_foundry.models.registry import CapabilityRegistry
+from agent_foundry.toolkit import (
+    check_integrations,
+    default_registry,
+    resolve_task_toolkit_for_work_item,
+    resolve_toolkit,
+)
+from agent_foundry.toolkit.builtin_registry import build_default_registry
+from agent_foundry.toolkit.resolve import resolve_project_toolkit, resolve_task_toolkit
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "valid"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _subprocess_env() -> dict[str, str]:
+    return {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
+
+
+def _sample_manifest(**overrides: object) -> ProjectManifest:
+    base = {
+        "schema_version": FOUNDRY_SCHEMA_VERSION,
+        "project": {
+            "name": "sample-service",
+            "intake_mode": "brownfield",
+            "work_modes": {"primary": "build"},
+            "primary_artifact": "code",
+        },
+        "state": {"persistence": "persistent-shared-external", "temporal_mode": "long-running"},
+        "impact": {
+            "external_effect": "runtime-mutation",
+            "reversibility": "rollback-required",
+            "consequence": "high",
+        },
+        "execution": {
+            "autonomy": "bounded-external-write",
+            "ambiguity": "bounded-judgment",
+            "concurrency": "single-writer",
+        },
+        "assurance": {
+            "required": [
+                "deterministic-tests",
+                "independent-review",
+                "runtime-readback",
+            ]
+        },
+        "access": {"sensitivity": "internal"},
+    }
+    base.update(overrides)
+    return ProjectManifest.model_validate(base)
+
+
+def _sample_work_item(**overrides: object) -> WorkItemContract:
+    base = {
+        "schema_version": FOUNDRY_SCHEMA_VERSION,
+        "id": "WI-001",
+        "title": "Implement capability",
+        "work_class": "CAPABILITY",
+        "objective": "Deliver bounded change",
+        "current_facts": ["bootstrap exists"],
+        "scope": ["toolkit resolver"],
+        "out_of_scope": ["execution"],
+        "acceptance_criteria": ["pytest green"],
+        "dependencies": [],
+        "authority_class": "repository-write",
+        "consequence_class": "medium",
+        "required_evidence": ["pytest"],
+        "stop_conditions": ["cannot express semantics"],
+    }
+    base.update(overrides)
+    return WorkItemContract.model_validate(base)
+
+
+def _integration_work_tracker() -> IntegrationSpec:
+    return IntegrationSpec(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        id="work-tracker",
+        kind=IntegrationKind.INTEGRATION,
+        transport=IntegrationTransport.MCP,
+        version="1",
+        capabilities=["work.read", "work.write"],
+        permissions=IntegrationPermissions(write_requires=AuthorityRequirement.EXPLICIT_AUTHORITY),
+        auth=IntegrationAuth(
+            method=IntegrationAuthMethod.OAUTH,
+            credential_ref=SecretRef.model_validate("managed:work-tracker"),
+        ),
+        health=IntegrationHealthRequirement(required=IntegrationHealthState.AUTHENTICATED),
+    )
+
+
+def test_default_registry_is_small_and_inspectable() -> None:
+    registry = default_registry()
+    assert len(registry.roles) == 7
+    assert len(registry.skills) == 4
+    assert len(registry.workflows) == 3
+    assert registry.foundry_compat == ">=0.1,<0.2"
+
+
+def test_resolve_project_toolkit_from_sample_manifest() -> None:
+    manifest = load_yaml(ProjectManifest, (FIXTURES / "project_manifest.yaml").read_bytes())
+    resolution, lock = resolve_toolkit(manifest)
+    assert "bounded-change" in lock.skill_ids
+    assert "independent-review" in lock.skill_ids
+    assert "builder-reviewer" in lock.workflow_ids
+    assert "runtime-verifier" in lock.role_ids
+    assert resolution.integration_health
+    assert all(item.message for item in resolution.integration_health)
+
+
+def test_toolkit_lock_reproducibility_same_input_twice() -> None:
+    manifest = _sample_manifest()
+    _, lock_a = resolve_toolkit(manifest)
+    _, lock_b = resolve_toolkit(manifest)
+    assert dump_json(lock_a) == dump_json(lock_b)
+
+
+def test_toolkit_lock_reproducibility_hash_seeds() -> None:
+    manifest = _sample_manifest()
+    digests: list[str] = []
+    for seed in ("0", "1", "42"):
+        env = {**os.environ, "PYTHONHASHSEED": seed}
+        _, lock = resolve_toolkit(manifest)
+        digests.append(hashlib.sha256(dump_json(lock)).hexdigest())
+    assert digests[0] == digests[1] == digests[2]
+
+
+def test_toolkit_lock_reproducibility_cwd() -> None:
+    manifest = _sample_manifest()
+    cwd_a = REPO_ROOT / "tests"
+    cwd_b = REPO_ROOT / "src"
+    locks: list[bytes] = []
+    for cwd in (cwd_a, cwd_b):
+        os.chdir(cwd)
+        _, lock = resolve_toolkit(manifest)
+        locks.append(dump_json(lock))
+    assert locks[0] == locks[1]
+
+
+def test_toolkit_lock_reproducibility_permuted_registry_lists() -> None:
+    manifest = _sample_manifest()
+    registry = build_default_registry()
+    permuted = CapabilityRegistry(
+        schema_version=registry.schema_version,
+        foundry_compat=registry.foundry_compat,
+        capabilities=list(reversed(registry.capabilities)),
+        skills=list(reversed(registry.skills)),
+        workflows=list(reversed(registry.workflows)),
+        roles=list(reversed(registry.roles)),
+        tools=list(reversed(registry.tools)),
+        connectors=list(reversed(registry.connectors)),
+        validators=list(reversed(registry.validators)),
+        permission_profiles=list(reversed(registry.permission_profiles)),
+        budget_profiles=list(reversed(registry.budget_profiles)),
+        integrations=list(reversed(registry.integrations)),
+        policy_rules=list(reversed(registry.policy_rules)),
+    )
+    _, lock_a = resolve_toolkit(manifest, registry=registry)
+    _, lock_b = resolve_toolkit(manifest, registry=permuted)
+    assert dump_json(lock_a) == dump_json(lock_b)
+
+
+def test_missing_mandatory_capability_fails_closed() -> None:
+    manifest = _sample_manifest()
+    registry = build_default_registry()
+    registry = registry.model_copy(
+        update={
+            "policy_rules": [
+                *registry.policy_rules,
+                PolicyRule(
+                    id="test-require-missing-cap",
+                    description="test",
+                    when=PolicyPredicate(),
+                    require_capabilities=["nonexistent-capability"],
+                ),
+            ]
+        }
+    )
+    with pytest.raises(ToolkitResolutionError, match="missing mandatory capability"):
+        resolve_toolkit(manifest, registry=registry)
+
+
+def test_forbidden_capability_rejected() -> None:
+    manifest = _sample_manifest()
+    registry = build_default_registry()
+    registry = registry.model_copy(
+        update={
+            "policy_rules": [
+                *registry.policy_rules,
+                PolicyRule(
+                    id="test-forbid-bounded-change",
+                    description="test",
+                    when=PolicyPredicate(),
+                    require_skills=["bounded-change"],
+                    forbid_skills=["bounded-change"],
+                ),
+            ]
+        }
+    )
+    with pytest.raises(PolicyViolationError, match="forbidden skill"):
+        resolve_toolkit(manifest, registry=registry)
+
+
+def test_permission_escalation_rejected() -> None:
+    from agent_foundry.toolkit.resolve import _assert_no_permission_escalation
+
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "read-only",
+            "reversibility": "trivial",
+            "consequence": "low",
+        },
+        assurance={"required": []},
+    )
+    profile = PermissionProfile(
+        id="repository-write-bounded",
+        external_effect=ExternalEffectClass.REPOSITORY_WRITE,
+        write_requires=AuthorityRequirement.BOUNDED_POLICY,
+    )
+    with pytest.raises(PolicyViolationError, match="permission escalation"):
+        _assert_no_permission_escalation(manifest, profile)
+
+
+def test_integration_spec_serialization_contains_secret_ref_only() -> None:
+    spec = _integration_work_tracker()
+    yaml_out = dump_yaml(spec).decode("utf-8")
+    json_out = dump_json(spec).decode("utf-8")
+    assert "managed" in yaml_out
+    assert "work-tracker" in yaml_out
+    forbidden = ["sk-live", "ghp_", "api_key:", "password"]
+    for token in forbidden:
+        assert token not in yaml_out
+        assert token not in json_out
+    assert "allow_paths" not in yaml_out
+
+
+def test_task_toolkit_is_strict_subset_with_tighter_controls() -> None:
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "repository-write",
+            "reversibility": "versioned",
+            "consequence": "medium",
+        },
+        assurance={"required": ["deterministic-tests"]},
+    )
+    _, project_lock = resolve_toolkit(manifest)
+    work_item = _sample_work_item(authority_class="read-only", consequence_class="medium")
+    task = resolve_task_toolkit_for_work_item(work_item, project_lock)
+
+    assert set(task.capability_ids) <= set(project_lock.capability_ids)
+    assert set(task.skill_ids) <= set(project_lock.skill_ids)
+    assert set(task.role_ids) <= set(project_lock.role_ids)
+    assert set(task.integration_ids) <= set(project_lock.integration_ids)
+
+    assert task.permission_profile_ids == ["read-only"]
+    assert project_lock.permission_profile_ids == ["repository-write-bounded"]
+
+    excluded_skills = set(project_lock.skill_ids) - set(task.skill_ids)
+    assert "bounded-change" in excluded_skills
+
+
+def test_include_and_exclude_rationale_present() -> None:
+    manifest = _sample_manifest()
+    _, lock = resolve_toolkit(manifest)
+    includes = [d for d in lock.decisions if d.action == ResolutionAction.INCLUDE]
+    excludes = [d for d in lock.decisions if d.action == ResolutionAction.EXCLUDE]
+    assert includes
+    assert any(d.project_fact or d.policy_id for d in includes)
+    work_item = _sample_work_item()
+    task = resolve_task_toolkit_for_work_item(work_item, lock)
+    task_excludes = [d for d in task.decisions if d.action == ResolutionAction.EXCLUDE]
+    assert task_excludes
+    assert all(d.rationale and d.source for d in task_excludes)
+
+
+def test_integration_health_distinct_without_credential_leak() -> None:
+    integrations = [_integration_work_tracker()]
+    health = check_integrations(
+        integrations,
+        required_ids=["work-tracker"],
+        observed_health=[
+            IntegrationHealth(
+                integration_id="work-tracker",
+                state=IntegrationHealthState.AUTHENTICATED,
+                message="token valid",
+            )
+        ],
+    )
+    dumped = dump_json(health[0])
+    text = dumped.decode("utf-8")
+    assert IntegrationHealthState.AUTHENTICATED.value in text
+    assert "managed:work-tracker" not in text
+
+
+def test_unsupported_registry_schema_version_rejected() -> None:
+    registry = build_default_registry()
+    bad_skill = registry.skills[0].model_copy(update={"schema_version": "0.2"})
+    bad_registry = registry.model_copy(update={"skills": [bad_skill, *registry.skills[1:]]})
+    with pytest.raises(SchemaCompatibilityError):
+        resolve_toolkit(_sample_manifest(), registry=bad_registry)
+
+
+def test_resolve_toolkit_cli_from_manifest(tmp_path: Path) -> None:
+    manifest_path = FIXTURES / "project_manifest.yaml"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agent_foundry",
+            "resolve-toolkit",
+            "--manifest",
+            str(manifest_path),
+            "--format",
+            "json",
+        ],
+        capture_output=True,
+        env=_subprocess_env(),
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert b"bounded-change" in result.stdout
+    child = subprocess.run(
+        [sys.executable, "-c", "import agent_foundry; print(agent_foundry.__file__)"] ,
+        capture_output=True,
+        text=True,
+        env=_subprocess_env(),
+        cwd=REPO_ROOT,
+        check=True,
+    )
+    assert str(REPO_ROOT / "src") in child.stdout
+
+
+def test_integration_check_cli(tmp_path: Path) -> None:
+    integrations_file = tmp_path / "integrations.yaml"
+    integrations_file.write_text(
+        dump_yaml_raw([_integration_work_tracker().model_dump(mode="json")]).decode("utf-8"),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agent_foundry",
+            "integration-check",
+            str(integrations_file),
+            "--required-id",
+            "work-tracker",
+            "--format",
+            "json",
+        ],
+        capture_output=True,
+        env=_subprocess_env(),
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert b"work-tracker" in result.stdout
+    assert b"sk-live" not in result.stdout
