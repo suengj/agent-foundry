@@ -24,9 +24,15 @@ from agent_foundry.models.work import (
 from agent_foundry.work.grouping import (
     GroupKey,
     capability_group_key,
+    resolve_merged_work_class,
     work_item_id_for_group_key,
 )
-from agent_foundry.work.quality import check_grouped_units, check_work_items
+from agent_foundry.work.quality import (
+    check_capability_units_pre_grouping,
+    check_grouped_units,
+    check_work_items,
+    work_class_merge_issue,
+)
 from agent_foundry.work.validate import validate_dependency_graph
 
 
@@ -36,6 +42,21 @@ def _assert_unique_work_item_ids(work_items: list[WorkItemContract]) -> None:
         duplicates = sorted({item_id for item_id in ids if ids.count(item_id) > 1})
         raise WorkDecompositionError(
             f"duplicate work item id after decomposition: {', '.join(duplicates)}"
+        )
+
+
+def _validate_declared_outcomes(
+    outcomes: list[OutcomeCapability],
+    units: list[CapabilityUnit],
+) -> None:
+    declared_ids = {outcome.id for outcome in outcomes}
+    orphan_outcomes = sorted(
+        {unit.outcome_id for unit in units if unit.outcome_id not in declared_ids}
+    )
+    if orphan_outcomes:
+        raise WorkDecompositionError(
+            "capability units reference undeclared outcomes: "
+            + ", ".join(orphan_outcomes)
         )
 
 
@@ -50,6 +71,7 @@ def _merge_units(
     primary = sorted(units, key=lambda u: u.id)[0]
     unit_ids = {u.id for u in units}
     work_item_id = work_item_id_for_group_key(group_key)
+    merged_work_class = resolve_merged_work_class(units)
 
     scope: list[str] = []
     out_of_scope: list[str] = []
@@ -93,7 +115,7 @@ def _merge_units(
         schema_version=schema_version,
         id=work_item_id,
         title=title,
-        work_class=primary.work_class,
+        work_class=merged_work_class,
         objective=objective.description,
         current_facts=sorted(set(facts)),
         scope=sorted(set(scope + mechanical)),
@@ -151,8 +173,19 @@ def _gap_to_unit(gap: AdoptionGap, outcome_id: str) -> CapabilityUnit:
 def _packages_for_outcomes(
     outcomes: list[OutcomeCapability],
     units: list[CapabilityUnit],
+    work_items: list[WorkItemContract],
     unit_id_to_work_item: dict[str, str],
 ) -> list[WorkPackage]:
+    declared_ids = {outcome.id for outcome in outcomes}
+    orphan_outcomes = sorted(
+        {unit.outcome_id for unit in units if unit.outcome_id not in declared_ids}
+    )
+    if orphan_outcomes:
+        raise WorkDecompositionError(
+            "capability units reference undeclared outcomes: "
+            + ", ".join(orphan_outcomes)
+        )
+
     items_by_outcome: dict[str, set[str]] = defaultdict(set)
     for unit in sorted(units, key=lambda u: u.id):
         items_by_outcome[unit.outcome_id].add(unit_id_to_work_item[unit.id])
@@ -174,6 +207,15 @@ def _packages_for_outcomes(
                 work_item_ids=item_ids,
             )
         )
+
+    packaged_ids = {item_id for package in packages for item_id in package.work_item_ids}
+    work_item_ids = {item.id for item in work_items}
+    unpackaged = sorted(work_item_ids - packaged_ids)
+    if unpackaged:
+        raise WorkDecompositionError(
+            "work items are not assigned to any package: " + ", ".join(unpackaged)
+        )
+
     return packages
 
 
@@ -191,6 +233,11 @@ def decompose_work(input_data: DecompositionInput) -> WorkPlan:
         for gap in gaps:
             units.append(_gap_to_unit(gap, default_outcome))
 
+    _validate_declared_outcomes(input_data.outcomes, units)
+
+    quality_issues: list[DecompositionQualityIssue] = []
+    quality_issues.extend(check_capability_units_pre_grouping(units))
+
     grouped: dict[GroupKey, list[CapabilityUnit]] = defaultdict(list)
     for unit in sorted(units, key=lambda u: u.id):
         grouped[capability_group_key(unit)].append(unit)
@@ -205,27 +252,33 @@ def decompose_work(input_data: DecompositionInput) -> WorkPlan:
     work_items: list[WorkItemContract] = []
     for key in sorted(grouped):
         group_units = sorted(grouped[key], key=lambda u: u.id)
-        work_items.append(
-            _merge_units(
-                group_units,
-                group_key=key,
-                objective=input_data.objective,
-                schema_version=schema_version,
-                unit_id_to_work_item=unit_id_to_work_item,
-            )
+        item = _merge_units(
+            group_units,
+            group_key=key,
+            objective=input_data.objective,
+            schema_version=schema_version,
+            unit_id_to_work_item=unit_id_to_work_item,
         )
+        work_items.append(item)
+        merge_issue = work_class_merge_issue(
+            group_units,
+            work_item_id=item.id,
+            chosen=item.work_class.value,
+        )
+        if merge_issue is not None:
+            quality_issues.append(merge_issue)
 
     work_items = sorted(work_items, key=lambda wi: wi.id)
     _assert_unique_work_item_ids(work_items)
     validate_dependency_graph(work_items)
 
-    quality_issues: list[DecompositionQualityIssue] = []
     quality_issues.extend(check_grouped_units(units, unit_id_to_work_item))
     quality_issues.extend(check_work_items(work_items))
 
     packages = _packages_for_outcomes(
         sorted(input_data.outcomes, key=lambda o: o.id),
         units,
+        work_items,
         unit_id_to_work_item,
     )
 

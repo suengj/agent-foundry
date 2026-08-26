@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_foundry.models import DependencyGraphError
+from agent_foundry.models import DependencyGraphError, WorkDecompositionError
 from agent_foundry.models.common import (
     AdoptionAction,
     ConsequenceClass,
@@ -32,6 +32,7 @@ from agent_foundry.models.work import (
     WorkLifecycleSnapshot,
     WorkObjective,
     OutcomeCapability,
+    WorkPlan,
 )
 from agent_foundry.work import attach_execution_run, decompose_work, validate_dependency_graph
 
@@ -57,6 +58,15 @@ def _outcome(outcome_id: str = "out-contracts", title: str = "Contract layer") -
         title=title,
         description=f"{title} capability",
     )
+
+
+def _assert_every_work_item_in_exactly_one_package(plan: WorkPlan) -> None:
+    packaged: dict[str, int] = {}
+    for package in plan.packages:
+        for item_id in package.work_item_ids:
+            packaged[item_id] = packaged.get(item_id, 0) + 1
+    for item in plan.work_items:
+        assert packaged.get(item.id) == 1, f"{item.id} package membership={packaged.get(item.id)}"
 
 
 def _base_unit_fields() -> dict[str, object]:
@@ -152,6 +162,7 @@ def test_causal_capability_not_split_by_schema_tests_review() -> None:
     assert item.acceptance_criteria
     assert item.required_evidence
     assert item.stop_conditions
+    _assert_every_work_item_in_exactly_one_package(plan)
 
 
 @pytest.mark.parametrize(
@@ -163,7 +174,6 @@ def test_causal_capability_not_split_by_schema_tests_review() -> None:
         ("write_scope_id", "scope-a", "scope-b"),
         ("outcome_id", "out-one", "out-two"),
         ("consequence_class", ConsequenceClass.LOW, ConsequenceClass.CRITICAL),
-        ("work_class", WorkClass.BASELINE, WorkClass.CONTRACT_AMENDMENT),
         ("discovery_only", False, True),
         ("mutates_external", False, True),
     ],
@@ -174,7 +184,6 @@ def test_causal_capability_not_split_by_schema_tests_review() -> None:
         "write_scope_id",
         "outcome_id",
         "consequence_class",
-        "work_class",
         "discovery_only",
         "mutates_external",
     ],
@@ -184,18 +193,81 @@ def test_splits_on_single_group_key_dimension(
     left_value: object,
     right_value: object,
 ) -> None:
-    outcomes = [_outcome("out-one"), _outcome("out-two", "Second outcome")]
-    units = _pair_units(
-        "unit-left",
-        "unit-right",
-        left_overrides={field: left_value},
-        right_overrides={field: right_value},
-    )
+    if field == "outcome_id":
+        outcomes = [_outcome("out-one"), _outcome("out-two", "Second outcome")]
+        units = _pair_units(
+            "unit-left",
+            "unit-right",
+            left_overrides={field: left_value},
+            right_overrides={field: right_value},
+        )
+    else:
+        outcomes = [_outcome("out-shared", "Shared outcome")]
+        units = _pair_units(
+            "unit-left",
+            "unit-right",
+            left_overrides={field: left_value, "outcome_id": "out-shared"},
+            right_overrides={field: right_value, "outcome_id": "out-shared"},
+        )
     plan = decompose_work(
         DecompositionInput(objective=_objective(), outcomes=outcomes, capability_units=units)
     )
     assert len(plan.work_items) == 2
     assert len({item.id for item in plan.work_items}) == 2
+    _assert_every_work_item_in_exactly_one_package(plan)
+
+
+def test_orphan_outcome_id_raises() -> None:
+    units = [
+        _make_unit(
+            "unit-orphan",
+            "orphan unit",
+            outcome_id="out-missing",
+        )
+    ]
+    with pytest.raises(WorkDecompositionError, match="undeclared outcomes"):
+        decompose_work(
+            DecompositionInput(
+                objective=_objective(),
+                outcomes=[_outcome("out-declared", "Declared outcome")],
+                capability_units=units,
+            )
+        )
+
+
+def test_different_work_classes_merge_with_recorded_quality_issue() -> None:
+    shared = _base_unit_fields()
+    shared.pop("work_class")
+    shared["acceptance_boundary_id"] = "boundary-contract"
+    shared["write_scope_id"] = "scope-contract"
+    units = [
+        CapabilityUnit(
+            id="unit-amend",
+            title="Amend the contract",
+            description="Amend the contract",
+            work_class=WorkClass.CONTRACT_AMENDMENT,
+            **shared,
+        ),
+        CapabilityUnit(
+            id="unit-capability",
+            title="Wire authoritative consumer",
+            description="Wire authoritative consumer",
+            work_class=WorkClass.CAPABILITY,
+            **shared,
+        ),
+    ]
+    plan = decompose_work(
+        DecompositionInput(
+            objective=_objective(),
+            outcomes=[_outcome()],
+            capability_units=units,
+        )
+    )
+    assert len(plan.work_items) == 1
+    assert plan.work_items[0].work_class == WorkClass.CONTRACT_AMENDMENT
+    flags = {issue.flag.value for issue in plan.quality_issues}
+    assert "mixed-work-class" in flags
+    _assert_every_work_item_in_exactly_one_package(plan)
 
 
 def test_work_item_ids_unique_when_acceptance_boundary_shared() -> None:
@@ -279,7 +351,8 @@ def test_discovery_and_mutation_split_into_separate_items() -> None:
     )
     assert len(plan.work_items) == 2
     flags = {issue.flag.value for issue in plan.quality_issues}
-    assert "mixed-discovery-and-mutation" not in flags
+    assert "mixed-discovery-and-mutation" in flags
+    _assert_every_work_item_in_exactly_one_package(plan)
 
 
 def test_multiple_execution_runs_attach_without_mutating_work_item() -> None:

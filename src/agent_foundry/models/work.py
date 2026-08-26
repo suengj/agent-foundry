@@ -178,8 +178,8 @@ class DecompositionQualityFlag(StrEnum):
     FILE_SHAPED_DECOMPOSITION = "file-shaped-decomposition"
     ROLE_SHAPED_DECOMPOSITION = "role-shaped-decomposition"
     MIXED_DISCOVERY_AND_MUTATION = "mixed-discovery-and-mutation"
+    MIXED_WORK_CLASS = "mixed-work-class"
     UNVERIFIABLE_ACCEPTANCE = "unverifiable-acceptance"
-    WRITE_SCOPE_COLLISION = "write-scope-collision"
 
 
 class DecompositionQualityIssue(FoundryModel):
