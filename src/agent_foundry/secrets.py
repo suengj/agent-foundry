@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 import math
 import re
 from dataclasses import dataclass
@@ -44,6 +45,24 @@ _OPENAI_STYLE_KEY_RE = re.compile(
     + rf"(?:sk-(?:{_OPENAI_KNOWN_LABELS})-[A-Za-z0-9_]{{16,}}|sk-[A-Za-z0-9_]{{16,}})"
 )
 
+# Real project/service-account keys are base64url, so the body may contain "-". A hyphenated
+# body cannot be distinguished from a dictionary phrase ("sk-live-feature-toggle-enabled") by
+# shape alone, so a hyphenated body additionally requires a digit and an upper-case character.
+# Prose keeps serializing; a genuine base64url key of 16+ chars effectively always qualifies.
+_OPENAI_HYPHENATED_KEY_RE = re.compile(
+    _TOKEN_BOUNDARY + rf"sk-{_OPENAI_KNOWN_LABELS}-([A-Za-z0-9_-]{{16,}})"
+)
+
+
+def _match_openai_style_key(value: str) -> bool:
+    if _OPENAI_STYLE_KEY_RE.search(value):
+        return True
+    for match in _OPENAI_HYPHENATED_KEY_RE.finditer(value):
+        body = match.group(1)
+        if any(c.isdigit() for c in body) and any(c.isupper() for c in body):
+            return True
+    return False
+
 # Strong prefixes: unambiguous on their own — match prefix + documented body length/charset only.
 _TIER_A_STRONG_RULE_BODIES: tuple[tuple[str, str], ...] = (
     (
@@ -58,7 +77,7 @@ _TIER_A_STRONG_RULE_BODIES: tuple[tuple[str, str], ...] = (
     ("doppler-token", r"dop_v1_[A-Za-z0-9]{10,}"),
     ("stripe-secret-key", r"sk_live_[A-Za-z0-9]{10,}"),
     ("stripe-publishable-key", r"pk_live_[A-Za-z0-9]{10,}"),
-    ("pem-private-key", r"-----BEGIN[A-Z ]*PRIVATE KEY-----"),
+    ("pem-private-key", r"-----BEGIN[A-Z ]*PRIVATE KEY[A-Z ]*-----"),
 )
 
 _TIER_A_STRONG_RULES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
@@ -161,7 +180,13 @@ def _is_jwt(value: str) -> bool:
         decoded = base64.urlsafe_b64decode(padded)
     except (ValueError, binascii.Error):
         return False
-    return decoded.startswith(b'{"alg')
+    # RFC 7515 imposes no member ordering on the JOSE header, so a prefix test on {"alg
+    # misses any issuer that emits typ/kid first. Parse and look the member up instead.
+    try:
+        header = json.loads(decoded)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return isinstance(header, dict) and "alg" in header
 
 
 def _find_jwt(value: str) -> bool:
@@ -174,7 +199,7 @@ def _find_jwt(value: str) -> bool:
 def _match_tier_a(value: str) -> str | None:
     if _find_jwt(value):
         return "jwt"
-    if _OPENAI_STYLE_KEY_RE.search(value):
+    if _match_openai_style_key(value):
         return "openai-style-key"
     for rule_name, pattern in _TIER_A_STRONG_RULES:
         if pattern.search(value):
@@ -263,8 +288,17 @@ def format_json_path(segments: tuple[PathSegment, ...]) -> str:
     for segment in segments:
         if isinstance(segment, KeyPathMarker):
             rendered.append("[key]")
+        elif isinstance(segment, bool) or not isinstance(segment, (str, int)):
+            # Defensive: a non-str/int mapping key must never crash the guard.
+            rendered.append(_escape_path_segment(str(segment)))
         elif isinstance(segment, int):
             rendered.append(f"[{segment}]")
+        elif _match_tier_a(segment) is not None:
+            # An ancestor key that is itself a credential must not be echoed in the
+            # diagnostic for a descendant finding. Such a path is intentionally not
+            # pasteable into allow_paths: the fix is to remove the credential, not
+            # to allow the path.
+            rendered.append(f"[redacted:{_match_tier_a(segment)}]")
         else:
             rendered.append(_escape_path_segment(segment))
 
@@ -351,21 +385,28 @@ def _is_sequence(value: Any) -> bool:
 
 def _scan_node(value: Any) -> list[SecretFinding]:
     findings: list[SecretFinding] = []
-    stack: list[tuple[tuple[PathSegment, ...], Any]] = [((), value)]
+    # Ancestors travel with each stack entry: a container may legitimately appear at several
+    # positions, but re-entering one already on its own path would not terminate on a cycle.
+    stack: list[tuple[tuple[PathSegment, ...], Any, frozenset[int]]] = [((), value, frozenset())]
 
     while stack:
-        segments, current = stack.pop()
+        segments, current, ancestors = stack.pop()
+
+        if isinstance(current, (dict, list, tuple, set, frozenset)):
+            if id(current) in ancestors:
+                continue
+            ancestors = ancestors | {id(current)}
 
         if isinstance(current, dict):
             for key, child in current.items():
                 if isinstance(key, str):
                     findings.extend(_scan_key(_key_path_segments(segments), key))
-                stack.append(((*segments, key), child))
+                stack.append(((*segments, key), child, ancestors))
             continue
 
         if _is_sequence(current):
             for index, item in enumerate(current):
-                stack.append(((*segments, index), item))
+                stack.append(((*segments, index), item, ancestors))
             continue
 
         if isinstance(current, str):
