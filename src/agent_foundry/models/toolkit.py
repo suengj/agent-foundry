@@ -7,6 +7,7 @@ from enum import StrEnum
 from pydantic import Field
 
 from agent_foundry.models.base import FoundryModel, FoundryModelError, VersionedContract
+from agent_foundry.models.common import ExternalEffectClass
 from agent_foundry.models.integrations import IntegrationHealth
 
 
@@ -74,6 +75,9 @@ class ToolkitLock(VersionedContract):
     skill_versions: dict[str, str] = Field(default_factory=dict)
     workflow_versions: dict[str, str] = Field(default_factory=dict)
     integration_adapter_versions: dict[str, str] = Field(default_factory=dict)
+    permission_profile_version: str | None = None
+    permission_external_effect: ExternalEffectClass | None = None
+    budget_profile_version: str | None = None
     decisions: list[ResolutionDecision] = Field(default_factory=list)
 
 

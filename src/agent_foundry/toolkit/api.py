@@ -34,8 +34,16 @@ def resolve_toolkit(
     """Resolve Project Toolkit and version-pinned lock from manifest."""
     reg = registry or build_default_registry()
     assert_component_schema_supported(reg)
-    profiles = permission_profiles or build_default_registry_permission_profiles()
-    budgets = budget_profiles or build_default_registry_budget_profiles()
+    profiles = (
+        build_default_registry_permission_profiles()
+        if permission_profiles is None
+        else permission_profiles
+    )
+    budgets = (
+        build_default_registry_budget_profiles()
+        if budget_profiles is None
+        else budget_profiles
+    )
     return resolve_project_toolkit(
         manifest,
         reg,
@@ -57,8 +65,16 @@ def resolve_task_toolkit_for_work_item(
 ) -> TaskToolkit:
     """Resolve minimum Task Toolkit for one Work Item."""
     reg = registry or build_default_registry()
-    profiles = permission_profiles or build_default_registry_permission_profiles()
-    budgets = budget_profiles or build_default_registry_budget_profiles()
+    profiles = (
+        build_default_registry_permission_profiles()
+        if permission_profiles is None
+        else permission_profiles
+    )
+    budgets = (
+        build_default_registry_budget_profiles()
+        if budget_profiles is None
+        else budget_profiles
+    )
     return resolve_task_toolkit(
         work_item,
         project_lock,

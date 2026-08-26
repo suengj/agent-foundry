@@ -154,7 +154,14 @@ def test_resolve_project_toolkit_from_sample_manifest() -> None:
     assert "bounded-change" in lock.skill_ids
     assert "independent-review" in lock.skill_ids
     assert "builder-reviewer" in lock.workflow_ids
-    assert "runtime-verifier" in lock.role_ids
+    runtime_verifier_decisions = [
+        d for d in lock.decisions if d.component_kind == "role" and d.component_id == "runtime-verifier"
+    ]
+    assert runtime_verifier_decisions
+    assert any(
+        d.action == ResolutionAction.EXCLUDE and "permission ceiling" in d.rationale
+        for d in runtime_verifier_decisions
+    )
     assert resolution.integration_health
     assert all(item.message for item in resolution.integration_health)
 
@@ -167,22 +174,35 @@ def test_toolkit_lock_reproducibility_same_input_twice() -> None:
 
 
 def test_toolkit_lock_reproducibility_hash_seeds() -> None:
-    manifest = _sample_manifest()
+    manifest_path = FIXTURES / "project_manifest.yaml"
     digests: list[str] = []
+    script = f"""
+from pathlib import Path
+from agent_foundry.models import load_yaml, ProjectManifest, dump_json
+from agent_foundry.toolkit import resolve_toolkit
+manifest = load_yaml(ProjectManifest, Path({str(manifest_path)!r}).read_bytes())
+_, lock = resolve_toolkit(manifest)
+print(dump_json(lock).decode())
+"""
     for seed in ("0", "1", "42"):
-        env = {**os.environ, "PYTHONHASHSEED": seed}
-        _, lock = resolve_toolkit(manifest)
-        digests.append(hashlib.sha256(dump_json(lock)).hexdigest())
+        env = {**os.environ, "PYTHONHASHSEED": seed, "PYTHONPATH": str(REPO_ROOT / "src")}
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=REPO_ROOT,
+            check=True,
+        )
+        digests.append(hashlib.sha256(result.stdout.encode()).hexdigest())
     assert digests[0] == digests[1] == digests[2]
 
 
-def test_toolkit_lock_reproducibility_cwd() -> None:
+def test_toolkit_lock_reproducibility_cwd(monkeypatch: pytest.MonkeyPatch) -> None:
     manifest = _sample_manifest()
-    cwd_a = REPO_ROOT / "tests"
-    cwd_b = REPO_ROOT / "src"
     locks: list[bytes] = []
-    for cwd in (cwd_a, cwd_b):
-        os.chdir(cwd)
+    for cwd in (REPO_ROOT / "tests", REPO_ROOT / "src"):
+        monkeypatch.chdir(cwd)
         _, lock = resolve_toolkit(manifest)
         locks.append(dump_json(lock))
     assert locks[0] == locks[1]
@@ -316,8 +336,9 @@ def test_include_and_exclude_rationale_present() -> None:
     includes = [d for d in lock.decisions if d.action == ResolutionAction.INCLUDE]
     excludes = [d for d in lock.decisions if d.action == ResolutionAction.EXCLUDE]
     assert includes
+    assert excludes
     assert any(d.project_fact or d.policy_id for d in includes)
-    work_item = _sample_work_item()
+    work_item = _sample_work_item(authority_class="read-only")
     task = resolve_task_toolkit_for_work_item(work_item, lock)
     task_excludes = [d for d in task.decisions if d.action == ResolutionAction.EXCLUDE]
     assert task_excludes
@@ -408,3 +429,118 @@ def test_integration_check_cli(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert b"work-tracker" in result.stdout
     assert b"sk-live" not in result.stdout
+
+
+def test_task_toolkit_permission_widening_rejected() -> None:
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "repository-write",
+            "reversibility": "versioned",
+            "consequence": "medium",
+        },
+        assurance={"required": ["deterministic-tests"]},
+    )
+    _, project_lock = resolve_toolkit(manifest)
+    assert project_lock.permission_profile_ids == ["repository-write-bounded"]
+    work_item = _sample_work_item()
+    publication_only = [
+        PermissionProfile(
+            id="aaa-publication",
+            external_effect=ExternalEffectClass.PUBLICATION,
+            write_requires=AuthorityRequirement.EXPLICIT_AUTHORITY,
+        ),
+    ]
+    with pytest.raises(ToolkitResolutionError, match="not in supplied permission profiles"):
+        resolve_task_toolkit(
+            work_item,
+            project_lock,
+            build_default_registry(),
+            permission_profiles=publication_only,
+            budget_profiles=[BudgetProfile(id="default")],
+        )
+
+
+def test_task_toolkit_missing_project_permission_profile_raises() -> None:
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "repository-write",
+            "reversibility": "versioned",
+            "consequence": "medium",
+        },
+        assurance={"required": ["deterministic-tests"]},
+    )
+    _, project_lock = resolve_toolkit(manifest)
+    work_item = _sample_work_item()
+    with pytest.raises(ToolkitResolutionError, match="not in supplied permission profiles"):
+        resolve_task_toolkit(
+            work_item,
+            project_lock,
+            build_default_registry(),
+            permission_profiles=[
+                PermissionProfile(
+                    id="other-profile",
+                    external_effect=ExternalEffectClass.READ_ONLY,
+                    write_requires=AuthorityRequirement.NONE,
+                )
+            ],
+            budget_profiles=[BudgetProfile(id="default")],
+        )
+
+
+def test_read_only_manifest_excludes_repository_write() -> None:
+    manifest = _sample_manifest(
+        impact={
+            "external_effect": "read-only",
+            "reversibility": "trivial",
+            "consequence": "low",
+        },
+        assurance={"required": []},
+    )
+    _, lock = resolve_toolkit(manifest)
+    assert "repository.write" not in lock.capability_ids
+    assert "bounded-change" not in lock.skill_ids
+    exclude_decisions = [d for d in lock.decisions if d.action == ResolutionAction.EXCLUDE]
+    assert any(d.component_id == "bounded-change" for d in exclude_decisions)
+    assert lock.permission_external_effect == ExternalEffectClass.READ_ONLY
+
+
+def test_high_consequence_includes_evidence_validator_without_assurance() -> None:
+    manifest = _sample_manifest(assurance={"required": []})
+    _, lock = resolve_toolkit(manifest)
+    assert "evidence-contract" in lock.validator_ids
+
+
+def test_empty_permission_profiles_not_replaced_with_defaults() -> None:
+    manifest = _sample_manifest()
+    with pytest.raises(ToolkitResolutionError, match="permission profiles required"):
+        resolve_toolkit(manifest, permission_profiles=[])
+
+
+def test_malformed_foundry_compat_rejected() -> None:
+    registry = build_default_registry()
+    bad_registry = registry.model_copy(update={"foundry_compat": ">=0.1garbage"})
+    with pytest.raises(SchemaCompatibilityError):
+        resolve_toolkit(_sample_manifest(), registry=bad_registry)
+
+
+def test_resolve_toolkit_on_repo_explains_empty_manifest() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agent_foundry",
+            "resolve-toolkit",
+            str(REPO_ROOT),
+            "--format",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        env=_subprocess_env(),
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert '"decisions"' in result.stdout
+    assert "unknown" in result.stdout.lower()
+    assert '"capability_ids":[]' in result.stdout.replace(" ", "") or '"capability_ids": []' in result.stdout

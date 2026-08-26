@@ -8,6 +8,7 @@ from agent_foundry.models.common import (
     AuthorityRequirement,
     ConsequenceClass,
     ExternalEffectClass,
+    PrimaryArtifactState,
     PrimaryWorkMode,
     WorkClass,
 )
@@ -26,7 +27,10 @@ from agent_foundry.models.toolkit import (
     ToolkitResolutionError,
 )
 from agent_foundry.models.work import WorkItemContract
-from agent_foundry.toolkit.builtin_registry import manifest_requires_code_capabilities
+from agent_foundry.toolkit.builtin_registry import (
+    manifest_external_effect_allows_repository_write,
+    manifest_requires_code_capabilities,
+)
 from agent_foundry.toolkit.compat import assert_registry_compat
 from agent_foundry.toolkit.preflight import preflight_integrations
 
@@ -39,11 +43,117 @@ _EFFECT_RANK: dict[ExternalEffectClass, int] = {
     ExternalEffectClass.PUBLICATION: 5,
 }
 
-_AUTHORITY_RANK: dict[AuthorityRequirement, int] = {
-    AuthorityRequirement.NONE: 0,
-    AuthorityRequirement.BOUNDED_POLICY: 1,
-    AuthorityRequirement.EXPLICIT_AUTHORITY: 2,
+_CAPABILITY_MIN_EFFECT: dict[str, ExternalEffectClass] = {
+    "repository.read": ExternalEffectClass.READ_ONLY,
+    "repository.write": ExternalEffectClass.REPOSITORY_WRITE,
+    "validation.test": ExternalEffectClass.READ_ONLY,
+    "validation.review": ExternalEffectClass.READ_ONLY,
+    "inspection.read": ExternalEffectClass.READ_ONLY,
+    "work.read": ExternalEffectClass.SHARED_SERVICE_WRITE,
+    "work.write": ExternalEffectClass.SHARED_SERVICE_WRITE,
+    "runtime.verify": ExternalEffectClass.RUNTIME_MUTATION,
 }
+
+
+def _lookup_permission_profile(
+    profile_id: str,
+    profiles: list[PermissionProfile],
+) -> PermissionProfile:
+    for profile in profiles:
+        if profile.id == profile_id:
+            return profile
+    raise ToolkitResolutionError(
+        f"permission profile {profile_id!r} not in supplied permission profiles"
+    )
+
+
+def _lookup_budget_profile(profile_id: str, profiles: list[BudgetProfile]) -> BudgetProfile:
+    for profile in profiles:
+        if profile.id == profile_id:
+            return profile
+    raise ToolkitResolutionError(
+        f"budget profile {profile_id!r} not in supplied budget profiles"
+    )
+
+
+def _capability_exceeds_ceiling(capability_id: str, ceiling: ExternalEffectClass) -> bool:
+    min_effect = _CAPABILITY_MIN_EFFECT.get(capability_id, ExternalEffectClass.READ_ONLY)
+    return _EFFECT_RANK[min_effect] > _EFFECT_RANK[ceiling]
+
+
+def _select_validator_ids(manifest: ProjectManifest) -> set[str]:
+    validator_ids: set[str] = {"schema-compat"}
+    if manifest.assurance.required:
+        validator_ids.add("evidence-contract")
+    elif manifest.impact.consequence in {ConsequenceClass.HIGH, ConsequenceClass.CRITICAL}:
+        validator_ids.add("evidence-contract")
+    return validator_ids
+
+
+def _reconcile_with_permission_ceiling(
+    capabilities: set[str],
+    skills: set[str],
+    roles: set[str],
+    permission_profile: PermissionProfile,
+    index: dict[str, dict[str, object]],
+    decisions: list[ResolutionDecision],
+) -> None:
+    from agent_foundry.models.registry import RoleContract, SkillSpec
+
+    ceiling = permission_profile.external_effect
+    skills_by_id = index["skills"]
+    roles_by_id = index["roles"]
+
+    for capability_id in sorted(capabilities):
+        if _capability_exceeds_ceiling(capability_id, ceiling):
+            capabilities.discard(capability_id)
+            decisions.append(
+                _decision(
+                    ResolutionAction.EXCLUDE,
+                    "capability",
+                    capability_id,
+                    f"exceeds permission ceiling {ceiling.value}",
+                    ResolutionSource.PROJECT_FACT,
+                    project_fact=f"permission_profile.external_effect={ceiling.value}",
+                )
+            )
+
+    for skill_id in sorted(skills):
+        skill = skills_by_id.get(skill_id)
+        if not isinstance(skill, SkillSpec):
+            continue
+        exceeds = skill.permissions.external_write and _EFFECT_RANK[
+            ExternalEffectClass.REPOSITORY_WRITE
+        ] > _EFFECT_RANK[ceiling]
+        if exceeds:
+            skills.discard(skill_id)
+            decisions.append(
+                _decision(
+                    ResolutionAction.EXCLUDE,
+                    "skill",
+                    skill_id,
+                    f"external_write skill exceeds permission ceiling {ceiling.value}",
+                    ResolutionSource.PROJECT_FACT,
+                    project_fact=f"permission_profile.external_effect={ceiling.value}",
+                )
+            )
+
+    for role_id in sorted(roles):
+        role = roles_by_id.get(role_id)
+        if not isinstance(role, RoleContract):
+            continue
+        if any(_capability_exceeds_ceiling(cap, ceiling) for cap in role.allowed_capabilities):
+            roles.discard(role_id)
+            decisions.append(
+                _decision(
+                    ResolutionAction.EXCLUDE,
+                    "role",
+                    role_id,
+                    f"role capabilities exceed permission ceiling {ceiling.value}",
+                    ResolutionSource.PROJECT_FACT,
+                    project_fact=f"permission_profile.external_effect={ceiling.value}",
+                )
+            )
 
 
 def _sorted_ids(items: list[str]) -> list[str]:
@@ -184,10 +294,17 @@ def _manifest_fact_requirements(
     }
     decisions: list[ResolutionDecision] = []
 
-    if manifest_requires_code_capabilities(manifest):
+    artifact = manifest.project.primary_artifact
+    primary_mode = (
+        manifest.project.work_modes.primary if manifest.project.work_modes is not None else None
+    )
+    external_effect = manifest.impact.external_effect
+    code_signal = (
+        artifact == PrimaryArtifactState.CODE or primary_mode == PrimaryWorkMode.BUILD
+    )
+
+    if code_signal:
         require["capabilities"].add("repository.read")
-        require["skills"].add("bounded-change")
-        require["roles"].add("builder")
         decisions.append(
             _decision(
                 ResolutionAction.INCLUDE,
@@ -198,10 +315,105 @@ def _manifest_fact_requirements(
                 project_fact="project.primary_artifact=code or work_modes.primary=build",
             )
         )
+        if external_effect is None:
+            decisions.append(
+                _decision(
+                    ResolutionAction.EXCLUDE,
+                    "skill",
+                    "bounded-change",
+                    "impact.external_effect is unknown; cannot authorize write skill",
+                    ResolutionSource.PROJECT_FACT,
+                    project_fact="impact.external_effect is unknown",
+                )
+            )
+            decisions.append(
+                _decision(
+                    ResolutionAction.EXCLUDE,
+                    "role",
+                    "builder",
+                    "impact.external_effect is unknown; cannot authorize builder role",
+                    ResolutionSource.PROJECT_FACT,
+                    project_fact="impact.external_effect is unknown",
+                )
+            )
+        elif manifest_external_effect_allows_repository_write(manifest):
+            require["skills"].add("bounded-change")
+            require["roles"].add("builder")
+            decisions.append(
+                _decision(
+                    ResolutionAction.INCLUDE,
+                    "skill",
+                    "bounded-change",
+                    "code-centric project with repository-write authority requires bounded change",
+                    ResolutionSource.PROJECT_FACT,
+                    project_fact=f"impact.external_effect={external_effect.value}",
+                )
+            )
+            decisions.append(
+                _decision(
+                    ResolutionAction.INCLUDE,
+                    "role",
+                    "builder",
+                    "code-centric project with repository-write authority requires builder role",
+                    ResolutionSource.PROJECT_FACT,
+                    project_fact=f"impact.external_effect={external_effect.value}",
+                )
+            )
+        else:
+            decisions.append(
+                _decision(
+                    ResolutionAction.EXCLUDE,
+                    "skill",
+                    "bounded-change",
+                    "repository write exceeds declared external effect ceiling",
+                    ResolutionSource.PROJECT_FACT,
+                    project_fact=f"impact.external_effect={external_effect.value}",
+                )
+            )
+            decisions.append(
+                _decision(
+                    ResolutionAction.EXCLUDE,
+                    "role",
+                    "builder",
+                    "builder role exceeds declared external effect ceiling",
+                    ResolutionSource.PROJECT_FACT,
+                    project_fact=f"impact.external_effect={external_effect.value}",
+                )
+            )
+    else:
+        if artifact is None:
+            decisions.append(
+                _decision(
+                    ResolutionAction.EXCLUDE,
+                    "capability",
+                    "repository.read",
+                    "project.primary_artifact is unknown",
+                    ResolutionSource.PROJECT_FACT,
+                    project_fact="project.primary_artifact is unknown",
+                )
+            )
+        if primary_mode is None:
+            decisions.append(
+                _decision(
+                    ResolutionAction.EXCLUDE,
+                    "skill",
+                    "bounded-change",
+                    "project.work_modes.primary is unknown",
+                    ResolutionSource.PROJECT_FACT,
+                    project_fact="project.work_modes.primary is unknown",
+                )
+            )
+            decisions.append(
+                _decision(
+                    ResolutionAction.EXCLUDE,
+                    "role",
+                    "builder",
+                    "project.work_modes.primary is unknown",
+                    ResolutionSource.PROJECT_FACT,
+                    project_fact="project.work_modes.primary is unknown",
+                )
+            )
 
-    primary_mode = (
-        manifest.project.work_modes.primary if manifest.project.work_modes is not None else None
-    )
     if primary_mode == PrimaryWorkMode.ANALYZE:
         require["skills"].add("repository-inspection")
         require["roles"].add("explorer")
@@ -213,6 +425,27 @@ def _manifest_fact_requirements(
                 "analyze work mode requires inspection skill",
                 ResolutionSource.PROJECT_FACT,
                 project_fact="project.work_modes.primary=analyze",
+            )
+        )
+        decisions.append(
+            _decision(
+                ResolutionAction.INCLUDE,
+                "role",
+                "explorer",
+                "analyze work mode requires explorer role",
+                ResolutionSource.PROJECT_FACT,
+                project_fact="project.work_modes.primary=analyze",
+            )
+        )
+    elif primary_mode is None:
+        decisions.append(
+            _decision(
+                ResolutionAction.EXCLUDE,
+                "skill",
+                "repository-inspection",
+                "project.work_modes.primary is unknown",
+                ResolutionSource.PROJECT_FACT,
+                project_fact="project.work_modes.primary is unknown",
             )
         )
 
@@ -443,15 +676,6 @@ def resolve_project_toolkit(
     _expand_workflow_requirements(workflows, index["workflows"], skills, roles, decisions)
     _expand_skill_capabilities(skills, index["skills"], capabilities, decisions)
 
-    _assert_present("skill", skills, index["skills"])
-    _assert_present("role", roles, index["roles"])
-    _assert_present("capability", capabilities, index["capabilities"])
-
-  # validators
-    validator_ids: set[str] = {"schema-compat"}
-    if manifest.assurance.required:
-        validator_ids.add("evidence-contract")
-
     if not permission_profiles:
         raise ToolkitResolutionError("permission profiles required for resolution")
     if not budget_profiles:
@@ -459,6 +683,35 @@ def resolve_project_toolkit(
 
     permission_profile = _select_permission_profile(manifest, permission_profiles, forbid["permission_profiles"])
     _assert_no_permission_escalation(manifest, permission_profile)
+    _reconcile_with_permission_ceiling(
+        capabilities, skills, roles, permission_profile, index, decisions
+    )
+
+    if skills:
+        _assert_present("skill", skills, index["skills"])
+    if roles:
+        _assert_present("role", roles, index["roles"])
+    if capabilities:
+        _assert_present("capability", capabilities, index["capabilities"])
+
+    validator_ids = _select_validator_ids(manifest)
+    for validator_id in sorted(validator_ids):
+        decisions.append(
+            _decision(
+                ResolutionAction.INCLUDE,
+                "validator",
+                validator_id,
+                "validator required by assurance or consequence policy",
+                ResolutionSource.PROJECT_FACT,
+                project_fact=(
+                    "assurance.required"
+                    if manifest.assurance.required
+                    else f"impact.consequence={manifest.impact.consequence.value}"
+                    if manifest.impact.consequence is not None
+                    else "schema validation baseline"
+                ),
+            )
+        )
 
     budget_profile = _select_budget_profile(manifest, budget_profiles)
 
@@ -486,6 +739,46 @@ def resolve_project_toolkit(
         for integration_id in integration_ids
     }
 
+    for integration_id in integration_ids:
+        decisions.append(
+            _decision(
+                ResolutionAction.INCLUDE,
+                "integration",
+                integration_id,
+                "default project integration pin",
+                ResolutionSource.REGISTRY,
+            )
+        )
+
+    decisions.append(
+        _decision(
+            ResolutionAction.INCLUDE,
+            "permission-profile",
+            permission_profile.id,
+            f"selected for external effect {permission_profile.external_effect.value}",
+            ResolutionSource.PROJECT_FACT,
+            project_fact=(
+                f"impact.external_effect={manifest.impact.external_effect.value}"
+                if manifest.impact.external_effect is not None
+                else "impact.external_effect unknown; read-only default"
+            ),
+        )
+    )
+    decisions.append(
+        _decision(
+            ResolutionAction.INCLUDE,
+            "budget-profile",
+            budget_profile.id,
+            "selected by consequence and registry defaults",
+            ResolutionSource.PROJECT_FACT,
+            project_fact=(
+                f"impact.consequence={manifest.impact.consequence.value}"
+                if manifest.impact.consequence is not None
+                else "impact.consequence unknown; default budget"
+            ),
+        )
+    )
+
     project_name = manifest.project.name or "unknown-project"
 
     lock = ToolkitLock(
@@ -503,6 +796,9 @@ def resolve_project_toolkit(
         skill_versions=skill_versions,
         workflow_versions=workflow_versions,
         integration_adapter_versions=integration_adapter_versions,
+        permission_profile_version=permission_profile.version,
+        permission_external_effect=permission_profile.external_effect,
+        budget_profile_version=budget_profile.version,
         decisions=sorted(
             decisions,
             key=lambda item: (item.component_kind, item.component_id, item.rationale),
@@ -663,6 +959,18 @@ def resolve_task_toolkit(
                 if cap in project_lock.capability_ids:
                     selected_capabilities.add(cap)
 
+    for cap in sorted(selected_capabilities):
+        decisions.append(
+            _decision(
+                ResolutionAction.INCLUDE,
+                "capability",
+                cap,
+                "required by selected task skills",
+                ResolutionSource.WORK_ITEM,
+                project_fact=f"work_item.work_class={work_item.work_class.value}",
+            )
+        )
+
     excluded_capabilities = set(project_lock.capability_ids) - selected_capabilities
     for cap in sorted(excluded_capabilities):
         decisions.append(
@@ -675,17 +983,45 @@ def resolve_task_toolkit(
             )
         )
 
+    for role_id in sorted(project_lock.role_ids):
+        if role_id in selected_roles:
+            decisions.append(
+                _decision(
+                    ResolutionAction.INCLUDE,
+                    "role",
+                    role_id,
+                    "required by selected task workflow or skills",
+                    ResolutionSource.WORK_ITEM,
+                    project_fact=f"work_item.work_class={work_item.work_class.value}",
+                )
+            )
+        else:
+            decisions.append(
+                _decision(
+                    ResolutionAction.EXCLUDE,
+                    "role",
+                    role_id,
+                    "not required for this work item",
+                    ResolutionSource.WORK_ITEM,
+                    project_fact=f"work_item.work_class={work_item.work_class.value}",
+                )
+            )
+
     if not permission_profiles:
         raise ToolkitResolutionError("permission profiles required for task resolution")
 
-    project_profile = next(
-        (p for p in permission_profiles if p.id == project_lock.permission_profile_ids[0]),
-        permission_profiles[0],
-    )
+    project_profile_id = project_lock.permission_profile_ids[0]
+    _lookup_permission_profile(project_profile_id, permission_profiles)
+
+    if project_lock.permission_external_effect is not None:
+        project_ceiling = project_lock.permission_external_effect
+    else:
+        project_profile = _lookup_permission_profile(project_profile_id, permission_profiles)
+        project_ceiling = project_profile.external_effect
 
     ceiling_rank = min(
         _EFFECT_RANK[work_item.authority_class],
-        _EFFECT_RANK[project_profile.external_effect],
+        _EFFECT_RANK[project_ceiling],
     )
     candidates = [
         profile
@@ -701,7 +1037,7 @@ def resolve_task_toolkit(
         key=lambda profile: (_EFFECT_RANK[profile.external_effect], profile.id),
     )
 
-    if _EFFECT_RANK[task_profile.external_effect] > _EFFECT_RANK[project_profile.external_effect]:
+    if _EFFECT_RANK[task_profile.external_effect] > _EFFECT_RANK[project_ceiling]:
         raise PolicyViolationError(
             "task permission profile would loosen project toolkit controls"
         )
@@ -714,8 +1050,8 @@ def resolve_task_toolkit(
 
     if not budget_profiles:
         raise ToolkitResolutionError("budget profiles required for task resolution")
-    project_budget_profile = next(p for p in budget_profiles if p.id == project_budget)
-    task_budget_profile = next(p for p in budget_profiles if p.id == task_budget)
+    project_budget_profile = _lookup_budget_profile(project_budget, budget_profiles)
+    task_budget_profile = _lookup_budget_profile(task_budget, budget_profiles)
 
     if (task_budget_profile.max_parallel_runs or 0) > (project_budget_profile.max_parallel_runs or 0):
         raise PolicyViolationError("task budget would loosen parallel run limit")

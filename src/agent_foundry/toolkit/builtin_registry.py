@@ -431,3 +431,24 @@ def manifest_requires_code_capabilities(manifest) -> bool:
         manifest.project.work_modes.primary if manifest.project.work_modes is not None else None
     )
     return primary_mode == PrimaryWorkMode.BUILD
+
+
+def manifest_external_effect_allows_repository_write(manifest) -> bool:
+    """True when declared external effect permits repository write."""
+    from agent_foundry.models.common import ExternalEffectClass
+    from agent_foundry.models.project import ProjectManifest
+
+    if not isinstance(manifest, ProjectManifest):
+        return False
+    effect = manifest.impact.external_effect
+    if effect is None:
+        return False
+    write_rank = {
+        ExternalEffectClass.READ_ONLY: 0,
+        ExternalEffectClass.REPOSITORY_WRITE: 1,
+        ExternalEffectClass.SHARED_SERVICE_WRITE: 2,
+        ExternalEffectClass.DATA_MUTATION: 3,
+        ExternalEffectClass.RUNTIME_MUTATION: 4,
+        ExternalEffectClass.PUBLICATION: 5,
+    }
+    return write_rank[effect] >= write_rank[ExternalEffectClass.REPOSITORY_WRITE]
