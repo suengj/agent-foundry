@@ -51,8 +51,17 @@ The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor
 - MCP direction as an optional facade over protocol-neutral Foundry Core.
 - Public release/versioning policy and MIT License.
 
+### Fixed
+
+- Integration preflight health now gates Task Toolkit resolution instead of only being reported next to it. `docs/foundry/04` §4 promised the Task Toolkit subtracts unavailable integrations, but the task stage hard-filtered to the literal id `repository`, so an integration whose health was `unavailable` could still be pinned and handed to a run. An integration now reaches the Task Toolkit only when a spec declares it, observed health meets that spec's `health.required`, and its capabilities stay within the Work Item's authority ceiling; every subtraction carries a rationale.
+- An integration id with no declared `IntegrationSpec` is no longer retained by the external-effect ceiling reconciliation. Requesting `work-tracker` on a read-only project without a spec resolved to `integrations: ['work-tracker']` while supplying the spec correctly resolved to `[]` — missing data widened the result. Unknown capabilities are now treated as the fail-closed maximum at both the project and task stages, and the lock ceiling chokepoint rejects a pinned integration it cannot check.
+- Validator ids are presence-checked against the registry before being pinned. A registry with `validators: []` previously still produced a lock naming `evidence-contract` and `schema-compat`, neither of which could run.
+- `work.read` is classified `read-only` rather than `shared-service-write`. Reading a work tracker changes no state, exactly as `runtime.verify` reads a runtime without mutating it; the old value denied trackers to read-only work items for no reason. `CapabilitySpec.min_external_effect` now documents the axis it measures so the classification is not re-guessed.
+
 ### Changed
 
+- `ToolkitLock` pins `validator_versions` alongside `skill_versions`, `workflow_versions`, and `integration_adapter_versions`.
+- **Behavior change:** resolving a toolkit without supplying `integrations` no longer pins the default `repository` integration, because nothing declares its capabilities or health. Declare an `IntegrationSpec` for every integration a project should be allowed to use.
 - Task toolkit resolution derives `role_ids` from selected skills, filters workflow roles by work-item authority, and records explaining decisions when a work item cannot be satisfied from the project lock.
 - Builtin registry skill triggers now cover `INCIDENT` and `CONTRACT_AMENDMENT` via honest extensions to existing skills.
 - Write-scope intersection now truly narrows role and work-item bounds; read-only compiles clear advertised write scope.

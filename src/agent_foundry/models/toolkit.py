@@ -74,6 +74,7 @@ class ToolkitLock(VersionedContract):
     budget_profile_ids: list[str] = Field(default_factory=list)
     skill_versions: dict[str, str] = Field(default_factory=dict)
     workflow_versions: dict[str, str] = Field(default_factory=dict)
+    validator_versions: dict[str, str] = Field(default_factory=dict)
     integration_adapter_versions: dict[str, str] = Field(default_factory=dict)
     permission_profile_version: str | None = None
     declared_external_effect: ExternalEffectClass | None = None

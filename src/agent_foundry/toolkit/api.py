@@ -62,6 +62,8 @@ def resolve_task_toolkit_for_work_item(
     registry: CapabilityRegistry | None = None,
     permission_profiles: list[PermissionProfile] | None = None,
     budget_profiles: list[BudgetProfile] | None = None,
+    integrations: list[IntegrationSpec] = [],
+    integration_health: list[IntegrationHealth] = [],
 ) -> TaskToolkit:
     """Resolve minimum Task Toolkit for one Work Item."""
     reg = registry or build_default_registry()
@@ -81,6 +83,8 @@ def resolve_task_toolkit_for_work_item(
         reg,
         permission_profiles=profiles,
         budget_profiles=budgets,
+        integrations=integrations,
+        integration_health=integration_health,
     )
 
 

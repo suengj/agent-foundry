@@ -69,6 +69,23 @@ Project Toolkit
 
 Least capability is both a safety principle and a context-quality principle.
 
+The subtraction is enforced, not aspirational, and it fails closed at every step:
+
+- **Unavailable integrations.** An integration reaches the Task Toolkit only when an
+  `IntegrationSpec` declares it, observed preflight health meets that spec's
+  `health.required`, and its capabilities stay within the Work Item's authority. An
+  integration that is undeclared, unobserved, or below its required health is subtracted
+  and the exclusion carries a rationale — absence of health evidence is not evidence of
+  health.
+- **Permissions not required by the current role.** The Task Toolkit ceiling is the tighter
+  of the Work Item's `authority_class` and the permission profile pinned in the Project
+  Toolkit lock; it can only tighten what the lock already allows.
+
+The same rule governs the Project Toolkit stage: an integration id with no declared
+`IntegrationSpec` has unknown capabilities, so it is treated as the maximum external
+effect and is not pinned. Requesting an integration without declaring it must never
+resolve to more than declaring it does.
+
 ## 5. Resolution stages
 
 A practical resolver should combine deterministic filtering with bounded reasoning.
@@ -276,7 +293,9 @@ degraded
 unavailable
 ```
 
-A Task Toolkit requiring `work.write` must fail preflight if the required integration is not both authorized and sufficiently healthy.
+A Task Toolkit requiring `work.write` must fail preflight if the required integration is not both authorized and sufficiently healthy. This is enforced during Task Toolkit resolution (§4): preflight health is an input to the resolved integration set, not a report produced alongside it.
+
+Health classification and external-effect classification are different axes and must not be conflated. `health.required` says how live and authorized an integration must be; a capability's `min_external_effect` says what class of state exercising it can change. Reading a work tracker is `read-only` on the effect axis even though it needs an authenticated integration on the health axis.
 
 ## 13. Configuration split
 
@@ -323,6 +342,10 @@ integrations:
 validators:
   evidence-contract: 1.0.0
 ```
+
+Every pinned id must resolve to a component the registry actually carries. A validator id
+that names nothing runnable is a resolution failure, not a lock entry; validators are
+version-pinned alongside skills, workflows, and integration adapters.
 
 Updating the global registry should not silently change an existing project's resolved behavior. Toolkit upgrades should be explicit and validate compatibility.
 

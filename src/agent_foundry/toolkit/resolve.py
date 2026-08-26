@@ -37,10 +37,12 @@ from agent_foundry.toolkit.ceiling import (
     capability_min_external_effect,
     effective_permission_ceiling,
     exceeds_permission_ceiling,
+    tighten_ceiling,
+    unknown_external_effect,
     validate_task_toolkit_against_ceiling,
     validate_toolkit_lock_against_ceiling,
 )
-from agent_foundry.toolkit.preflight import preflight_integrations
+from agent_foundry.toolkit.preflight import meets_required_health, preflight_integrations
 
 def _manifest_facts_unspecified(manifest: ProjectManifest) -> bool:
     artifact = manifest.project.primary_artifact
@@ -367,12 +369,26 @@ def _reconcile_integrations_against_ceiling(
 
     for integration_id in integration_ids:
         spec = specs_by_id.get(integration_id)
-        exceeded = False
-        if spec is not None:
-            exceeded = any(
-                _capability_exceeds_ceiling(capability_id, ceiling, capabilities_by_id)
-                for capability_id in spec.capabilities
+        if spec is None:
+            # An undeclared integration has unknown capabilities. Retaining it would let
+            # the absence of an IntegrationSpec grant more than supplying one does, so the
+            # unknown set is treated as the fail-closed maximum and excluded.
+            _record_exclude(
+                decisions,
+                "integration",
+                integration_id,
+                (
+                    "no IntegrationSpec declared; capabilities unknown and treated as "
+                    f"{unknown_external_effect().value}, which exceeds ceiling {ceiling.value}"
+                ),
+                ResolutionSource.PROJECT_FACT,
+                project_fact=ceiling_fact,
             )
+            continue
+        exceeded = any(
+            _capability_exceeds_ceiling(capability_id, ceiling, capabilities_by_id)
+            for capability_id in spec.capabilities
+        )
         if exceeded:
             _record_exclude(
                 decisions,
@@ -1002,6 +1018,9 @@ def resolve_project_toolkit(
         _assert_present("capability", capabilities, index["capabilities"])
 
     validator_ids = _select_validator_ids(manifest)
+    # A validator id is pinned only when the registry actually carries the validator.
+    # Without this, a registry with `validators: []` still pins names nothing can run.
+    _assert_present("validator", validator_ids, index["validators"])
     decisions.append(
         _decision(
             ResolutionAction.INCLUDE,
@@ -1089,6 +1108,10 @@ def resolve_project_toolkit(
         integration_id: index["integrations"][integration_id].adapter_version
         for integration_id in integration_ids
     }
+    validator_versions = {
+        validator_id: index["validators"][validator_id].version
+        for validator_id in sorted(validator_ids)
+    }
 
     if integration_include_rationale is not None:
         for integration_id in integration_ids:
@@ -1159,6 +1182,7 @@ def resolve_project_toolkit(
         budget_profile_ids=[budget_profile.id],
         skill_versions=skill_versions,
         workflow_versions=workflow_versions,
+        validator_versions=validator_versions,
         integration_adapter_versions=integration_adapter_versions,
         permission_profile_version=permission_profile.version,
         declared_external_effect=declared_effect,
@@ -1315,6 +1339,98 @@ def _annotate_empty_task_toolkit(
     )
 
 
+def _select_task_integrations(
+    work_item: WorkItemContract,
+    project_lock: ToolkitLock,
+    integrations: list[IntegrationSpec],
+    integration_health: list[IntegrationHealth],
+    ceiling: ExternalEffectClass,
+    capabilities_by_id: dict[str, object],
+    decisions: list[ResolutionDecision],
+) -> list[str]:
+    """Subtract unavailable and over-authority integrations from the project pin.
+
+    docs/foundry/04 §4 says the Task Toolkit subtracts unavailable integrations, and §12
+    says a Task Toolkit must fail preflight when a required integration is not authorized
+    and sufficiently healthy. This is where preflight health actually gates: an integration
+    reaches the Task Toolkit only when a spec declares it, observed health meets that
+    spec's requirement, and its capabilities stay inside the work item's authority.
+    """
+    specs_by_id = {spec.id: spec for spec in integrations}
+    health_by_id = {
+        item.integration_id: item
+        for item in preflight_integrations(
+            integrations,
+            required_ids=list(project_lock.integration_ids),
+            observed_health=integration_health,
+        )
+    }
+    authority_fact = (
+        f"work_item.authority_class={work_item.authority_class.value}; "
+        f"task ceiling {ceiling.value}"
+    )
+    retained: list[str] = []
+
+    for integration_id in project_lock.integration_ids:
+        spec = specs_by_id.get(integration_id)
+        health = health_by_id.get(integration_id)
+        if spec is None or health is None:
+            _record_exclude(
+                decisions,
+                "integration",
+                integration_id,
+                "no IntegrationSpec declared; availability cannot be established at task time",
+                ResolutionSource.WORK_ITEM,
+                project_fact=authority_fact,
+            )
+            continue
+        if not meets_required_health(health.state, spec.health.required):
+            _record_exclude(
+                decisions,
+                "integration",
+                integration_id,
+                (
+                    f"integration health {health.state.value} does not meet required "
+                    f"{spec.health.required.value}"
+                ),
+                ResolutionSource.WORK_ITEM,
+                project_fact=authority_fact,
+            )
+            continue
+        exceeding = sorted(
+            capability_id
+            for capability_id in spec.capabilities
+            if _capability_exceeds_ceiling(capability_id, ceiling, capabilities_by_id)
+        )
+        if exceeding:
+            _record_exclude(
+                decisions,
+                "integration",
+                integration_id,
+                (
+                    f"integration capabilities exceed work item authority ceiling "
+                    f"{ceiling.value}: {', '.join(exceeding)}"
+                ),
+                ResolutionSource.WORK_ITEM,
+                project_fact=authority_fact,
+            )
+            continue
+        retained.append(integration_id)
+        _record_include(
+            decisions,
+            "integration",
+            integration_id,
+            (
+                f"integration preflight health {health.state.value} meets required "
+                f"{spec.health.required.value} within work item authority"
+            ),
+            ResolutionSource.WORK_ITEM,
+            project_fact=authority_fact,
+        )
+
+    return retained
+
+
 def _work_item_workflow_for_item(
     work_item: WorkItemContract,
     available_workflow_ids: list[str],
@@ -1354,6 +1470,8 @@ def resolve_task_toolkit(
     *,
     permission_profiles: list[PermissionProfile] = [],
     budget_profiles: list[BudgetProfile] = [],
+    integrations: list[IntegrationSpec] = [],
+    integration_health: list[IntegrationHealth] = [],
 ) -> TaskToolkit:
     """Resolve minimum Task Toolkit — strict subset of project lock, may only tighten controls."""
     index = _index_registry(registry)
@@ -1547,11 +1665,15 @@ def resolve_task_toolkit(
         if task_budget_profile.token_budget > project_budget_profile.token_budget:
             raise PolicyViolationError("task budget would loosen token budget")
 
-    integration_ids = [
-        integration_id
-        for integration_id in project_lock.integration_ids
-        if integration_id == "repository"
-    ]
+    integration_ids = _select_task_integrations(
+        work_item,
+        project_lock,
+        integrations,
+        integration_health,
+        tighten_ceiling(work_item.authority_class, project_ceiling),
+        capabilities_by_id,
+        decisions,
+    )
 
     _annotate_empty_task_toolkit(
         work_item,
@@ -1585,6 +1707,7 @@ def resolve_task_toolkit(
         registry,
         work_item,
         permission_profiles,
+        integrations=integrations,
     )
     return task_toolkit
 
