@@ -2,41 +2,133 @@
 
 **Agent Foundry is an AI-native project adoption and configuration compiler.**
 
-It analyzes a new or existing project, derives the operating profile agents should follow, resolves a bounded project-specific toolkit, and compiles concise execution contracts for coding agents and other AI workers.
+It takes a new or existing project as input, diagnoses how that project actually operates, prescribes an AI-native operating model, and compiles bounded execution contracts that existing coding agents and AI workers can use.
 
-The long-term user experience is:
+The core product method is:
 
 ```text
-Target project
-→ inspect current truth
-→ classify operating characteristics
-→ synthesize project profile
-→ bootstrap or retrofit AI-native controls
-→ decompose objectives into causal work
-→ resolve a least-capability toolkit
-→ compile agent execution contracts
-→ execute through existing agents/tools
-→ verify and reconcile evidence
+Diagnosis
+→ Prescription
+→ Compilation
+→ Controlled Apply
 ```
 
-Agent Foundry is intended to work **before and around** an execution agent. It is not an attempt to replace Claude Code, Cursor, Codex, OpenHands, issue trackers, secret managers, or agent runtimes.
+The project deliberately works **before and around** execution agents. It is not intended to replace Claude Code, Cursor, Codex, OpenHands, work trackers, secret managers, or long-running agent runtimes.
 
 ## Why this exists
 
-Coding agents are increasingly capable, but real projects differ materially in:
+Real projects differ materially in architecture, conventions, testability, external side effects, rollback cost, authority, tools, credentials, work-management style, and the evidence required to call work complete.
 
-- architecture and repository conventions;
-- existing or missing agent instructions;
-- testability and observability;
-- external side effects and rollback cost;
-- authority and approval boundaries;
-- required tools, skills, integrations, and credentials;
-- work-management conventions;
-- evidence needed to call work complete.
+A fixed prompt or one universal agent template cannot represent those differences reliably.
 
-A single giant prompt or fixed agent template does not capture those differences reliably.
+Agent Foundry treats the **project itself as input** and produces structured, auditable configuration describing how agents should work in that project.
 
-Agent Foundry treats the **project itself as input** and produces structured, auditable configuration describing how agents should operate in that project.
+## Product method
+
+### 1. Diagnosis
+
+```text
+project / repository
+→ inspect current truth
+→ discover conventions and instruction surfaces
+→ classify operating characteristics
+→ synthesize evidence-backed Project Profile
+```
+
+### 2. Prescription
+
+```text
+Project Profile
+→ AI-native readiness assessment
+→ greenfield bootstrap or brownfield retrofit plan
+→ governance / role / interaction / evidence requirements
+→ causal Work Items
+→ required project capabilities
+```
+
+### 3. Compilation
+
+```text
+Project Profile / Manifest
+→ Project Toolkit + Toolkit Lock
+→ Work Item
+→ least-capability Task Toolkit
+→ Integration / SecretRef preflight
+→ Execution Bundle
+→ concise agent-facing projections
+```
+
+### 4. Controlled Apply
+
+```text
+reviewed adoption change set
+→ bounded project mutation
+→ validation
+→ rollback / adoption receipt
+```
+
+Controlled Apply is the intended next layer after the read-only/preview Core has been proven. Broad automatic project mutation is **not required for the first public release**.
+
+## Release status
+
+Current development version:
+
+```text
+0.1.0.dev0
+```
+
+Target first public release:
+
+```text
+v0.1.0 — Public Preview
+```
+
+`v0.1.0` is scoped to:
+
+```text
+Diagnosis
+→ Prescription
+→ Compilation
+→ Validation
+```
+
+It must work end to end for both a controlled/synthetic project and a meaningful existing brownfield project.
+
+The first public release does **not** require:
+
+- broad Controlled Apply;
+- autonomous agent dispatch;
+- production deployment automation;
+- MCP server implementation;
+- large integration/Skill/provider catalogs;
+- SaaS or hosted control-plane features.
+
+See [`docs/foundry/09-release-and-versioning.md`](docs/foundry/09-release-and-versioning.md) for the full public-release gate and compatibility policy, and [`CHANGELOG.md`](CHANGELOG.md) for user-visible evolution.
+
+## Intended end-user flow
+
+Once the V0.1 Core is implemented, the intended CLI experience is approximately:
+
+```bash
+agent-foundry inspect <project-path>
+agent-foundry profile <project-path>
+agent-foundry adopt <project-path> --preview
+agent-foundry work plan <objective>
+agent-foundry resolve <project-path>
+agent-foundry integration check <project-path>
+agent-foundry compile <work-item>
+agent-foundry render <execution-bundle>
+agent-foundry validate <artifact>
+agent-foundry reconcile <project-path>
+```
+
+A future controlled mutation surface may add:
+
+```bash
+agent-foundry adopt <project-path> --apply
+```
+
+External mutations remain preview-first unless a narrower project policy explicitly grants bounded automatic authority.
 
 ## Core outputs
 
@@ -46,7 +138,7 @@ A mature Foundry run should be able to derive or generate:
 ProjectObservation
 ProjectProfile
 ProjectManifest
-ReadinessFindings
+ReadinessFinding
 AdoptionPlan / AdoptionChangeSet
 Governance / Work / Role / Interaction / Evidence profiles
 Project Toolkit / Toolkit Lock
@@ -68,8 +160,8 @@ Foundry does not assume a new project.
 
 ```text
 project goal
-→ minimum project contracts
-→ initial manifest/profile
+→ minimum operating contracts
+→ initial profile / manifest
 → work model
 → toolkit
 → agent-ready bootstrap
@@ -83,7 +175,7 @@ existing repository
 → distinguish observed behavior from intended rules
 → assess AI-native readiness
 → propose KEEP / CONSOLIDATE / WRAP / HARDEN / MIGRATE / DEFER / BLOCK
-→ preview changes
+→ preview AdoptionChangeSet
 → progressively retrofit only what is needed
 ```
 
@@ -91,22 +183,22 @@ The goal is **migration and adaptation, not rewriting a functioning project arou
 
 ## Project Profile Synthesis
 
-Project inspection should not collapse immediately into a hard-coded project type such as `backend`, `trading`, or `content`.
+Foundry should not reduce projects to hard-coded categories such as `backend`, `finance`, or `content`.
 
-Instead Foundry derives composable characteristics and synthesizes profiles such as:
+Instead it derives composable characteristics and synthesizes profiles such as:
 
 ```text
-Operating characteristics
-Governance profile
-Work profile
-Role profile
-Interaction profile
-Evidence profile
-Integration requirements
-Toolkit requirements
+Operating Profile
+Governance Profile
+Work Profile
+Role Profile
+Interaction Profile
+Evidence Profile
+Integration Requirements
+Toolkit Requirements
 ```
 
-A classification result should retain provenance and uncertainty:
+Material findings retain provenance and uncertainty:
 
 ```yaml
 key: runtime_mutation
@@ -117,7 +209,14 @@ evidence:
 confidence: 0.98
 ```
 
-Inferred facts may safely tighten controls, but inferred facts should not silently expand authority.
+Core rule:
+
+```text
+inference may tighten controls
+inference must not silently expand authority
+```
+
+This keeps the system adaptive without turning it into a hard-coded project-type template engine.
 
 ## Work model
 
@@ -131,9 +230,7 @@ Objective
 → Execution Run
 ```
 
-A Work Item is a causal, independently closable capability boundary. It should not be split merely because files, agents, test phases, or implementation roles differ.
-
-Tracker lifecycle, execution lifecycle, and evidence lifecycle remain separate:
+A Work Item is a causal, independently closable capability boundary. It should not be split merely because files, agents, tests, or implementation roles differ.
 
 ```text
 Work Item state
@@ -141,7 +238,7 @@ Work Item state
 ≠ Evidence state
 ```
 
-External trackers are adapters to this model rather than architectural dependencies of the core.
+External trackers are adapters rather than architectural dependencies of the core.
 
 ## Toolkit model
 
@@ -159,9 +256,9 @@ Task Toolkit
 Execution Bundle
 ```
 
-**Project Toolkit** = the version-pinned capability universe approved for the project.
+**Project Toolkit** is the version-pinned capability universe approved for the project.
 
-**Task Toolkit** = the least-capability subset actually needed by one Work Item/run.
+**Task Toolkit** is the least-capability subset needed for one Work Item/run.
 
 Toolkit components may include:
 
@@ -191,7 +288,7 @@ Execution Bundle
 
 Version-controlled Foundry configuration stores integration declarations and credential references, never raw API keys or secret values.
 
-Integration availability is explicit rather than binary:
+Integration availability is explicit:
 
 ```text
 DESIRED
@@ -202,11 +299,11 @@ DESIRED
 → HEALTHY
 ```
 
-A credential being available does not imply that a task is authorized to use it.
+Credential availability does not imply task authority.
 
 ## MCP direction
 
-MCP is planned as an **interface/facade**, not the Foundry core.
+MCP is planned as an optional **facade**, not the Foundry Core.
 
 ```text
                     Agent Foundry Core
@@ -216,7 +313,7 @@ MCP is planned as an **interface/facade**, not the Foundry core.
              CLI       Python API    MCP Server
 ```
 
-The same deterministic models/resolvers/validators should remain usable when MCP is unavailable.
+The same deterministic models, resolvers, compilers, and validators must remain usable when MCP is unavailable.
 
 Candidate MCP tools include:
 
@@ -233,41 +330,20 @@ foundry.validate
 foundry.reconcile
 ```
 
-Candidate MCP resources include project profile, manifest, adoption plan, toolkit, work model, and current execution bundle views.
+New MCP implementations should pass project directories through tool parameters, resource URIs, or server configuration rather than building new architecture around deprecated MCP Roots.
 
-For new MCP implementations, project directories should be passed through tool parameters, resource URIs, or server configuration rather than building new architecture around MCP Roots, which was deprecated in MCP `2026-07-28`.
-
-Long-running Foundry operations may later use the MCP Tasks extension, but V0.1 remains focused on a stable synchronous core first.
-
-## CLI direction
-
-Today the repository contains only a minimal bootstrap CLI. The intended command surface is:
-
-```bash
-agent-foundry inspect <project-path>
-agent-foundry classify <project-path>
-agent-foundry profile <project-path>
-agent-foundry adopt <project-path> --preview
-agent-foundry adopt <project-path> --apply
-agent-foundry work plan <objective>
-agent-foundry resolve <project-path>
-agent-foundry integration check <project-path>
-agent-foundry compile <work-item>
-agent-foundry render <execution-bundle>
-agent-foundry validate <artifact>
-agent-foundry reconcile <project-path>
-```
-
-External mutations should remain preview-first unless a narrower policy explicitly grants bounded automatic authority.
+The first MCP facade is expected after the V0.1 Core unless implementation evidence justifies a smaller earlier adapter.
 
 ## Current repository state
 
 The repository currently contains:
 
 - a minimal Python package and bootstrap CLI;
-- a clean public baseline;
 - canonical architecture and governance contracts;
-- a V0.1 implementation plan for typed contracts, inspection, adoption, work decomposition, toolkit resolution, compilation, and verification.
+- MIT License;
+- benchmark/MCP evolution guidance;
+- release/versioning policy;
+- an active V0.1 implementation plan for typed contracts, project inspection, adoption, work decomposition, toolkit resolution, compilation, validation, and end-to-end preview proof.
 
 The full Foundry compiler described above is **not yet implemented**.
 
@@ -286,11 +362,12 @@ Python `>=3.11` is required.
 
 ## Architecture principles
 
-- Provider-neutral core; provider identities stay in adapters.
+- Provider-neutral Core; provider identities stay in adapters.
 - Source once, compile many.
 - Project first, task second.
+- Diagnosis precedes prescription and mutation.
 - Project characteristics are compositional rather than domain-hardcoded.
-- Deterministic invariants + declarative policies + bounded LLM interpretation.
+- Deterministic invariants + declarative policies + bounded interpretation.
 - Observed, declared, inferred, and normative facts stay distinct.
 - Confidence/provenance accompany material classifications.
 - Hard policies become executable controls where practical.
@@ -303,19 +380,19 @@ Python `>=3.11` is required.
 
 ## Benchmarks and related projects
 
-Agent Foundry deliberately learns from existing open-source systems without trying to clone them.
+Agent Foundry learns from existing open-source systems without trying to clone them.
 
-| Project | What it validates | What Foundry borrows | Main distinction from Foundry |
+| Project | Validated primitive | What Foundry borrows | Main distinction |
 |---|---|---|---|
-| [GitHub Spec Kit](https://github.com/github/spec-kit) | Constitution-driven spec → plan → tasks → implementation workflows | explicit artifact lifecycle, provider integrations, spec/task discipline | Spec Kit primarily structures **what to build**; Foundry first derives **how agents may operate in this project** |
-| [Agent OS](https://github.com/buildermethods/agent-os) | Discovering project standards and injecting only relevant standards | convention discovery, indexed standards, progressive disclosure | Foundry generalizes beyond coding standards into governance, permissions, integrations, roles, evidence, and toolkit resolution |
-| [OpenSpec](https://github.com/Fission-AI/OpenSpec) | Brownfield-first, delta-oriented change artifacts | current truth vs proposed change, incremental brownfield adoption | Foundry additionally synthesizes project operating profiles and execution/toolkit constraints |
-| [OpenHands](https://github.com/OpenHands/OpenHands) / [Extensions](https://github.com/OpenHands/extensions) | Reusable Skills/plugins and progressive loading | small composable skills, metadata-driven loading | Foundry selects/configures capabilities for the project rather than acting primarily as the agent runtime/skill host |
-| [SWE-agent](https://github.com/SWE-agent/SWE-agent) | Agent-Computer Interface design materially affects agent performance | tool-interface profiles, concise feedback, executable validation | Foundry configures the project/harness before a specific task runner operates |
-| [OpenAI Symphony](https://github.com/openai/symphony) | Issue tracker → isolated workspace → autonomous agent runs | Work Item vs Run separation, workspace/lease concepts, reconciliation | Symphony is an execution scheduler/orchestrator; Foundry is the project adoption/configuration compiler upstream of such runtimes |
-| [Model Context Protocol](https://modelcontextprotocol.io/) | Standardized agent-to-tool/context interoperability | optional MCP facade, typed tool/resource interfaces, integration boundary | Foundry Core remains protocol-independent and usable via CLI/Python API |
+| [GitHub Spec Kit](https://github.com/github/spec-kit) | Constitution-driven spec → plan → task workflows | artifact lifecycle, spec/task discipline | Foundry first derives **how agents may operate in this project** |
+| [Agent OS](https://github.com/buildermethods/agent-os) | project-standard discovery and relevance-based injection | convention discovery, progressive disclosure | Foundry extends into governance, permissions, integrations, roles, evidence, and toolkit resolution |
+| [OpenSpec](https://github.com/Fission-AI/OpenSpec) | brownfield-first delta-oriented changes | current truth vs proposed change | Foundry additionally synthesizes operating profiles and agent constraints |
+| [OpenHands](https://github.com/OpenHands/OpenHands) | reusable Skills/plugins and progressive loading | composable Skills and metadata-driven selection | Foundry configures capabilities rather than primarily hosting the execution runtime |
+| [SWE-agent](https://github.com/SWE-agent/SWE-agent) | Agent-Computer Interface design | tool-interface profiles, concise feedback | Foundry configures the project/harness upstream of a task runner |
+| [OpenAI Symphony](https://github.com/openai/symphony) | issue → isolated workspace → agent run | Work Item vs Run separation, lease/reconciliation concepts | Symphony is an execution scheduler; Foundry is an upstream adoption/configuration compiler |
+| [Model Context Protocol](https://modelcontextprotocol.io/) | standardized tool/context interoperability | optional MCP facade and typed integration boundary | Foundry Core remains protocol-independent |
 
-See [`docs/foundry/08-benchmarks-and-evolution.md`](docs/foundry/08-benchmarks-and-evolution.md) for the benchmark-derived design deltas and non-goals.
+See [`docs/foundry/08-benchmarks-and-evolution.md`](docs/foundry/08-benchmarks-and-evolution.md).
 
 ## What is intentionally different
 
@@ -327,8 +404,8 @@ Its core transformation is:
 New or existing project
 + human objective
         ↓
-Project understanding
-+ adoption strategy
+Diagnosis
++ adoption prescription
 + operating profiles
 + work model
 + bounded toolkit
@@ -353,6 +430,7 @@ Start with [`docs/foundry/00-overview.md`](docs/foundry/00-overview.md).
 | `docs/foundry/06-verification-reconciliation-learning.md` | evidence, reconciliation and learning |
 | `docs/foundry/07-implementation-contracts.md` | machine-readable models and implementation sequence |
 | `docs/foundry/08-benchmarks-and-evolution.md` | benchmark references, MCP direction and design evolution |
+| `docs/foundry/09-release-and-versioning.md` | public release gate, versioning and compatibility policy |
 
 ## License
 

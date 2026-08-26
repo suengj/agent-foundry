@@ -17,6 +17,19 @@ Inspect
 → Validate / Reconcile
 ```
 
+At the product level, this is summarized as:
+
+```text
+Diagnosis
+→ Prescription
+→ Compilation
+→ Controlled Apply
+```
+
+`Diagnosis` reconstructs project truth and operating characteristics. `Prescription` proposes the AI-native operating model, adoption changes, work structure, roles, policies, evidence and capability requirements. `Compilation` turns those structured decisions into pinned toolkits and agent-facing execution contracts. `Controlled Apply` is the later bounded mutation layer that applies reviewed changes and verifies the result.
+
+The first public release target (`v0.1.0`) proves Diagnosis → Prescription → Compilation → Validation in read-only/preview mode. Broad Controlled Apply is intentionally post-Core and is not a V0.1 release blocker. See `09-release-and-versioning.md`.
+
 Foundry is not intended to become a second project-management database, a secret vault, a full spec framework, a general-purpose workflow engine, a Skill marketplace, or a monolithic agent runtime. It should integrate with those systems through explicit adapters and contracts.
 
 ## End-to-end lifecycle
@@ -155,6 +168,7 @@ Interpretation should produce typed findings with evidence and confidence rather
 | `docs/foundry/06-verification-reconciliation-learning.md` | Evidence, state reconciliation, incidents and learning feedback |
 | `docs/foundry/07-implementation-contracts.md` | Machine-readable schemas, package boundaries and implementation sequence |
 | `docs/foundry/08-benchmarks-and-evolution.md` | Public benchmarks, MCP direction and benchmark-derived design deltas |
+| `docs/foundry/09-release-and-versioning.md` | Public-release gate, package/schema versioning and compatibility policy |
 
 ## Conceptual layers
 
@@ -236,9 +250,11 @@ See `04-toolkit-and-integrations.md` and `08-benchmarks-and-evolution.md`.
 
 The public architecture must be self-contained. It should not depend on private repositories, private project names, personal filesystem layouts, or unpublished operating rules. Internal experiments may inform the design, but public contracts must stand on their own and use generic examples.
 
+Public visibility is a distinct release operation. Before publication, audit not only branch contents but also durable GitHub objects such as historical merged pull requests. See `09-release-and-versioning.md`.
+
 ## Documentation versus implementation
 
-Human-readable Markdown owns architecture intent, semantics, benchmark rationale, and design boundaries. Deterministic behavior should move into structured schemas and code.
+Human-readable Markdown owns architecture intent, semantics, benchmark rationale, release boundaries, and design rationale. Deterministic behavior should move into structured schemas and code.
 
 ```text
 Human-readable contract
@@ -250,4 +266,4 @@ Resolver / Compiler / Validator
 Generated agent-facing Markdown / adapters
 ```
 
-The implementation target is described in `07-implementation-contracts.md`; benchmark-derived evolution is tracked in `08-benchmarks-and-evolution.md`.
+The implementation target is described in `07-implementation-contracts.md`; benchmark-derived evolution is tracked in `08-benchmarks-and-evolution.md`; public release and compatibility policy are defined in `09-release-and-versioning.md`.
