@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from agent_foundry.models.execution import ExecutionBundle
+from agent_foundry.secrets import raise_on_embedded_secrets
 
 
 def _bullet_lines(items: list[str]) -> list[str]:
@@ -11,6 +12,8 @@ def _bullet_lines(items: list[str]) -> list[str]:
 
 def render_execution_bundle_markdown(bundle: ExecutionBundle) -> str:
     """Render concise agent-facing Markdown wholly from the bundle."""
+    raise_on_embedded_secrets(bundle.model_dump(mode="json"))
+
     lines: list[str] = [
         f"# Execution Contract — {bundle.work_item_id}",
         "",

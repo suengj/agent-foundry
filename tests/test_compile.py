@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from itertools import product
 from pathlib import Path
 
 import pytest
@@ -17,9 +18,14 @@ from agent_foundry.compile import (
     compute_compiled_authority,
     validate_execution_bundle_authority,
 )
-from agent_foundry.compile.authority import CompileAuthorityError
+from agent_foundry.compile.authority import (
+    CompileAuthorityError,
+    _intersect_write_scopes,
+    _scope_contained_in_bounds,
+)
 from agent_foundry.models import (
     ConsequenceClass,
+    EmbeddedSecretError,
     ExternalEffectClass,
     ProjectAccess,
     ProjectAssurance,
@@ -47,6 +53,8 @@ from agent_foundry.toolkit.ceiling import EFFECT_RANK
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "valid"
+_AWS_SECRET_SAMPLE = "AKIAIOSFODNN7EXAMPLE"
+_RENDER_BYTE_CEILING = 2500
 
 
 def _subprocess_env() -> dict[str, str]:
@@ -364,32 +372,284 @@ def test_render_is_fully_determined_by_bundle():
     assert "Changed objective text" in altered
 
 
-def test_rendered_markdown_is_concise_against_large_project_context():
+def test_intersect_write_scopes_four_widening_cases():
+    """B1 widening paths must return true intersection, never role-only fallback."""
+    assert _intersect_write_scopes(["src/", "tests/"], ["docs/"]) == []
+    assert _intersect_write_scopes(["src/af/compile"], ["src/"]) == ["src/af/compile"]
+    assert _intersect_write_scopes([], ["src/"]) == []
+    assert _intersect_write_scopes(["src/", "tests/"], ["/"]) == []
+
+
+def test_authority_adversarial_sweep_effect_and_write_scope_axes():
+    """Adversarial compile sweep — 0 effect-axis and write-scope violations."""
+    manifest = _sample_manifest(
+        assurance={"required": ["deterministic-tests", "independent-review"]},
+    )
+    _, lock = resolve_toolkit(manifest)
+    reg = default_registry()
+    profiles = build_default_registry_permission_profiles()
+    task_profile = next(profile for profile in profiles if profile.id == lock.permission_profile_ids[0])
+
+    role_ids = ("builder", "explorer", "reviewer", "validator")
+    authorities = (
+        ExternalEffectClass.READ_ONLY,
+        ExternalEffectClass.REPOSITORY_WRITE,
+        ExternalEffectClass.PUBLICATION,
+        ExternalEffectClass.SHARED_SERVICE_WRITE,
+    )
+    work_item_scopes = (
+        ["docs/"],
+        ["src/"],
+        ["src/", "toolkit resolver"],
+        ["src/af/compile"],
+        ["infra/terraform"],
+    )
+    manifest_effects = (
+        None,
+        ExternalEffectClass.READ_ONLY,
+        ExternalEffectClass.REPOSITORY_WRITE,
+        ExternalEffectClass.PUBLICATION,
+    )
+
+    effect_violations: list[str] = []
+    write_scope_violations: list[str] = []
+    successful_compiles = 0
+    total_attempts = 0
+
+    for work_class, authority, role_id, wi_scopes, manifest_effect in product(
+        WorkClass,
+        authorities,
+        role_ids,
+        work_item_scopes,
+        manifest_effects,
+    ):
+        manifest_override = _sample_manifest(
+            assurance={"required": ["deterministic-tests", "independent-review"]},
+        )
+        if manifest_effect is not None:
+            manifest_override = manifest_override.model_copy(
+                update={
+                    "impact": manifest_override.impact.model_copy(
+                        update={"external_effect": manifest_effect}
+                    )
+                }
+            )
+
+        work_item = _sample_work_item(
+            work_class=work_class.value,
+            authority_class=authority.value,
+            scope=wi_scopes,
+            consequence_class=(
+                ConsequenceClass.HIGH.value
+                if work_class in {WorkClass.INCIDENT, WorkClass.CONTRACT_AMENDMENT}
+                else ConsequenceClass.MEDIUM.value
+            ),
+        )
+        _, sweep_lock = resolve_toolkit(manifest_override)
+        role = next(item for item in reg.roles if item.id == role_id)
+
+        total_attempts += 1
+        try:
+            result = compile_work_item(
+                work_item,
+                manifest_override,
+                sweep_lock,
+                role_id,
+                f"RUN-SWEEP-{total_attempts}",
+            )
+        except (CompileError, CompileAuthorityError):
+            continue
+
+        successful_compiles += 1
+        bundle_authority = result.bundle.authority
+        assert bundle_authority is not None
+
+        compiled = compute_compiled_authority(
+            work_item,
+            manifest_override,
+            result.task_toolkit,
+            role,
+            task_profile,
+            reg,
+        )
+        if bundle_authority.external_effect != compiled.external_effect:
+            effect_violations.append(
+                f"{work_class.value}/{authority.value}/{role_id}: "
+                f"{bundle_authority.external_effect} != {compiled.external_effect}"
+            )
+        if bundle_authority.write_scope != compiled.write_scope:
+            write_scope_violations.append(
+                f"{work_class.value}/{authority.value}/{role_id}: "
+                f"{bundle_authority.write_scope!r} != {compiled.write_scope!r}"
+            )
+
+        for scope_path in bundle_authority.write_scope:
+            if not _scope_contained_in_bounds(scope_path, work_item.scope):
+                write_scope_violations.append(
+                    f"{work_class.value}: {scope_path!r} escapes work item scope"
+                )
+            if role.write_scope and not _scope_contained_in_bounds(scope_path, role.write_scope):
+                write_scope_violations.append(
+                    f"{role_id}: {scope_path!r} escapes role write_scope"
+                )
+
+        try:
+            validate_execution_bundle_authority(
+                bundle_authority,
+                work_item,
+                manifest_override,
+                result.task_toolkit,
+                role,
+                task_profile,
+                reg,
+            )
+        except CompileAuthorityError as exc:
+            write_scope_violations.append(str(exc))
+
+    assert total_attempts == 2240
+    assert successful_compiles > 0
+    assert effect_violations == []
+    assert write_scope_violations == []
+
+
+def test_validate_execution_bundle_authority_rejects_forged_write_scope(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    work_item = _sample_work_item(scope=["docs/", "infra/terraform"])
+    manifest = _sample_manifest()
+    _, lock = resolve_toolkit(manifest)
+    result = compile_work_item(work_item, manifest, lock, "builder", "RUN-FORGE")
+    assert result.bundle.authority is not None
+
+    forged = result.bundle.authority.model_copy(
+        update={"write_scope": ["src/", "tests/"]},
+    )
+    profiles = build_default_registry_permission_profiles()
+    task_profile = next(profile for profile in profiles if profile.id == lock.permission_profile_ids[0])
+    reg = default_registry()
+    role = next(item for item in reg.roles if item.id == "builder")
+
+    monkeypatch.setattr(
+        "agent_foundry.compile.authority.compute_compiled_authority",
+        lambda *_args, **_kwargs: forged,
+    )
+
+    with pytest.raises(CompileAuthorityError, match="not contained in work item scope"):
+        validate_execution_bundle_authority(
+            forged,
+            work_item,
+            manifest,
+            result.task_toolkit,
+            role,
+            task_profile,
+            reg,
+        )
+
+
+def test_write_scope_union_mutation_killed(monkeypatch: pytest.MonkeyPatch):
+    from agent_foundry.compile import authority as authority_module
+
+    def _union_write_scopes(
+        role_scopes: list[str],
+        work_item_scopes: list[str],
+    ) -> list[str]:
+        normalized = {
+            scope.rstrip("/")
+            for scope in [*role_scopes, *work_item_scopes]
+            if scope.strip() and scope.strip() != "/"
+        }
+        return sorted(normalized)
+
+    monkeypatch.setattr(authority_module, "_intersect_write_scopes", _union_write_scopes)
+    with pytest.raises(AssertionError):
+        assert authority_module._intersect_write_scopes(["src/", "tests/"], ["docs/"]) == []
+
+
+def test_read_only_explorer_markdown_advertises_no_write_scope():
+    manifest = _sample_manifest()
+    work_item = _read_only_discovery_work_item()
+    _, lock = resolve_toolkit(manifest)
+    result = compile_work_item(work_item, manifest, lock, "explorer", "RUN-RO-MD")
+    assert result.bundle.write_scope == []
+    rendered = render_execution_bundle_markdown(result.bundle)
+    assert "## Write scope" not in rendered
+    assert result.bundle.authority is not None
+    assert result.bundle.authority.external_effect == ExternalEffectClass.READ_ONLY
+
+
+def test_convention_provenance_reports_fields_that_drove_selection():
+    manifest = _sample_manifest()
+    work_item = _sample_work_item(scope=["alpha-topic"])
+    _, lock = resolve_toolkit(manifest)
+    convention = ConventionSpec(
+        subject="zzz-unrelated-alpha",
+        pattern="alpha-topic-pattern",
+        source_ref="docs/alpha.md",
+        evidence="unrelated",
+        confidence=1.0,
+        provenance=Provenance(kind=ProvenanceKind.OBSERVED, source_ref="docs/alpha.md"),
+    )
+    result = compile_work_item(
+        work_item,
+        manifest,
+        lock,
+        "builder",
+        "RUN-PROV",
+        conventions=[convention],
+    )
+    record = next(
+        item for item in result.bundle.provenance if item.component_id == convention.subject
+    )
+    assert record.selected is True
+    assert "pattern" in record.rationale
+    assert "subject overlaps" not in record.rationale
+    assert "selection score=" in record.rationale
+    assert "pattern" in (record.project_fact or "")
+
+
+def test_execution_bundle_provenance_covers_required_fields():
+    manifest = _sample_manifest()
+    work_item = _sample_work_item()
+    _, lock = resolve_toolkit(manifest)
+    result = compile_work_item(
+        work_item,
+        manifest,
+        lock,
+        "builder",
+        "RUN-PROV-FIELDS",
+        context_refs=["docs/context.md"],
+    )
+    kinds = {record.component_kind for record in result.bundle.provenance}
+    for required in (
+        "required-evidence",
+        "budget-profile",
+        "context-ref",
+        "interaction-output",
+        "stop-condition",
+        "write-scope",
+    ):
+        assert required in kinds
+
+
+def test_rendered_markdown_respects_constant_byte_ceiling_with_relevant_context():
     manifest = _sample_manifest()
     work_item = _sample_work_item()
     _, lock = resolve_toolkit(manifest)
 
-    large_conventions = [
+    relevant_conventions = [
         ConventionSpec(
-            subject=f"convention-topic-{index:04d}",
-            pattern=f"pattern-{index}",
-            source_ref=f"docs/topic-{index}.md",
-            evidence=f"evidence about unrelated topic {index}",
-            confidence=0.5,
-            provenance=Provenance(kind=ProvenanceKind.OBSERVED, source_ref=f"docs/topic-{index}.md"),
+            subject=f"toolkit-resolver-src-{index:03d}",
+            pattern="pytest toolkit resolver",
+            source_ref=f"docs/toolkit-{index}.md",
+            evidence="toolkit resolver conventions in src/",
+            confidence=0.9,
+            provenance=Provenance(
+                kind=ProvenanceKind.OBSERVED,
+                source_ref=f"docs/toolkit-{index}.md",
+            ),
         )
-        for index in range(200)
+        for index in range(60)
     ]
-    large_observations = [
-        ProjectObservation(
-            subject=f"observation-{index:04d}",
-            content=f"unrelated fact {index}",
-            provenance=Provenance(kind=ProvenanceKind.OBSERVED, source_ref=f"fact-{index}"),
-        )
-        for index in range(200)
-    ]
-    context_size = sum(len(item.subject) + len(item.evidence) for item in large_conventions)
-    context_size += sum(len(item.subject) + len(item.content) for item in large_observations)
 
     result = compile_work_item(
         work_item,
@@ -397,13 +657,210 @@ def test_rendered_markdown_is_concise_against_large_project_context():
         lock,
         "builder",
         "RUN-CONCISE",
-        conventions=large_conventions,
-        observations=large_observations,
+        conventions=relevant_conventions,
     )
     rendered = render_execution_bundle_markdown(result.bundle)
-    assert len(rendered) < context_size / 10
-    assert len(result.bundle.selected_conventions) <= 5
-    assert len(result.bundle.selected_observations) <= 5
+    assert len(result.bundle.selected_conventions) == 5
+    assert len(rendered.encode("utf-8")) <= _RENDER_BYTE_CEILING
+
+
+def test_render_conciseness_mutation_killed(monkeypatch: pytest.MonkeyPatch):
+    from agent_foundry.compile import context as context_module
+
+    monkeypatch.setattr(context_module, "_MAX_CONTEXT_ITEMS", 100_000)
+    manifest = _sample_manifest()
+    work_item = _sample_work_item()
+    _, lock = resolve_toolkit(manifest)
+    relevant_conventions = [
+        ConventionSpec(
+            subject=f"toolkit-resolver-src-{index:03d}",
+            pattern="pytest toolkit resolver",
+            source_ref=f"docs/toolkit-{index}.md",
+            evidence="toolkit resolver conventions in src/",
+            confidence=0.9,
+            provenance=Provenance(
+                kind=ProvenanceKind.OBSERVED,
+                source_ref=f"docs/toolkit-{index}.md",
+            ),
+        )
+        for index in range(60)
+    ]
+    result = compile_work_item(
+        work_item,
+        manifest,
+        lock,
+        "builder",
+        "RUN-M4",
+        conventions=relevant_conventions,
+    )
+    rendered = render_execution_bundle_markdown(result.bundle)
+    with pytest.raises(AssertionError):
+        assert len(rendered.encode("utf-8")) <= _RENDER_BYTE_CEILING
+
+
+@pytest.mark.parametrize(
+    ("vector_name", "work_item_overrides", "compile_kwargs"),
+    [
+        (
+            "objective",
+            {"objective": f"verify models package contract tests key {_AWS_SECRET_SAMPLE}"},
+            {},
+        ),
+        ("context_refs", {}, {"context_refs": [_AWS_SECRET_SAMPLE]}),
+        (
+            "convention_subject",
+            {},
+            {
+                "conventions": [
+                    ConventionSpec(
+                        subject=_AWS_SECRET_SAMPLE,
+                        pattern="toolkit",
+                        source_ref="docs/toolkit.md",
+                        evidence="toolkit resolver conventions",
+                        confidence=0.9,
+                        provenance=Provenance(
+                            kind=ProvenanceKind.OBSERVED,
+                            source_ref="docs/toolkit.md",
+                        ),
+                    )
+                ]
+            },
+        ),
+        (
+            "observation_subject",
+            {},
+            {
+                "observations": [
+                    ProjectObservation(
+                        subject=_AWS_SECRET_SAMPLE,
+                        content="toolkit resolver observation",
+                        provenance=Provenance(
+                            kind=ProvenanceKind.OBSERVED,
+                            source_ref="obs-toolkit",
+                        ),
+                    )
+                ]
+            },
+        ),
+    ],
+)
+def test_render_refuses_embedded_secrets_for_all_vectors(
+    vector_name: str,
+    work_item_overrides: dict[str, object],
+    compile_kwargs: dict[str, object],
+):
+    manifest = _sample_manifest()
+    work_item = _sample_work_item(**work_item_overrides)
+    _, lock = resolve_toolkit(manifest)
+    result = compile_work_item(
+        work_item,
+        manifest,
+        lock,
+        "builder",
+        f"RUN-SECRET-{vector_name}",
+        **compile_kwargs,
+    )
+    with pytest.raises(EmbeddedSecretError, match="aws-access-key"):
+        render_execution_bundle_markdown(result.bundle)
+
+
+def _write_secret_work_item_yaml(path: Path) -> None:
+    path.write_text(
+        f"""schema_version: '0.1'
+id: WI-COMPILE-001
+title: Implement toolkit resolver
+work_class: CAPABILITY
+objective: verify models package contract tests key {_AWS_SECRET_SAMPLE}
+current_facts:
+- bootstrap exists
+scope:
+- src/
+- toolkit resolver
+out_of_scope:
+- execution runtime
+acceptance_criteria:
+- pytest green
+dependencies: []
+authority_class: repository-write
+consequence_class: medium
+required_evidence:
+- pytest
+stop_conditions:
+- cannot express semantics
+""",
+        encoding="utf-8",
+    )
+
+
+def test_compile_cli_render_refuses_embedded_secret():
+    env = _subprocess_env()
+    _assert_imports_worktree(env)
+    manifest = _sample_manifest()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        manifest_path = root / "manifest.yaml"
+        work_item_path = root / "work_item.yaml"
+        manifest_path.write_bytes(dump_yaml(manifest))
+        _write_secret_work_item_yaml(work_item_path)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "agent_foundry",
+                "compile",
+                "--manifest",
+                str(manifest_path),
+                "--work-item",
+                str(work_item_path),
+                "--role-id",
+                "builder",
+                "--run-id",
+                "RUN-CLI-SECRET",
+                "--render",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+    assert completed.returncode != 0
+    assert _AWS_SECRET_SAMPLE not in completed.stdout
+    assert "EmbeddedSecretError" in completed.stderr or "embedded secret" in completed.stderr.lower()
+
+
+def test_compile_cli_include_bundle_refuses_embedded_secret():
+    env = _subprocess_env()
+    _assert_imports_worktree(env)
+    manifest = _sample_manifest()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        manifest_path = root / "manifest.yaml"
+        work_item_path = root / "work_item.yaml"
+        manifest_path.write_bytes(dump_yaml(manifest))
+        _write_secret_work_item_yaml(work_item_path)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "agent_foundry",
+                "compile",
+                "--manifest",
+                str(manifest_path),
+                "--work-item",
+                str(work_item_path),
+                "--role-id",
+                "builder",
+                "--run-id",
+                "RUN-CLI-BUNDLE-SECRET",
+                "--include-bundle",
+                "--format",
+                "json",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+    assert completed.returncode != 0
+    assert _AWS_SECRET_SAMPLE not in completed.stdout
 
 
 _COMPILE_DETERMINISM_SCRIPT = """
@@ -591,16 +1048,6 @@ def test_compile_cli_render_subcommand():
     )
     assert "# Execution Contract" in completed.stdout
     assert "builder" in completed.stdout
-
-
-def test_render_contains_no_secret_material():
-    manifest = _sample_manifest()
-    work_item = _sample_work_item()
-    _, lock = resolve_toolkit(manifest)
-    result = compile_work_item(work_item, manifest, lock, "builder", "RUN-SECRET")
-    rendered = render_execution_bundle_markdown(result.bundle)
-    assert "sk-" not in rendered
-    assert "AKIA" not in rendered
 
 
 def test_compile_test_module_has_no_unused_assignments():

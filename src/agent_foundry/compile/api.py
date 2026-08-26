@@ -154,6 +154,155 @@ def _interaction_outputs(role_id: str, task_toolkit: TaskToolkit) -> list[str]:
     return sorted(set(outputs))
 
 
+def _bundle_component_provenance(
+    *,
+    component_kind: str,
+    component_id: str,
+    selected: bool,
+    rationale: str,
+    project_fact: str | None = None,
+) -> BundleProvenanceRecord:
+    return BundleProvenanceRecord(
+        component_kind=component_kind,
+        component_id=component_id,
+        selected=selected,
+        rationale=rationale,
+        source=ResolutionSource.WORK_ITEM,
+        project_fact=project_fact,
+    )
+
+
+def _execution_bundle_provenance(
+    work_item: WorkItemContract,
+    task_toolkit: TaskToolkit,
+    compiled_authority: object,
+    *,
+    budget_id: str,
+    context_ref_list: list[str],
+    interaction_outputs: list[str],
+    integration_health: list[IntegrationHealth],
+    required_integration_ids: list[str],
+    role_id: str,
+) -> list[BundleProvenanceRecord]:
+    provenance: list[BundleProvenanceRecord] = []
+
+    for evidence_id in sorted(work_item.required_evidence):
+        provenance.append(
+            _bundle_component_provenance(
+                component_kind="required-evidence",
+                component_id=evidence_id,
+                selected=True,
+                rationale="work item names required evidence artifact",
+                project_fact=f"work_item.required_evidence includes {evidence_id!r}",
+            )
+        )
+
+    for validator_id in sorted(task_toolkit.validator_ids):
+        provenance.append(
+            _bundle_component_provenance(
+                component_kind="validator",
+                component_id=validator_id,
+                selected=True,
+                rationale="validator required by resolved task toolkit",
+                project_fact=f"task_toolkit.validator_ids includes {validator_id!r}",
+            )
+        )
+
+    provenance.append(
+        _bundle_component_provenance(
+            component_kind="budget-profile",
+            component_id=budget_id,
+            selected=True,
+            rationale="budget profile selected by task toolkit resolution",
+            project_fact=f"task_toolkit.budget_profile_ids[0]={budget_id!r}",
+        )
+    )
+
+    for context_ref in context_ref_list:
+        provenance.append(
+            _bundle_component_provenance(
+                component_kind="context-ref",
+                component_id=context_ref,
+                selected=True,
+                rationale="context reference supplied at compile time",
+                project_fact=f"context_refs includes {context_ref!r}",
+            )
+        )
+
+    for output_id in interaction_outputs:
+        provenance.append(
+            _bundle_component_provenance(
+                component_kind="interaction-output",
+                component_id=output_id,
+                selected=True,
+                rationale="interaction output required for compiled role",
+                project_fact=f"role_id={role_id!r}",
+            )
+        )
+
+    for stop_condition in sorted(work_item.stop_conditions):
+        provenance.append(
+            _bundle_component_provenance(
+                component_kind="stop-condition",
+                component_id=stop_condition,
+                selected=True,
+                rationale="work item stop condition carried into execution bundle",
+                project_fact=f"work_item.stop_conditions includes {stop_condition!r}",
+            )
+        )
+
+    write_scope = getattr(compiled_authority, "write_scope", [])
+    if write_scope:
+        for scope_path in sorted(write_scope):
+            provenance.append(
+                _bundle_component_provenance(
+                    component_kind="write-scope",
+                    component_id=scope_path,
+                    selected=True,
+                    rationale="compiled write scope after role/work item intersection",
+                    project_fact=f"authority.write_scope includes {scope_path!r}",
+                )
+            )
+    else:
+        provenance.append(
+            _bundle_component_provenance(
+                component_kind="write-scope",
+                component_id="none",
+                selected=False,
+                rationale="no compiled write scope after authority intersection",
+                project_fact="authority.write_scope is empty",
+            )
+        )
+
+    health_by_id = {item.integration_id: item for item in integration_health}
+    for integration_id in required_integration_ids:
+        health = health_by_id.get(integration_id)
+        if health is None:
+            provenance.append(
+                _bundle_component_provenance(
+                    component_kind="integration",
+                    component_id=integration_id,
+                    selected=True,
+                    rationale="integration required by task toolkit; health not observed",
+                    project_fact="integration health unavailable at compile time",
+                )
+            )
+            continue
+        provenance.append(
+            BundleProvenanceRecord(
+                component_kind="integration",
+                component_id=integration_id,
+                selected=True,
+                rationale="integration required by task toolkit with observed health",
+                source=ResolutionSource.PROJECT_FACT,
+                project_fact=f"integration health state={health.state.value}",
+                evidence_refs=[health.message] if health.message else [],
+            )
+        )
+
+    return provenance
+
+
 def _role_compatible_with_task(
     role_id: str,
     task_toolkit: TaskToolkit,
@@ -245,7 +394,7 @@ def compile_work_item(
     budget_profile = _lookup_budget_profile(budget_id, budgets)
 
     required_integration_ids = sorted(task_toolkit.integration_ids)
-    check_integrations(
+    integration_health_result = check_integrations(
         integration_list,
         required_ids=required_integration_ids,
         observed_health=health_list,
@@ -260,6 +409,7 @@ def compile_work_item(
         observation_list,
     )
     skill_summaries, skill_provenance = _skill_summaries(task_toolkit, reg, work_item)
+    interaction_outputs = _interaction_outputs(role_id, task_toolkit)
 
     allowed_capabilities, forbidden_capabilities = _allowed_capabilities_for_role(
         task_toolkit,
@@ -285,12 +435,25 @@ def compile_work_item(
             )
         )
 
+    bundle_provenance = _execution_bundle_provenance(
+        work_item,
+        task_toolkit,
+        compiled_authority,
+        budget_id=budget_id,
+        context_ref_list=context_ref_list,
+        interaction_outputs=interaction_outputs,
+        integration_health=integration_health_result,
+        required_integration_ids=required_integration_ids,
+        role_id=role_id,
+    )
+
     provenance = sorted(
         [
             *toolkit_provenance,
             *convention_provenance,
             *observation_provenance,
             *skill_provenance,
+            *bundle_provenance,
         ],
         key=lambda item: (
             item.component_kind,
@@ -330,7 +493,7 @@ def compile_work_item(
         stop_conditions=sorted(work_item.stop_conditions),
         escalation_conditions=sorted(work_item.escalation_conditions),
         skill_summaries=skill_summaries,
-        interaction_outputs=_interaction_outputs(role_id, task_toolkit),
+        interaction_outputs=interaction_outputs,
         provenance=provenance,
     )
 
