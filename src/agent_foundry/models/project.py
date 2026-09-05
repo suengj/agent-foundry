@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import Field
+from typing import Self
+
+from pydantic import Field, model_validator
 
 from agent_foundry.models.base import FoundryModel, VersionedContract
 from agent_foundry.models.common import (
@@ -19,6 +21,7 @@ from agent_foundry.models.common import (
     IntakeMode,
     PrimaryArtifactState,
     PrimaryWorkMode,
+    ProfileResolution,
     Provenance,
     Reversibility,
     Statefulness,
@@ -223,3 +226,71 @@ class ProjectIntake(VersionedContract):
     conventions: list[ConventionSpec] = Field(default_factory=list)
     readiness_findings: list[ReadinessFinding] = Field(default_factory=list)
     traversal_stats: TraversalStats
+
+
+class ProfileAttribution(FoundryModel):
+    """One candidate value for a profile dimension, with where it came from.
+
+    The value never travels without its provenance. Two sources proposing different
+    values stay two attributions, so the disagreement remains inspectable instead of
+    being resolved by ordering.
+    """
+
+    value: str
+    provenance: Provenance
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class ProfileDimension(FoundryModel):
+    """One descriptive dimension of a project profile.
+
+    The dimension name is free-form on purpose: pinning a closed list of project
+    shapes here would bake in an assumption about what kinds of projects exist.
+    """
+
+    dimension: str
+    resolution: ProfileResolution
+    attributions: list[ProfileAttribution] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_resolution_matches_attributions(self) -> Self:
+        distinct_values = {attribution.value for attribution in self.attributions}
+        if self.resolution is ProfileResolution.UNKNOWN:
+            if self.attributions:
+                raise ValueError(
+                    f"ProfileDimension {self.dimension!r}: resolution 'unknown' must "
+                    "carry no attributions; absence of evidence is not evidence"
+                )
+        elif self.resolution is ProfileResolution.RESOLVED:
+            if len(distinct_values) != 1:
+                raise ValueError(
+                    f"ProfileDimension {self.dimension!r}: resolution 'resolved' "
+                    "requires exactly one distinct attributed value, got "
+                    f"{len(distinct_values)}"
+                )
+        elif self.resolution is ProfileResolution.CONFLICTED:
+            if len(distinct_values) < 2:
+                raise ValueError(
+                    f"ProfileDimension {self.dimension!r}: resolution 'conflicted' "
+                    "requires at least two distinct attributed values, got "
+                    f"{len(distinct_values)}"
+                )
+        return self
+
+
+class ProjectProfile(VersionedContract):
+    """Deterministic, descriptive project truth — and nothing more.
+
+    A profile states what a project appears to be, with provenance for every claim
+    and with unknown and conflicted left explicit. It is descriptive only: it grants
+    no authority, confers no permission, and widens no scope. Nothing here may be
+    read as allowing an action. Authority is declared elsewhere by an owner, and a
+    consumer that treats a profile field as a grant is misreading this contract.
+
+    ``source_intake_ref`` is a reference to the inspection evidence this profile was
+    synthesized from, not a copy of it.
+    """
+
+    project_name: str | None = None
+    dimensions: list[ProfileDimension] = Field(default_factory=list)
+    source_intake_ref: str | None = None

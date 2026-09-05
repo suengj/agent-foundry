@@ -1,0 +1,41 @@
+schema_version: "0.2"
+project_name: sample-service
+source_intake_ref: intake://sample-service/rev-8f21c4
+dimensions:
+  - dimension: primary-artifact
+    resolution: resolved
+    attributions:
+      - value: service
+        provenance:
+          kind: observed
+          confidence: 0.9
+          source_ref: pyproject.toml
+        evidence_refs:
+          - pyproject.toml#project.scripts
+      - value: service
+        provenance:
+          kind: declared
+          confidence: 0.8
+          source_ref: docs/overview.md
+        evidence_refs:
+          - docs/overview.md#L14
+  - dimension: release-cadence
+    resolution: conflicted
+    attributions:
+      - value: continuous
+        provenance:
+          kind: observed
+          confidence: 0.6
+          source_ref: ci/pipeline.yaml
+        evidence_refs:
+          - ci/pipeline.yaml#deploy
+      - value: scheduled
+        provenance:
+          kind: declared
+          confidence: 0.7
+          source_ref: docs/release.md
+        evidence_refs:
+          - docs/release.md#L3
+  - dimension: data-sensitivity
+    resolution: unknown
+    attributions: []
