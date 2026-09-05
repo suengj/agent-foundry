@@ -60,6 +60,17 @@ recorded as planned rather than implemented.
 - `tests/fixtures/legacy/v0_1/` — preserved v0.1 artifacts, deliberately not kept
   current, so the migration path is proved against real `0.1` files.
 - `docs/contracts/v0.2-contract-delta.md` — the contract delta and compatibility matrix.
+- **`ProjectProfile` — the descriptive project-truth contract, as a core model only.**
+  `ProjectProfile` (a `VersionedContract`), `ProfileDimension`, `ProfileAttribution` and
+  `ProfileResolution` (`resolved` / `conflicted` / `unknown`) are new public exports of
+  `agent_foundry.models`. A profile states what a project appears to be: every claim
+  carries its `Provenance`, `unknown` stays explicit and carries no attributions, and two
+  sources that disagree stay two attributions rather than being collapsed by read order.
+  It is descriptive only — no authority-bearing field appears anywhere in its recursive
+  field tree, which is asserted as a structural test rather than only stated here.
+  **No synthesizer and no `agent-foundry profile` command are added**: nothing in this
+  release produces a `ProjectProfile`, and no existing contract gained a field
+  referencing one.
 
 ### Compatibility rule
 
@@ -87,6 +98,10 @@ separately-persisted contract on every entry path (`model_validate`, `load_yaml`
   them reachable would mean versioning a decomposition input, which this release does
   not do. Recorded in `models/compat.py` and in the contract delta rather than left to
   be rediscovered.
+- `ProfileDimension.dimension` names are **not** checked for uniqueness within one
+  `ProjectProfile`: two dimensions with the same name validate today. Left open
+  deliberately (SUE-609) rather than fixed in passing, so the invariant is decided in
+  its own slice.
 
 ### Known residuals
 
