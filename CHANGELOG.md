@@ -4,9 +4,109 @@ All notable user-visible changes to Agent Foundry will be documented here.
 
 The project follows Semantic Versioning principles while `<1.0.0`; pre-1.0 minor releases may contain explicit breaking changes to experimental contracts.
 
-## [Unreleased]
+## [Unreleased] - 0.2.0.dev0
 
-Nothing yet.
+Opens the V0.2 development line. This is a contract and compatibility slice: no
+execution runtime, no Controlled Apply, and no MCP facade is added or implied. See
+`docs/contracts/v0.2-contract-delta.md` for the per-seam disposition, including what is
+recorded as planned rather than implemented.
+
+### Changed — breaking
+
+- **Schema version is now `0.2`.** `FOUNDRY_SCHEMA_VERSION` moved from `"0.1"` to
+  `"0.2"` and the package version from `0.1.0` to `0.2.0.dev0`. A `0.2` build reads
+  `0.0`, `0.1` and `0.2` artifacts, and rejects `0.3` and `1.0` as before.
+- **`WorkClass` wire tokens moved to lowercase kebab.** `BASELINE` -> `baseline`,
+  `CAPABILITY` -> `capability`, `RESIDUAL_HARDENING` -> `residual-hardening`,
+  `INCIDENT` -> `incident`, `DISCOVERY` -> `discovery`, `ADOPTION` -> `adoption`,
+  `CONTRACT_AMENDMENT` -> `contract-amendment`. This brings the one remaining
+  descriptive vocabulary into line with every sibling. **Member names are unchanged**,
+  so `WorkClass.CAPABILITY` and every symbolic call site keep working; only serialized
+  literals changed. Hand-authored Work Item YAML must be updated, or declare
+  `schema_version: "0.1"` and be migrated.
+- `CapabilityRegistry` / `ToolkitLock` default `foundry_compat` moved from
+  `">=0.1,<0.2"` to `">=0.2,<0.3"`. The ceiling had to move so a `0.2` build can load
+  the registry it ships. The **floor** moved with it because a `0.1` runtime provably
+  cannot read a `schema_version: "0.2"` artifact — it refuses it with
+  `SchemaCompatibilityError ... minor newer than supported` — so `">=0.1,…"` would have
+  been a compatibility envelope asserting something false.
+- **A v0.1 `ToolkitLock` or `CapabilityRegistry` pinning `">=0.1,<0.2"` now fails
+  closed on load** with `UnmigratableContractError`. Migration will not broaden an
+  owner-declared compatibility range: doing so would widen a compatibility authority by
+  inference. Bumping `schema_version` while leaving the old range would emit an
+  artifact declaring 0.2 and pinning a range excluding 0.2, failing much later at
+  resolve time with a complaint about the range rather than about the file being
+  unmigrated. Re-declare `foundry_compat` for the 0.2 line.
+
+### Added
+
+- `agent_foundry.models.compat` — a declarative, closed migration registry mapping
+  field name -> legacy token -> canonical token, together with the schema version each
+  change landed in. No heuristics and no fuzzy matching. Traversal is **type-directed**:
+  it follows each contract's declared field types, so a value is only rewritten where
+  the enclosing model declares that field as `WorkClass`-typed. Free-form data — notably
+  `IntegrationSpec.adapter_options` — is never read as a migration input, and a
+  provider that uses `work_class` as an adapter option key gets its value back
+  unchanged in both directions. Where a declaration is ambiguous — a field annotated
+  as a union of two different nested models, or one with more than one arm that
+  reaches a model (`list[Model] | Model`) — migration refuses to plan the field rather
+  than descending against an arbitrary arm. `Model | None` is unaffected. No shipped
+  model declares a refused shape, and a reflection test over every model fails if one
+  is added.
+- `migrate_contract_payload`, `ContractMigrationError` and `UnmigratableContractError`
+  are now public exports of `agent_foundry.models`. Both errors subclass
+  `SchemaCompatibilityError`, so existing handlers that treat schema incompatibility as
+  fatal do not start letting legacy artifacts through.
+- `tests/fixtures/legacy/v0_1/` — preserved v0.1 artifacts, deliberately not kept
+  current, so the migration path is proved against real `0.1` files.
+- `docs/contracts/v0.2-contract-delta.md` — the contract delta and compatibility matrix.
+
+### Compatibility rule
+
+Breaking wire changes are versioned rather than silently accepted:
+
+- an artifact declaring a `schema_version` **older** than the version a token changed
+  in has its legacy tokens rewritten to the canonical spelling, and its declared
+  `schema_version` raised to the current one — a migrated artifact is a current-version
+  artifact, so re-dumping it does not emit a self-contradictory file;
+- an artifact declaring a `schema_version` **at or newer** than that version while
+  carrying a legacy token fails closed with a `ContractMigrationError` naming the
+  contract, the JSON path, the legacy token, the canonical token, and the version the
+  token changed in — not a generic enum error that reads as a typo.
+
+Migration is applied by `VersionedContract` as a before-validator, so it covers every
+separately-persisted contract on every entry path (`model_validate`, `load_yaml`,
+`load_json`). It is deterministic and never mutates the caller's input.
+
+### Known gap
+
+- `AdoptionGap.suggested_work_class` and `CapabilityUnit.work_class` are in the
+  migration registry but are **not reachable**: both types are only ever nested in
+  `DecompositionInput`, which carries no `schema_version`, so no migration runs over
+  them and a legacy token at either site raises a generic pydantic enum error. Making
+  them reachable would mean versioning a decomposition input, which this release does
+  not do. Recorded in `models/compat.py` and in the contract delta rather than left to
+  be rediscovered.
+
+### Known residuals
+
+- A migrated artifact carries no record that it was migrated: after load it is
+  indistinguishable from one authored against 0.2. No provenance mechanism is built
+  here; the disposition is recorded in the contract delta.
+- Migration refuses to rewrite `foundry_compat` but does not warn when a range it
+  *admits* (e.g. `">=0.1,<0.3"`) becomes false after the schema bump. Deliberate: the
+  field is owner-declared and inferring a new floor would be a widening.
+
+### Documented, not changed
+
+- `MessageType` (`SCREAMING_SNAKE`) and `ReviewOutcome` (`changes_requested`) are also
+  inconsistent with the kebab convention. They are **not** changed in this release;
+  they are recorded in the contract delta so a later slice finds a decision rather than
+  a rediscovery.
+- `docs/foundry/09-release-and-versioning.md` §3 predicted bounded Controlled Apply,
+  rollback receipts, an MCP facade and live adapters for `v0.2.x`. That forward-looking
+  prediction is withdrawn and corrected: those are V0.3. Statements describing what
+  V0.1 actually did are unchanged.
 
 ## [0.1.0] - 2026-08-27
 

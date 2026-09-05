@@ -143,7 +143,7 @@ readiness_findings:
     kind: inferred
     source_ref: AGENTS.md
   severity: high
-schema_version: '0.1'
+schema_version: '0.2'
 state:
   persistence: persistent-internal
   temporal_mode: batch

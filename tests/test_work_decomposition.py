@@ -934,8 +934,8 @@ def test_mixed_work_class_flag_relates_unit_ids_not_class_names() -> None:
     assert set(issue.related_ids) == {"unit-amend", "unit-capability"}
     assert issue.work_item_id == plan.work_items[0].id
     # The class names stay in the message, where they explain the choice.
-    assert "CONTRACT_AMENDMENT" in issue.message
-    assert "CAPABILITY" in issue.message
+    assert WorkClass.CONTRACT_AMENDMENT.value in issue.message
+    assert WorkClass.CAPABILITY.value in issue.message
 
 
 def test_every_quality_flag_relates_ids_that_resolve_within_the_plan() -> None:

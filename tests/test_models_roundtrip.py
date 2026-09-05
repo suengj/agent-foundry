@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from agent_foundry.models import (
+    FOUNDRY_SCHEMA_VERSION,
     AdoptionPlan,
     CapabilitySpec,
     ExecutionBundle,
@@ -100,5 +101,5 @@ def test_json_fixture_load_json(fixture_name: str, model_type: type) -> None:
         return
     source = (FIXTURES / fixture_name).read_bytes()
     obj = load_json(model_type, source)
-    assert obj.schema_version == "0.1"
+    assert obj.schema_version == FOUNDRY_SCHEMA_VERSION
 

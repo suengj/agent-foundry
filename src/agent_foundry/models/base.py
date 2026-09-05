@@ -8,7 +8,7 @@ from typing import Any, Annotated, Self
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, model_validator
 
-FOUNDRY_SCHEMA_VERSION = "0.1"
+FOUNDRY_SCHEMA_VERSION = "0.2"
 
 _RAW_SECRET_KEY_PATTERN = re.compile(
     r"^(api_key|apikey|token|secret|password|passwd|private_key|"
@@ -180,6 +180,23 @@ class VersionedContract(FoundryModel):
     """Mixin-style base for separately-persisted contracts carrying schema_version."""
 
     schema_version: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_wire_tokens(cls, data: Any) -> Any:
+        """Migrate versioned wire-token changes before field validation.
+
+        Placed here rather than on each contract so every separately-persisted
+        contract is covered on every entry path: `model_validate` is what
+        `load_yaml` and `load_json` call, so there is no loader that can bypass
+        it. Non-mapping input is handed straight through, so pydantic still
+        reports its own error for it.
+
+        Imported lazily: `compat` imports this module.
+        """
+        from agent_foundry.models.compat import migrate_contract_payload
+
+        return migrate_contract_payload(data, cls)
 
     @model_validator(mode="after")
     def _validate_schema_version(self) -> Self:

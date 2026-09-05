@@ -85,7 +85,7 @@ def test_schema_compatibility_survives_a_neutralized_schema_guard(monkeypatch):
         "schema_version": "7.4",
         "id": "WI-FORGE",
         "title": "forged",
-        "work_class": "CAPABILITY",
+        "work_class": "capability",
         "objective": "forged",
         "current_facts": [],
         "scope": ["src/"],

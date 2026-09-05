@@ -127,7 +127,7 @@ def _sample_work_item(**overrides: object) -> WorkItemContract:
         "schema_version": FOUNDRY_SCHEMA_VERSION,
         "id": "WI-001",
         "title": "Implement capability",
-        "work_class": "CAPABILITY",
+        "work_class": "capability",
         "objective": "Deliver bounded change",
         "current_facts": ["bootstrap exists"],
         "scope": ["toolkit resolver"],
@@ -178,7 +178,7 @@ def test_default_registry_is_small_and_inspectable() -> None:
     assert len(registry.roles) == 7
     assert len(registry.skills) == 4
     assert len(registry.workflows) == 4
-    assert registry.foundry_compat == ">=0.1,<0.2"
+    assert registry.foundry_compat == ">=0.2,<0.3"
 
 
 def test_resolve_project_toolkit_from_sample_manifest() -> None:
@@ -345,7 +345,7 @@ def test_task_toolkit_is_strict_subset_with_tighter_controls() -> None:
     _, project_lock = resolve_toolkit(manifest)
     work_item = _sample_work_item(
         authority_class="read-only",
-        work_class="DISCOVERY",
+        work_class="discovery",
         consequence_class="medium",
     )
     task = resolve_task_toolkit_for_work_item(work_item, project_lock)
@@ -398,7 +398,7 @@ def _assert_satisfiable_task_toolkit_nonempty(
 def test_task_toolkit_populates_roles_for_repository_write_capability_work_item() -> None:
     """Regression: merged main left role_ids empty even when skills/capabilities were selected."""
     lock = _main_style_repository_write_lock()
-    work_item = _sample_work_item(authority_class="repository-write", work_class="CAPABILITY")
+    work_item = _sample_work_item(authority_class="repository-write", work_class="capability")
     task = resolve_task_toolkit_for_work_item(work_item, lock)
     _assert_satisfiable_task_toolkit_nonempty(task, lock)
     assert task.role_ids == ["builder"]
@@ -416,7 +416,7 @@ def test_task_toolkit_read_only_discovery_nonempty_when_lock_has_inspection() ->
         permission_profile_ids=["repository-write-bounded"],
         budget_profile_ids=["default"],
     )
-    work_item = _sample_work_item(authority_class="read-only", work_class="DISCOVERY")
+    work_item = _sample_work_item(authority_class="read-only", work_class="discovery")
     task = resolve_task_toolkit_for_work_item(work_item, lock)
     _assert_satisfiable_task_toolkit_nonempty(task, lock)
     assert "explorer" in task.role_ids
@@ -427,7 +427,7 @@ def test_task_toolkit_read_only_discovery_nonempty_when_lock_has_inspection() ->
 
 def test_task_toolkit_unsatisfiable_read_only_discovery_on_builder_only_lock() -> None:
     lock = _main_style_repository_write_lock()
-    work_item = _sample_work_item(authority_class="read-only", work_class="DISCOVERY")
+    work_item = _sample_work_item(authority_class="read-only", work_class="discovery")
     task = resolve_task_toolkit_for_work_item(work_item, lock)
     assert not task.role_ids
     assert not task.skill_ids
@@ -467,7 +467,7 @@ def test_task_toolkit_nonempty_mutation_killed(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(toolkit_api, "resolve_task_toolkit", _empty_toolkit)
     lock = _main_style_repository_write_lock()
-    work_item = _sample_work_item(authority_class="repository-write", work_class="CAPABILITY")
+    work_item = _sample_work_item(authority_class="repository-write", work_class="capability")
     task = resolve_task_toolkit_for_work_item(work_item, lock)
     with pytest.raises(AssertionError, match="non-empty"):
         _assert_satisfiable_task_toolkit_nonempty(task, lock)
@@ -592,7 +592,7 @@ def test_include_and_exclude_rationale_present() -> None:
     assert task_excludes
     assert all(d.rationale and d.source for d in task_excludes)
     assert "explorer" in lock.role_ids
-    discovery_item = _sample_work_item(authority_class="read-only", work_class="DISCOVERY")
+    discovery_item = _sample_work_item(authority_class="read-only", work_class="discovery")
     discovery_task = resolve_task_toolkit_for_work_item(discovery_item, lock)
     assert discovery_task.role_ids
     assert discovery_task.skill_ids
@@ -620,7 +620,7 @@ def test_integration_health_distinct_without_credential_leak() -> None:
 
 def test_unsupported_registry_schema_version_rejected() -> None:
     registry = build_default_registry()
-    bad_skill = registry.skills[0].model_copy(update={"schema_version": "0.2"})
+    bad_skill = registry.skills[0].model_copy(update={"schema_version": "0.3"})
     bad_registry = registry.model_copy(update={"skills": [bad_skill, *registry.skills[1:]]})
     with pytest.raises(SchemaCompatibilityError):
         resolve_toolkit(_sample_manifest(), registry=bad_registry)
@@ -1548,7 +1548,7 @@ def test_task_toolkit_subtracts_integration_exceeding_work_item_authority() -> N
     lock = _work_tracker_lock()
     read_only_item = _sample_work_item(
         authority_class="read-only",
-        work_class="DISCOVERY",
+        work_class="discovery",
     )
     task = resolve_task_toolkit_for_work_item(
         read_only_item,

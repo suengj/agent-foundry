@@ -82,6 +82,7 @@ PRODUCER_VALIDATION_RULES: tuple[tuple[str, str], ...] = (
     ("agent_foundry.models._producer_rules", "evidence_state_partition_violations"),
     ("agent_foundry.models.interaction", "_parse_optional_datetime"),
     ("agent_foundry.models.base", "validate_schema_compatibility"),
+    ("agent_foundry.models.compat", "migrate_contract_payload"),
     ("agent_foundry.models.base", "lint_no_raw_secrets"),
     ("agent_foundry.models.integrations", "_parse_secret_ref_string"),
 )

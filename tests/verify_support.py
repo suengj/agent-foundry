@@ -81,7 +81,7 @@ def sample_work_item(**overrides: object) -> WorkItemContract:
         "schema_version": FOUNDRY_SCHEMA_VERSION,
         "id": "WI-VERIFY-001",
         "title": "Add bounded validation layer",
-        "work_class": "CAPABILITY",
+        "work_class": "capability",
         "objective": "Deliver bounded validation changes in src/",
         "current_facts": ["compiler exists"],
         "scope": ["src/", "tests/"],

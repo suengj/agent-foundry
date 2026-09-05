@@ -1,7 +1,7 @@
-schema_version: "0.1"
+schema_version: "0.2"
 id: WI-001
 title: Test
-work_class: CAPABILITY
+work_class: capability
 objective: Test objective
 current_facts:
   - fact

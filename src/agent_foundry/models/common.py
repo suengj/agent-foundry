@@ -197,13 +197,23 @@ class AuthorityRequirement(StrEnum):
 
 
 class WorkClass(StrEnum):
-    BASELINE = "BASELINE"
-    CAPABILITY = "CAPABILITY"
-    RESIDUAL_HARDENING = "RESIDUAL_HARDENING"
-    INCIDENT = "INCIDENT"
-    DISCOVERY = "DISCOVERY"
-    ADOPTION = "ADOPTION"
-    CONTRACT_AMENDMENT = "CONTRACT_AMENDMENT"
+    """Causal class of a Work Item (docs/foundry/03 §7).
+
+    Wire values changed in schema 0.2 from `SCREAMING_SNAKE` to lowercase kebab so
+    this vocabulary matches every sibling enum. Member names are unchanged, so
+    symbolic call sites are unaffected; only serialized literals moved. A legacy
+    payload is migrated by `agent_foundry.models.compat`, and a payload that
+    already declares 0.2 while carrying a legacy token fails closed there rather
+    than being silently accepted.
+    """
+
+    BASELINE = "baseline"
+    CAPABILITY = "capability"
+    RESIDUAL_HARDENING = "residual-hardening"
+    INCIDENT = "incident"
+    DISCOVERY = "discovery"
+    ADOPTION = "adoption"
+    CONTRACT_AMENDMENT = "contract-amendment"
 
 
 class IntakeMode(StrEnum):

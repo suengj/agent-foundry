@@ -18,7 +18,7 @@ def _minimal_work_item(schema_version: str) -> dict:
         "schema_version": schema_version,
         "id": "WI-TEST",
         "title": "Test",
-        "work_class": "CAPABILITY",
+        "work_class": "capability",
         "objective": "Test objective",
         "current_facts": ["fact"],
         "scope": ["scope"],
@@ -72,11 +72,13 @@ def test_major_mismatch_raises_schema_compatibility_error() -> None:
 
 
 def test_newer_minor_raises_schema_compatibility_error() -> None:
+    # "0.3" rather than a literal one-past-current: the case under test is a minor
+    # newer than the supported one, and that must stay true after a version rebase.
     with pytest.raises(SchemaCompatibilityError) as exc_info:
-        WorkItemContract.model_validate(_minimal_work_item("0.2"))
+        WorkItemContract.model_validate(_minimal_work_item("0.3"))
     message = str(exc_info.value)
     assert "WorkItemContract" in message
-    assert "0.2" in message
+    assert "0.3" in message
     assert FOUNDRY_SCHEMA_VERSION in message
 
 

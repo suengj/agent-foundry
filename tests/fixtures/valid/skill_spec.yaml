@@ -1,4 +1,4 @@
-schema_version: "0.1"
+schema_version: "0.2"
 id: skill-bounded-change
 version: "1.0.0"
 description: Make bounded code changes with tests

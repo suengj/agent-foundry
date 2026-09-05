@@ -1,0 +1,13 @@
+# Preserved v0.1 artifact. Do not modernize — see README.md in this directory.
+#
+# The range a stock v0.1 build shipped. It excludes the 0.2 line, so migrating this
+# artifact to schema_version 0.2 would produce an object declaring 0.2 while pinning
+# a range that excludes 0.2. Migration refuses rather than widening an owner-declared
+# compatibility assertion, so this file must fail closed on load.
+schema_version: "0.1"
+project_name: legacy-service
+foundry_compat: ">=0.1,<0.2"
+capability_ids:
+  - cap-repo-read
+skill_ids:
+  - skill-bounded-change

@@ -31,7 +31,7 @@ from agent_foundry.models.registry import (
     WorkflowSpec,
 )
 _REGISTRY_VERSION = "1.0.0"
-_FOUNDRY_COMPAT = ">=0.1,<0.2"
+_FOUNDRY_COMPAT = ">=0.2,<0.3"
 
 _WRITE_EXTERNAL_EFFECTS = [
     ExternalEffectClass.REPOSITORY_WRITE,

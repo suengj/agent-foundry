@@ -1,0 +1,13 @@
+# Preserved v0.1 artifact. Do not modernize — see README.md in this directory.
+# `triggers.work_classes` is the list-valued, nested occurrence of the changed
+# vocabulary; it exercises a migration path the scalar `work_class` field cannot.
+schema_version: "0.1"
+id: skill-legacy-bounded-change
+version: "1.0.0"
+description: Legacy v0.1 skill spec carrying SCREAMING_SNAKE work-class triggers
+required_capabilities:
+  - cap-repo-read
+triggers:
+  work_classes:
+    - CAPABILITY
+    - ADOPTION

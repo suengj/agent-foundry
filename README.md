@@ -74,8 +74,15 @@ Controlled Apply is the intended next layer after the read-only/preview Core has
 Package version:
 
 ```text
-0.1.0
+0.2.0.dev0
 ```
+
+`main` is the open V0.2 development line: `schema_version: "0.2"`, and a package version
+that is explicitly a `.dev` marker rather than a release. Nothing on this line is
+released, and V0.2 adds no execution, no Controlled Apply, and no MCP facade — it is a
+contract and modelling line. See
+[`docs/contracts/v0.2-contract-delta.md`](docs/contracts/v0.2-contract-delta.md) for the
+per-seam disposition and the `0.1` → `0.2` compatibility rule.
 
 First public release — **prepared and certified, not yet tagged**:
 
@@ -83,9 +90,11 @@ First public release — **prepared and certified, not yet tagged**:
 v0.1.0 — Public Preview
 ```
 
-No `v0.1.0` Git tag and no GitHub release exist yet. Until one is created, install from a
-clone of `main`; the version metadata reads `0.1.0` because the release was frozen, not
-because it was published.
+No `v0.1.0` Git tag and no GitHub release exist yet. The `v0.1.0` release content was
+frozen and certified; the version metadata has since moved on to `0.2.0.dev0` because
+development continued past the freeze, not because `v0.1.0` was published. Until a tag
+is created, install from a clone of `main` and expect the V0.2 development contract, not
+the frozen V0.1 one.
 
 `v0.1.0` is scoped to:
 
@@ -462,9 +471,14 @@ artifact handed in for comparison, and both sides wrap the same serializer. Prod
 isolation is enforced by import, AST and runtime guards inside one process; a process
 boundary is the complete answer and is out of scope for V0.1.
 
-**`WorkClass` serializes as `UPPER_SNAKE`** (`ADOPTION`) while every sibling vocabulary
-is `kebab-case`. A hand-authored Work Item YAML must use the upper-case spelling. This
-is a contract break to fix and is deferred to a versioned change.
+**`WorkClass` serialized as `UPPER_SNAKE`** (`ADOPTION`) in V0.1 while every sibling
+vocabulary was `kebab-case`, so a hand-authored V0.1 Work Item YAML had to use the
+upper-case spelling. This was fixed in schema `0.2` as a versioned change: the tokens
+are now `adoption`, `capability`, `residual-hardening` and so on, a `0.1` artifact is
+migrated on load, and a `0.2` artifact carrying an old token fails closed with an
+explicit compatibility error. `MessageType` and `ReviewOutcome` are still inconsistent
+with the convention and are recorded, unchanged, in
+`docs/contracts/v0.2-contract-delta.md`.
 
 **No `AdoptionChangeSet` → work-plan mapping is published.** `AdoptionGap` exists and
 `decompose_work` consumes it, but nothing in `agent_foundry` produces a gap from a
@@ -539,6 +553,22 @@ concretely for a consumer of V0.1:
 | Package version | `0.1.0` | `0.1.z` stays backward-compatible; `0.2.0` may change contracts and the capability boundary |
 | CLI | the eight subcommands listed above, and their exit codes | subcommands may be added; the five listed as not built are not a promise of their eventual spelling |
 | Python API | the names exported from `agent_foundry.models`, `.inspect`, `.adopt`, `.work`, `.toolkit`, `.compile`, `.render`, `.verify` | anything not exported is private and may move without notice |
+
+The table above records what `v0.1.0` froze. Installing from `main` gets the V0.2
+development line instead, which differs on four of those six rows:
+
+| Surface | On `main` today (`0.2.0.dev0`) |
+|---|---|
+| Serialized contract schema | `schema_version: "0.2"`. A `0.1` artifact is migrated on load and comes back declaring `0.2`; a `0.2` artifact carrying a `0.1` `WorkClass` token fails closed with an explicit compatibility error |
+| Schema acceptance rule | unchanged in shape — same MAJOR, MINOR no newer than supported. A `0.2` build reads `0.0`, `0.1` and `0.2`, and rejects `0.3` and `1.0` |
+| Registry / lock compatibility | `foundry_compat: ">=0.2,<0.3"`. A v0.1 lock or registry still pinning `">=0.1,<0.2"` fails closed on load rather than being silently broadened |
+| Package version | `0.2.0.dev0` — a development marker, not a release |
+| `WorkClass` wire tokens | lowercase kebab (`adoption`, `capability`, `residual-hardening`, …) instead of V0.1's `SCREAMING_SNAKE` |
+| CLI / Python API | unchanged from the rows above, apart from three names added to `agent_foundry.models` for the migration surface |
+
+What changed at that boundary, what is only planned, and the per-artifact
+migration disposition are in
+[`docs/contracts/v0.2-contract-delta.md`](docs/contracts/v0.2-contract-delta.md).
 
 Rules that hold across the line: an incompatible version fails explicitly; a global
 registry update does not silently alter an existing `ToolkitLock`; migration, if

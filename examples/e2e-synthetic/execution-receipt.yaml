@@ -1,21 +1,21 @@
 adapter_versions: {}
 artifact_identities:
-- digest: 7ec9ccf8e48b2850ad8e2e6bdaa895dec9a6156a1bf9719d6142c300b37c6b8b
+- digest: 489fb9ce6e071f5542dca17fc0c932a207eda0bf02a997b2df77895de3c7528c
   kind: execution-bundle
   ref: wi-dcc714550913/RUN-EXAMPLE-001
   version: null
-- digest: e7da8dd6e25fd6d95c56b3d67d14c0a3c2223a4a1ceae33f4e0f5835f97eda78
+- digest: 891bea38b7472acf8bf1cfaa9f4544f21c7ed45996ee7e264a2acff89df1c6d8
   kind: task-toolkit
   ref: wi-dcc714550913
   version: null
-- digest: 83178ec754b3380aeade912bf9e2f1f646444c4c6e53c4f818e5c8d97162bd0e
+- digest: 6b1e5e26ebbc2a7af8b738b565a33353141e7b0440aaa250a62357753868dd06
   kind: toolkit-lock
   ref: orders-service
-  version: '>=0.1,<0.2'
-- digest: b02e2f04857f088a37da86c95d6e13112c3ca2fe84cb5c9fc2d43cf6718785bd
+  version: '>=0.2,<0.3'
+- digest: 45484acfd7f8d2a2fe38f007b886e8805410fb190f68c8b0dd669c2addb19d23
   kind: capability-registry
   ref: builtin
-  version: '>=0.1,<0.2'
+  version: '>=0.2,<0.3'
 attained_evidence_states:
 - IMPLEMENTED
 - VALIDATED
@@ -59,7 +59,7 @@ review_decision:
 role_id: builder
 run_id: RUN-EXAMPLE-001
 runtime_verification_ref: null
-schema_version: '0.1'
+schema_version: '0.2'
 started_at: '2026-05-04T09:00:00Z'
 work_item_id: wi-dcc714550913
 work_lifecycle_state: in-review

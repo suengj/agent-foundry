@@ -1,0 +1,21 @@
+# Preserved v0.1 artifact. Do not modernize — see README.md in this directory.
+schema_version: "0.1"
+id: WI-LEGACY-001
+title: Legacy v0.1 work item contract
+work_class: CAPABILITY
+objective: Prove that a v0.1 serialized work item still loads after the 0.2 wire change
+current_facts:
+  - Written against schema_version 0.1, when WorkClass serialized SCREAMING_SNAKE
+scope:
+  - src/agent_foundry/models/
+out_of_scope:
+  - Anything outside the models package
+acceptance_criteria:
+  - Loads without error and resolves to WorkClass.CAPABILITY
+dependencies: []
+authority_class: repository-write
+consequence_class: medium
+required_evidence:
+  - deterministic-test
+stop_conditions:
+  - The legacy token cannot be resolved to a canonical token

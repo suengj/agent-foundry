@@ -1,7 +1,7 @@
-schema_version: "0.1"
+schema_version: "0.2"
 id: WI-003
 title: Wrong type
-work_class: CAPABILITY
+work_class: capability
 objective: Test
 current_facts: not-a-list
 scope:

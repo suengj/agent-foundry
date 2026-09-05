@@ -461,10 +461,15 @@ def test_entropy_tier_false_positives_are_measured_not_assumed_absent(
     """AF8 measurement, pinned so a change to the heuristic is visible.
 
     The Tier B entropy rule fires on ordinary structured provenance text: strings like
-    `work_item.work_class=ADOPTION` are long, mixed-case and punctuated, which is what
-    the rule looks for. Nothing is leaked — Tier B does not gate anything — but a
-    consumer running the scanner over its own artifacts sees findings that are not
-    secrets, so the count is recorded rather than left as an unexamined "clean".
+    `work_item.work_class=adoption` are long and punctuated, which is what the rule
+    looks for. Nothing is leaked — Tier B does not gate anything — but a consumer
+    running the scanner over its own artifacts sees findings that are not secrets, so
+    the count is recorded rather than left as an unexamined "clean".
+
+    The pinned count fell in schema 0.2, from a floor of >20 to a measured 16. That is
+    the measurement working: `WorkClass` wire tokens moved from `ADOPTION` to
+    `adoption`, which removed the mixed-case signal from every provenance string
+    carrying one. The noise is smaller, not gone, and it is still not a secret.
     """
     tier_b = [
         finding
@@ -481,7 +486,13 @@ def test_entropy_tier_false_positives_are_measured_not_assumed_absent(
     assert all(
         finding.path_segments[-1] in explanatory_fields for finding in tier_b
     ), sorted({finding.json_path for finding in tier_b})
-    assert len(tier_b) > 20, "the noise is substantial, not incidental"
+    # Pinned to what was measured, not to a floor the measurement clears by a mile.
+    # A drift in either direction is a change to the heuristic or to the artifacts,
+    # and either is worth looking at.
+    assert len(tier_b) == 16, (
+        "measured Tier B false-positive count changed; the heuristic or the artifacts "
+        "moved, and which one is worth knowing"
+    )
 
     # The rendered Markdown is one long string, so the whole contract reads as one
     # high-entropy value. Scanning a projection is not how the boundary is enforced.

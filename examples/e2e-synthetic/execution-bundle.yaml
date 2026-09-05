@@ -46,7 +46,7 @@ provenance:
   component_kind: capability
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION
+  project_fact: work_item.work_class=adoption
   rationale: not required for this work item
   selected: false
   source: work-item
@@ -54,7 +54,7 @@ provenance:
   component_kind: capability
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION
+  project_fact: work_item.work_class=adoption
   rationale: required by selected task skills
   selected: true
   source: work-item
@@ -62,7 +62,7 @@ provenance:
   component_kind: capability
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION
+  project_fact: work_item.work_class=adoption
   rationale: required by selected task skills
   selected: true
   source: work-item
@@ -70,7 +70,7 @@ provenance:
   component_kind: capability
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION
+  project_fact: work_item.work_class=adoption
   rationale: required by selected task skills
   selected: true
   source: work-item
@@ -78,7 +78,7 @@ provenance:
   component_kind: capability
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION
+  project_fact: work_item.work_class=adoption
   rationale: required by selected task skills
   selected: true
   source: work-item
@@ -277,7 +277,7 @@ provenance:
   component_kind: role
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION
+  project_fact: work_item.work_class=adoption
   rationale: required by selected task workflow or skills
   selected: true
   source: work-item
@@ -285,7 +285,7 @@ provenance:
   component_kind: role
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION
+  project_fact: work_item.work_class=adoption
   rationale: not required for this work item
   selected: false
   source: work-item
@@ -293,7 +293,7 @@ provenance:
   component_kind: role
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION
+  project_fact: work_item.work_class=adoption
   rationale: required by selected task workflow or skills
   selected: true
   source: work-item
@@ -301,7 +301,7 @@ provenance:
   component_kind: skill
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION
+  project_fact: work_item.work_class=adoption
   rationale: skill included in task toolkit for work item class
   selected: true
   source: work-item
@@ -309,7 +309,7 @@ provenance:
   component_kind: skill
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION; work_item.required_evidence=['deterministic-test',
+  project_fact: work_item.work_class=adoption; work_item.required_evidence=['deterministic-test',
     'repository-revision']
   rationale: workflow 'builder-reviewer' requires this skill
   selected: true
@@ -318,7 +318,7 @@ provenance:
   component_kind: skill
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION
+  project_fact: work_item.work_class=adoption
   rationale: skill included in task toolkit for work item class
   selected: true
   source: work-item
@@ -326,7 +326,7 @@ provenance:
   component_kind: skill
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION; work_item.required_evidence=['deterministic-test',
+  project_fact: work_item.work_class=adoption; work_item.required_evidence=['deterministic-test',
     'repository-revision']
   rationale: workflow 'builder-reviewer' requires this skill
   selected: true
@@ -335,7 +335,7 @@ provenance:
   component_kind: skill
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION
+  project_fact: work_item.work_class=adoption
   rationale: skill included in task toolkit for work item class
   selected: true
   source: work-item
@@ -343,7 +343,7 @@ provenance:
   component_kind: skill
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION; work_item.required_evidence=['deterministic-test',
+  project_fact: work_item.work_class=adoption; work_item.required_evidence=['deterministic-test',
     'repository-revision']
   rationale: workflow 'builder-reviewer' requires this skill
   selected: true
@@ -362,7 +362,7 @@ provenance:
   component_kind: skill
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION
+  project_fact: work_item.work_class=adoption
   rationale: skill not selected in task toolkit
   selected: false
   source: work-item
@@ -395,8 +395,8 @@ provenance:
   component_kind: workflow
   evidence_refs: []
   policy_id: null
-  project_fact: work_item.work_class=ADOPTION
-  rationale: work item class ADOPTION selects workflow
+  project_fact: work_item.work_class=adoption
+  rationale: work item class adoption selects workflow
   selected: true
   source: work-item
 - component_id: Makefile
@@ -412,7 +412,7 @@ required_evidence:
 - repository-revision
 role_id: builder
 run_id: RUN-EXAMPLE-001
-schema_version: '0.1'
+schema_version: '0.2'
 scope:
 - Makefile
 selected_conventions:
@@ -428,13 +428,13 @@ selected_observations:
 - test-entrypoint
 skill_summaries:
 - description: Make bounded code changes with tests
-  relevance: work_class=ADOPTION
+  relevance: work_class=adoption
   skill_id: bounded-change
 - description: Run project-approved deterministic tests and return normalized evidence
-  relevance: work_class=ADOPTION
+  relevance: work_class=adoption
   skill_id: deterministic-test
 - description: Perform independent review without implementation authority
-  relevance: work_class=ADOPTION
+  relevance: work_class=adoption
   skill_id: independent-review
 stop_conditions:
 - blocked adoption path cannot be resolved within scope
@@ -451,14 +451,14 @@ task_toolkit:
     component_id: inspection.read
     component_kind: capability
     policy_id: null
-    project_fact: work_item.work_class=ADOPTION
+    project_fact: work_item.work_class=adoption
     rationale: not required for this work item
     source: work-item
   - action: exclude
     component_id: explorer
     component_kind: role
     policy_id: null
-    project_fact: work_item.work_class=ADOPTION
+    project_fact: work_item.work_class=adoption
     rationale: not required for this work item
     source: work-item
   - action: exclude
@@ -474,28 +474,28 @@ task_toolkit:
     component_id: repository.read
     component_kind: capability
     policy_id: null
-    project_fact: work_item.work_class=ADOPTION
+    project_fact: work_item.work_class=adoption
     rationale: required by selected task skills
     source: work-item
   - action: include
     component_id: repository.write
     component_kind: capability
     policy_id: null
-    project_fact: work_item.work_class=ADOPTION
+    project_fact: work_item.work_class=adoption
     rationale: required by selected task skills
     source: work-item
   - action: include
     component_id: validation.review
     component_kind: capability
     policy_id: null
-    project_fact: work_item.work_class=ADOPTION
+    project_fact: work_item.work_class=adoption
     rationale: required by selected task skills
     source: work-item
   - action: include
     component_id: validation.test
     component_kind: capability
     policy_id: null
-    project_fact: work_item.work_class=ADOPTION
+    project_fact: work_item.work_class=adoption
     rationale: required by selected task skills
     source: work-item
   - action: include
@@ -510,21 +510,21 @@ task_toolkit:
     component_id: builder
     component_kind: role
     policy_id: null
-    project_fact: work_item.work_class=ADOPTION
+    project_fact: work_item.work_class=adoption
     rationale: required by selected task workflow or skills
     source: work-item
   - action: include
     component_id: reviewer
     component_kind: role
     policy_id: null
-    project_fact: work_item.work_class=ADOPTION
+    project_fact: work_item.work_class=adoption
     rationale: required by selected task workflow or skills
     source: work-item
   - action: include
     component_id: bounded-change
     component_kind: skill
     policy_id: null
-    project_fact: work_item.work_class=ADOPTION; work_item.required_evidence=['deterministic-test',
+    project_fact: work_item.work_class=adoption; work_item.required_evidence=['deterministic-test',
       'repository-revision']
     rationale: workflow 'builder-reviewer' requires this skill
     source: work-item
@@ -532,7 +532,7 @@ task_toolkit:
     component_id: deterministic-test
     component_kind: skill
     policy_id: null
-    project_fact: work_item.work_class=ADOPTION; work_item.required_evidence=['deterministic-test',
+    project_fact: work_item.work_class=adoption; work_item.required_evidence=['deterministic-test',
       'repository-revision']
     rationale: workflow 'builder-reviewer' requires this skill
     source: work-item
@@ -540,7 +540,7 @@ task_toolkit:
     component_id: independent-review
     component_kind: skill
     policy_id: null
-    project_fact: work_item.work_class=ADOPTION; work_item.required_evidence=['deterministic-test',
+    project_fact: work_item.work_class=adoption; work_item.required_evidence=['deterministic-test',
       'repository-revision']
     rationale: workflow 'builder-reviewer' requires this skill
     source: work-item
@@ -548,8 +548,8 @@ task_toolkit:
     component_id: builder-reviewer
     component_kind: workflow
     policy_id: null
-    project_fact: work_item.work_class=ADOPTION
-    rationale: work item class ADOPTION selects workflow
+    project_fact: work_item.work_class=adoption
+    rationale: work item class adoption selects workflow
     source: work-item
   integration_ids:
   - work-tracker
@@ -558,7 +558,7 @@ task_toolkit:
   role_ids:
   - builder
   - reviewer
-  schema_version: '0.1'
+  schema_version: '0.2'
   skill_ids:
   - bounded-change
   - deterministic-test

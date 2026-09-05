@@ -137,7 +137,7 @@ decisions:
   rationale: policy independent-review-assurance-repository-write requires workflow
   source: policy
 declared_external_effect: repository-write
-foundry_compat: '>=0.1,<0.2'
+foundry_compat: '>=0.2,<0.3'
 integration_adapter_versions:
   work-tracker: adapter-v1
 integration_ids:
@@ -151,7 +151,7 @@ role_ids:
 - builder
 - explorer
 - reviewer
-schema_version: '0.1'
+schema_version: '0.2'
 skill_ids:
 - bounded-change
 - deterministic-test
