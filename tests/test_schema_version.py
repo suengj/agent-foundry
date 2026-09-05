@@ -7,6 +7,7 @@ import pytest
 from agent_foundry.models import (
     FOUNDRY_SCHEMA_VERSION,
     ProjectManifest,
+    ProjectProfile,
     SchemaCompatibilityError,
     WorkItemContract,
     validate_schema_compatibility,
@@ -55,11 +56,38 @@ def _minimal_manifest(schema_version: str) -> dict:
     }
 
 
+def _minimal_profile(schema_version: str) -> dict:
+    return {
+        "schema_version": schema_version,
+        "project_name": "sample-service",
+        "dimensions": [
+            {
+                "dimension": "primary-artifact",
+                "resolution": "resolved",
+                "attributions": [
+                    {"value": "service", "provenance": {"kind": "observed"}}
+                ],
+            }
+        ],
+    }
+
+
 def test_supported_schema_version_accepted() -> None:
     obj = WorkItemContract.model_validate(_minimal_work_item(FOUNDRY_SCHEMA_VERSION))
     assert obj.schema_version == FOUNDRY_SCHEMA_VERSION
     manifest = ProjectManifest.model_validate(_minimal_manifest(FOUNDRY_SCHEMA_VERSION))
     assert manifest.schema_version == FOUNDRY_SCHEMA_VERSION
+    profile = ProjectProfile.model_validate(_minimal_profile(FOUNDRY_SCHEMA_VERSION))
+    assert profile.schema_version == FOUNDRY_SCHEMA_VERSION
+
+
+def test_profile_major_mismatch_raises_schema_compatibility_error() -> None:
+    with pytest.raises(SchemaCompatibilityError) as exc_info:
+        ProjectProfile.model_validate(_minimal_profile("1.0"))
+    message = str(exc_info.value)
+    assert "ProjectProfile" in message
+    assert "1.0" in message
+    assert FOUNDRY_SCHEMA_VERSION in message
 
 
 def test_major_mismatch_raises_schema_compatibility_error() -> None:

@@ -24,6 +24,19 @@ class Provenance(FoundryModel):
     source_ref: str | None = None
 
 
+class ProfileResolution(StrEnum):
+    """How a descriptive profile dimension stands after synthesis.
+
+    Unknown and conflicted are first-class outcomes, not error states: a dimension
+    with no evidence must not be reported as settled, and two sources that disagree
+    must not be collapsed into whichever was read last.
+    """
+
+    RESOLVED = "resolved"
+    CONFLICTED = "conflicted"
+    UNKNOWN = "unknown"
+
+
 class AdoptionAction(StrEnum):
     KEEP = "KEEP"
     CONSOLIDATE = "CONSOLIDATE"
