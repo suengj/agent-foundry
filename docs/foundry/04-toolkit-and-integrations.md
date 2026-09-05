@@ -345,7 +345,7 @@ Conceptual lock:
 
 ```yaml
 schema_version: 1
-foundry_compat: ">=0.1,<0.2"
+foundry_compat: ">=0.2,<0.3"
 
 skills:
   deterministic-test: 1.0.0

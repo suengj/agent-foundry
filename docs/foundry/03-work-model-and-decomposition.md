@@ -128,26 +128,31 @@ For small bounded engineering work, discovery may remain an initial node inside 
 
 Useful work classes:
 
+The tokens below are the canonical serialized values, as written in a Work Item
+contract. They changed in schema `0.2` from `SCREAMING_SNAKE` to lowercase kebab so
+this vocabulary matches every sibling vocabulary; see
+`docs/contracts/v0.2-contract-delta.md` for the migration and compatibility rule.
+
 ```text
-BASELINE
+baseline
 = establish a known operating state
 
-CAPABILITY
+capability
 = add or materially change a bounded capability
 
-RESIDUAL_HARDENING
+residual-hardening
 = bounded weakness after the main capability is already valid
 
-INCIDENT
+incident
 = restore or contain a broken operating state
 
-DISCOVERY
+discovery
 = resolve uncertainty before scoped implementation
 
-ADOPTION
+adoption
 = retrofit an existing project toward the desired operating model
 
-CONTRACT_AMENDMENT
+contract-amendment
 = intentionally change authority, invariants, or major project semantics
 ```
 

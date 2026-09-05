@@ -16,6 +16,11 @@ from agent_foundry.models.base import (
     serialize_datetime_utc,
     validate_schema_compatibility,
 )
+from agent_foundry.models.compat import (
+    ContractMigrationError,
+    UnmigratableContractError,
+    migrate_contract_payload,
+)
 from agent_foundry.models.common import (
     AccessSensitivity,
     AdoptionAction,
@@ -218,6 +223,7 @@ __all__ = [
     "Concurrency",
     "ConfidenceTier",
     "ConsequenceClass",
+    "ContractMigrationError",
     "ConventionSpec",
     "DecisionTrace",
     "DecisionTraceEntry",
@@ -321,6 +327,7 @@ __all__ = [
     "TrackerProjection",
     "TraversalLimits",
     "TraversalStats",
+    "UnmigratableContractError",
     "ValidationFinding",
     "ValidationOutcome",
     "SliceValidation",
@@ -349,6 +356,7 @@ __all__ = [
     "lint_no_raw_secrets",
     "load_json",
     "load_yaml",
+    "migrate_contract_payload",
     "parse_json",
     "parse_schema_version",
     "parse_yaml",

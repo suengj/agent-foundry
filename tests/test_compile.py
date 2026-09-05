@@ -114,7 +114,7 @@ def _sample_work_item(**overrides: object) -> WorkItemContract:
         "schema_version": FOUNDRY_SCHEMA_VERSION,
         "id": "WI-COMPILE-001",
         "title": "Implement toolkit resolver",
-        "work_class": "CAPABILITY",
+        "work_class": "capability",
         "objective": "Deliver bounded toolkit changes in src/",
         "current_facts": ["bootstrap exists"],
         "scope": ["src/", "toolkit resolver"],
@@ -226,7 +226,7 @@ def test_validate_execution_bundle_authority_guard_is_exercised(monkeypatch: pyt
 
 def _read_only_discovery_work_item() -> WorkItemContract:
     return _sample_work_item(
-        work_class="DISCOVERY",
+        work_class="discovery",
         authority_class="read-only",
         objective="Inspect project conventions read-only",
     )
@@ -331,7 +331,7 @@ def test_repository_write_work_item_compiles_as_control():
 def test_incident_work_class_compiles_on_supportive_project():
     manifest = _sample_manifest()
     work_item = _sample_work_item(
-        work_class="INCIDENT",
+        work_class="incident",
         authority_class="repository-write",
         consequence_class="high",
         objective="Diagnose and contain broken operating state",
@@ -347,7 +347,7 @@ def test_contract_amendment_work_class_compiles_on_supportive_project():
         assurance={"required": ["deterministic-tests", "independent-review"]},
     )
     work_item = _sample_work_item(
-        work_class="CONTRACT_AMENDMENT",
+        work_class="contract-amendment",
         authority_class="repository-write",
         consequence_class="high",
         objective="Amend durable project contract with review",
@@ -373,7 +373,7 @@ def test_unknown_manifest_external_effect_tightens_compiled_authority():
         access=ProjectAccess(),
     )
     work_item = _sample_work_item(
-        work_class="DISCOVERY",
+        work_class="discovery",
         authority_class="repository-write",
     )
     _, lock = resolve_toolkit(manifest)

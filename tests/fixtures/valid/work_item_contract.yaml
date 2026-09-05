@@ -1,7 +1,7 @@
-schema_version: "0.1"
+schema_version: "0.2"
 id: WI-001
 title: Implement typed contracts
-work_class: CAPABILITY
+work_class: capability
 objective: Deliver versioned provider-neutral data contracts
 current_facts:
   - Package bootstrap exists with six passing tests

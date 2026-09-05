@@ -20,11 +20,11 @@ rollback_boundary_id: adopt-harden-test-harness
 runtime_external_validation_requirement: 're-read the changed repository files from
   the working tree after the change; evidence required before closure: deterministic-test,
   repository-revision'
-schema_version: '0.1'
+schema_version: '0.2'
 scope:
 - Makefile
 stop_conditions:
 - blocked adoption path cannot be resolved within scope
 title: 'Adopt: test-harness'
-work_class: ADOPTION
+work_class: adoption
 write_scope_id: scope-harden-test-harness

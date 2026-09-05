@@ -1,0 +1,20 @@
+# Preserved v0.1 artifact. Do not modernize — see README.md in this directory.
+#
+# `foundry_compat` here is ">=0.1,<0.3" rather than the ">=0.1,<0.2" a stock v0.1
+# build shipped, because this fixture exists to exercise the *nested SkillSpec*
+# migration path and a lock/registry whose range excludes the running version is
+# refused before that path is reached. The refusal itself is covered separately by
+# `toolkit_lock.yaml` in this directory. Both are real v0.1 shapes: the range is an
+# owner-declared value, and an owner who had already widened it would have written
+# exactly this.
+schema_version: "0.1"
+foundry_compat: ">=0.1,<0.3"
+skills:
+  - schema_version: "0.1"
+    id: skill-legacy-nested
+    version: "1.0.0"
+    description: Legacy v0.1 skill nested inside a v0.1 registry
+    triggers:
+      work_classes:
+        - CAPABILITY
+        - RESIDUAL_HARDENING

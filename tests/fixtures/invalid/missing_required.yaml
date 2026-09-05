@@ -1,4 +1,4 @@
-schema_version: "0.1"
+schema_version: "0.2"
 id: WI-002
 title: Missing fields
-work_class: CAPABILITY
+work_class: capability

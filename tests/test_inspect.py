@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from agent_foundry.inspect import inspect_project
-from agent_foundry.models import ProvenanceKind, dump_json
+from agent_foundry.models import FOUNDRY_SCHEMA_VERSION, ProvenanceKind, dump_json
 from agent_foundry.models.common import IntakeMode
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "projects"
@@ -160,7 +160,11 @@ def test_cli_inspect_json(tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode == 0
-    assert b'"schema_version":"0.1"' in result.stdout or b'"schema_version": "0.1"' in result.stdout
+    expected = FOUNDRY_SCHEMA_VERSION.encode()
+    assert (
+        b'"schema_version":"' + expected + b'"' in result.stdout
+        or b'"schema_version": "' + expected + b'"' in result.stdout
+    )
 
 
 def test_cli_help_lists_inspect() -> None:

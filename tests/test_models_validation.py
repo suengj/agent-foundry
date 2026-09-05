@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from agent_foundry.models import (
+    FOUNDRY_SCHEMA_VERSION,
     IntegrationAuthMethod,
     IntegrationSpec,
     ProjectManifest,
@@ -63,7 +64,7 @@ def test_incompatible_schema_version_major_raises() -> None:
     message = str(exc_info.value)
     assert "WorkItemContract" in message
     assert "1.0" in message
-    assert "0.1" in message
+    assert FOUNDRY_SCHEMA_VERSION in message
 
 
 def test_incompatible_schema_version_minor_raises() -> None:
@@ -72,8 +73,8 @@ def test_incompatible_schema_version_minor_raises() -> None:
         load_yaml(WorkItemContract, data)
     message = str(exc_info.value)
     assert "WorkItemContract" in message
-    assert "0.2" in message
-    assert "0.1" in message
+    assert "0.3" in message
+    assert FOUNDRY_SCHEMA_VERSION in message
 
 
 def test_raw_secret_in_integration_raises() -> None:

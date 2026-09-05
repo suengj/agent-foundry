@@ -67,17 +67,27 @@ The following are valuable but are **not release blockers for the first public p
 
 These remain post-Core work.
 
-A likely next product line is:
+An earlier version of this section predicted that the next product line would be
+`v0.2.x → bounded Controlled Apply → safe project mutation / rollback receipts → first
+MCP facade → selected live adapters`. That prediction is withdrawn: it named the V0.3
+boundary. Controlled Apply, real execution identity, MCP, and live write adapters all
+sit **after** V0.2.
+
+The V0.2 line is a contract and modelling line, not an execution line:
 
 ```text
 v0.2.x
-→ bounded Controlled Apply
-→ safe project mutation / rollback receipts
-→ first MCP facade
-→ selected live adapters
+→ rebase the contract surface and compatibility boundary onto schema 0.2
+→ first-class descriptive project and outcome contracts
+→ operating-model / decision-rights profiles
+→ still no Controlled Apply, no execution runtime, no MCP facade
 ```
 
-The exact V0.2 boundary should be evidence-driven after V0.1 dogfooding rather than precommitted as a large roadmap.
+Nothing in this paragraph is evidence that any of it is implemented. The current,
+per-seam disposition — what is changed, what is planned, and what is only recorded —
+is `docs/contracts/v0.2-contract-delta.md`.
+
+The exact boundary of any line beyond the current one should stay evidence-driven after dogfooding rather than precommitted as a large roadmap.
 
 ## 4. Public repository gate
 
@@ -171,7 +181,7 @@ Example:
 
 ```yaml
 schema_version: 1
-foundry_compat: ">=0.1,<0.2"
+foundry_compat: ">=0.2,<0.3"
 ```
 
 Rules:

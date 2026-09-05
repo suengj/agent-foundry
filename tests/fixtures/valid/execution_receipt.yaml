@@ -1,4 +1,4 @@
-schema_version: "0.1"
+schema_version: "0.2"
 work_item_id: WI-001
 run_id: RUN-001
 role_id: builder

@@ -63,7 +63,7 @@ class ToolkitLock(VersionedContract):
     """Pinned operational capability set."""
 
     project_name: str
-    foundry_compat: str = ">=0.1,<0.2"
+    foundry_compat: str = ">=0.2,<0.3"
     capability_ids: list[str] = Field(default_factory=list)
     skill_ids: list[str] = Field(default_factory=list)
     workflow_ids: list[str] = Field(default_factory=list)

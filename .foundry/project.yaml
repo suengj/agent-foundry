@@ -4,7 +4,7 @@
 # adopt .` proposes `MIGRATE foundry-project-declaration` because nothing here declared
 # these, and every toolkit, role, and authority decision downstream reads them. Values
 # are declarations, not inferences — inspection may not supply any of them.
-schema_version: "0.1"
+schema_version: "0.2"
 project:
   name: agent-foundry
   intake_mode: brownfield

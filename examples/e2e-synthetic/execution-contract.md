@@ -32,11 +32,11 @@ Apply the planned adoption change set so agent execution in this repository is b
 
 ## Skills (metadata only)
 - `bounded-change`: Make bounded code changes with tests
-  - relevance: work_class=ADOPTION
+  - relevance: work_class=adoption
 - `deterministic-test`: Run project-approved deterministic tests and return normalized evidence
-  - relevance: work_class=ADOPTION
+  - relevance: work_class=adoption
 - `independent-review`: Perform independent review without implementation authority
-  - relevance: work_class=ADOPTION
+  - relevance: work_class=adoption
 
 ## Required evidence
 - deterministic-test

@@ -1,0 +1,28 @@
+# Preserved v0.1 artifact. Do not modernize — see README.md in this directory.
+# A nested case: the plan and the work item it carries each declare their own
+# schema_version, so each migrates against its own version boundary.
+schema_version: "0.1"
+objective:
+  id: OBJ-LEGACY
+  title: Prove nested v0.1 migration
+  description: A v0.1 work plan whose nested work item also declares v0.1
+work_items:
+  - schema_version: "0.1"
+    id: WI-LEGACY-NESTED
+    title: Legacy nested work item
+    work_class: CAPABILITY
+    objective: Prove that a nested v0.1 contract migrates
+    current_facts:
+      - Written when WorkClass serialized SCREAMING_SNAKE
+    scope:
+      - src/agent_foundry/models/
+    out_of_scope:
+      - Anything else
+    acceptance_criteria:
+      - Loads and resolves to WorkClass.CAPABILITY
+    authority_class: repository-write
+    consequence_class: medium
+    required_evidence:
+      - deterministic-test
+    stop_conditions:
+      - The nested token cannot be resolved

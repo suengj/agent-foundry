@@ -128,4 +128,4 @@ changes:
   target: execution.autonomy
 intake_mode: brownfield
 project_name: orders-service
-schema_version: '0.1'
+schema_version: '0.2'

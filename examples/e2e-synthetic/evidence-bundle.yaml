@@ -31,6 +31,6 @@ provenance:
   kind: observed
   source_ref: artifacts/run.log
 run_id: RUN-EXAMPLE-001
-schema_version: '0.1'
+schema_version: '0.2'
 unresolved: []
 work_item_id: wi-dcc714550913
