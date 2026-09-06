@@ -235,10 +235,9 @@ def derive_emitted_subjects(module) -> set[str]:
         if keyword is not None:
             raise UnresolvableSubject(
                 f"{module.__file__}:{node.lineno}: a call with a `subject=` "
-                "keyword argument was not recognised as a literal "
-                "`ProjectObservation(...)` construction (aliased import or "
-                "attribute access?) -- this derivation must not silently "
-                "skip it."
+                "keyword argument was not a recognised "
+                "`ProjectObservation(...)` construction -- this derivation "
+                "must not silently skip it."
             )
     return emitted
 
@@ -301,7 +300,12 @@ def derive_consumed_subjects(module) -> set[str]:
                 # `convention.subject == "..."` comparison over an unrelated
                 # object that happens to have a `.subject` attribute must not
                 # be counted as consumption that does not really exist --
-                # that would mask a real lost consumption.
+                # that would mask a real lost consumption. This narrowing is
+                # coupled to the literal identifier `obs`: renaming that
+                # variable in `synth.py` would silently drop its subject
+                # comparisons from the consumed set. That would fail loud
+                # (as a false "dead key" or "dropped subject" mismatch), so
+                # it is a brittleness worth naming, not a silent-skip risk.
                 return (
                     isinstance(candidate, ast.Attribute)
                     and candidate.attr == "subject"
@@ -314,6 +318,28 @@ def derive_consumed_subjects(module) -> set[str]:
             elif _is_subject_attr(right) and isinstance(left, ast.Constant) and isinstance(left.value, str):
                 consumed.add(left.value)
     return consumed
+
+
+def _assert_vocabularies_match(emitted: set[str], consumed: set[str]) -> None:
+    """Shared by the real-source pin and the bidirectional-drift test below.
+
+    Collects both differences before asserting anything, so drift in both
+    directions at once is reported together in a single run -- fixing the
+    emitted side first and re-running to discover the consumed side (or vice
+    versa) would cost an extra round trip for no reason. This is a shared
+    definition, not two independent copies, precisely so that a future
+    regression to two sequential asserts (losing the single-run guarantee)
+    cannot slip past with the drift test still green -- a test asserting
+    against its own re-inlined copy of this logic would protect nothing.
+    """
+    only_emitted = sorted(emitted - consumed)
+    only_consumed = sorted(consumed - emitted)
+    assert only_emitted == [] and only_consumed == [], (
+        "collector(s) emit subject(s) no synth dimension consumes -- these "
+        f"observations are silently dropped: {only_emitted}; "
+        "synth subject set(s) reference subject(s) no collector can ever "
+        f"emit -- these are dead keys guaranteeing false none-observed: {only_consumed}"
+    )
 
 
 def test_derivation_is_non_vacuous():
@@ -342,18 +368,7 @@ def test_current_emitted_and_consumed_vocabularies_match_exactly():
     emitted = derive_emitted_subjects(collectors_module)
     consumed = derive_consumed_subjects(synth_module)
 
-    only_emitted = sorted(emitted - consumed)
-    only_consumed = sorted(consumed - emitted)
-    # Collect both directions before asserting anything, so drift in both
-    # directions at once is reported together in a single run -- fixing the
-    # emitted side first and re-running to discover the consumed side (or
-    # vice versa) would cost an extra round trip for no reason.
-    assert only_emitted == [] and only_consumed == [], (
-        "collector(s) emit subject(s) no synth dimension consumes -- these "
-        f"observations are silently dropped: {only_emitted}; "
-        "synth subject set(s) reference subject(s) no collector can ever "
-        f"emit -- these are dead keys guaranteeing false none-observed: {only_consumed}"
-    )
+    _assert_vocabularies_match(emitted, consumed)
     assert sorted(emitted) == sorted(consumed)
     assert len(emitted) == 18, sorted(emitted)
     assert len(consumed) == 18, sorted(consumed)
@@ -475,16 +490,11 @@ def test_bidirectional_drift_is_reported_in_a_single_run():
     emitted = derive_emitted_subjects(collectors_module) | {"phantom-emitted-only"}
     consumed = derive_consumed_subjects(synth_module) | {"phantom-consumed-only"}
 
-    only_emitted = sorted(emitted - consumed)
-    only_consumed = sorted(consumed - emitted)
-
+    # Calls the same `_assert_vocabularies_match` used by the real-source pin
+    # above -- not a re-inlined copy -- so a regression to two sequential
+    # asserts there (losing the single-run guarantee) is caught here too.
     with pytest.raises(AssertionError) as excinfo:
-        assert only_emitted == [] and only_consumed == [], (
-            "collector(s) emit subject(s) no synth dimension consumes -- these "
-            f"observations are silently dropped: {only_emitted}; "
-            "synth subject set(s) reference subject(s) no collector can ever "
-            f"emit -- these are dead keys guaranteeing false none-observed: {only_consumed}"
-        )
+        _assert_vocabularies_match(emitted, consumed)
 
     message = str(excinfo.value)
     assert "phantom-emitted-only" in message, message
@@ -557,6 +567,27 @@ def test_makefile_dict_loop_resolves_for_both_annotated_and_unannotated_dicts(tm
 
     emitted = derive_emitted_subjects(hostile_module)
     assert emitted == {"build-target", "lint-target"}, sorted(emitted)
+
+
+def test_obs_subject_comparison_is_counted_but_other_dot_subject_is_not(tmp_path):
+    """F4. `_is_subject_attr` narrows to `obs.subject == "<literal>"` specifically,
+    not any `<expr>.subject == "<literal>"`. Prove both halves against a
+    hermetic synthetic module: an `obs.subject == "..."` comparison must be
+    counted as consumption, while a `convention.subject == "..."` comparison
+    over an unrelated object must not be -- counting it would mask a real
+    lost consumption (see the narrowing's docstring above for the coupling
+    to the literal identifier `obs`).
+    """
+    hostile_source = (
+        "def check(observations, conventions):\n"
+        "    matches = [obs for obs in observations if obs.subject == 'real-consumed-subject']\n"
+        "    other = [c for c in conventions if c.subject == 'not-actually-consumed']\n"
+        "    return matches, other\n"
+    )
+    hostile_module = _import_module_from_source(tmp_path, "hostile_obs_subject", hostile_source)
+
+    consumed = derive_consumed_subjects(hostile_module)
+    assert consumed == {"real-consumed-subject"}, sorted(consumed)
 
 
 def test_failure_output_is_sorted_and_deterministic():
