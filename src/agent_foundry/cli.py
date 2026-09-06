@@ -9,6 +9,7 @@ from pathlib import Path
 from agent_foundry import __version__
 from agent_foundry.adopt import plan_adoption
 from agent_foundry.inspect import inspect_project
+from agent_foundry.profile import synthesize_project_profile
 from agent_foundry.models import ProjectManifest, ToolkitLock, WorkItemContract, load_yaml
 from agent_foundry.models.io import dump_json, dump_yaml
 from agent_foundry.compile import compile_work_item
@@ -157,6 +158,30 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
         payload = dump_json(intake)
     else:
         payload = dump_yaml(intake)
+
+    sys.stdout.buffer.write(payload)
+    return 0
+
+
+def _cmd_profile(args: argparse.Namespace) -> int:
+    """Thin CLI projection over `inspect_project` + `synthesize_project_profile`.
+
+    No duplicated synthesis logic lives here, and nothing about this command
+    mutates the target project — it is a read-only inspection followed by a pure
+    synthesis, exactly like `inspect` and `adopt` above.
+    """
+    try:
+        intake = inspect_project(args.project_path)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    profile = synthesize_project_profile(intake)
+
+    if args.format == "json":
+        payload = dump_json(profile)
+    else:
+        payload = dump_yaml(profile)
 
     sys.stdout.buffer.write(payload)
     return 0
@@ -424,6 +449,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Structured output format (default: json)",
     )
     inspect_cmd.set_defaults(func=_cmd_inspect)
+
+    profile_cmd = sub.add_parser(
+        "profile",
+        help="Synthesize a deterministic, descriptive ProjectProfile from inspection evidence",
+    )
+    profile_cmd.add_argument("project_path", help="Path to the project repository to profile")
+    profile_cmd.add_argument(
+        "--format",
+        choices=("json", "yaml"),
+        default="json",
+        help="Structured output format (default: json)",
+    )
+    profile_cmd.set_defaults(func=_cmd_profile)
 
     adopt_cmd = sub.add_parser(
         "adopt",

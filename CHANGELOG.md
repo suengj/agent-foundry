@@ -68,9 +68,6 @@ recorded as planned rather than implemented.
   sources that disagree stay two attributions rather than being collapsed by read order.
   It is descriptive only — no authority-bearing field appears anywhere in its recursive
   field tree, which is asserted as a structural test rather than only stated here.
-  **No synthesizer and no `agent-foundry profile` command are added**: nothing in this
-  release produces a `ProjectProfile`, and no existing contract gained a field
-  referencing one.
 - `ProjectProfile` now rejects duplicate `ProfileDimension.dimension` names within one
   profile, fail-closed, via a sibling-level `model_validator` on `ProjectProfile` itself
   (`ProfileDimension` cannot see its siblings, so the rule could not live there). The
@@ -82,6 +79,24 @@ recorded as planned rather than implemented.
   `ProfileDimension._validate_resolution_matches_attributions` also gained an explicit
   `else` branch that raises, so a future `ProfileResolution` member cannot be added
   without this validator being updated to handle it.
+- **`ProjectProfile` synthesis and the `agent-foundry profile` CLI (SUE-579).**
+  `synthesize_project_profile` (`agent_foundry.profile`) is a pure, deterministic function
+  of a `ProjectIntake`: every dimension traces to an existing intake evidence field —
+  `classification_findings`, `observations`, `conventions`, or `traversal_stats` — never a
+  parallel observation model. Missing evidence yields an explicit `unknown` dimension
+  rather than a guessed value; two evidence sources that disagree on the same dimension
+  produce one `conflicted` dimension with both provenance-bearing attributions preserved.
+  A small, deliberately narrow exception lets a handful of purely structural
+  presence/absence dimensions (test/CI/lint markers, deploy hints, and the like) resolve
+  "not observed" — but only when `traversal_stats` shows the walk was exhaustive; a
+  truncated or partially-unobservable walk leaves them `unknown` like everything else.
+  `authority.write_scope` is the one classification dimension deliberately never echoed
+  into a profile: descriptive truth stays clear of anything shaped like an authority grant.
+  Synthesis does not feed `plan_adoption` or any other authority-bearing path — a
+  `ProjectProfile` cannot move an `AuthorityAxis` rank, which is proved as a test property,
+  not only asserted here. `agent-foundry profile PROJECT_PATH [--format json|yaml]` is a
+  thin CLI projection over the same Core API: no duplicated synthesis logic, and it never
+  mutates the target project.
 
 ### Compatibility rule
 
