@@ -310,23 +310,39 @@ def test_brownfield_autonomy_widening_requires_explicit_authority() -> None:
 
 
 def _declared_autonomy_intake(
-    base: Path = BROWNFIELD,
+    base: Path = FOUNDRY_SCRATCH_ONLY,
     autonomy: Autonomy = Autonomy.SUGGEST,
 ) -> ProjectIntake:
     """Unit-level companion input: pins a specific declared `execution.autonomy`
-    value on top of a real intake, independent of what that fixture happens to
-    declare on disk.
+    value on top of a real intake, by attaching a synthetic `ClassificationFinding`.
 
-    On-disk fixtures no longer need this to reach `_authority_proposal_changes`:
-    AF2's classifier extracts `execution.autonomy` (and other dimensions, not
-    just `project.intake_mode`) straight out of `.foundry/project.yaml` (SUE-302),
-    so `inspect_project(BROWNFIELD)` alone already yields a DECLARED
-    `execution.autonomy` finding and `manifest.execution.autonomy == Autonomy.SUGGEST`
-    — see `test_real_fixture_autonomy_widening_is_correctly_classified` below,
-    which exercises that real path with no synthetic finding at all. This helper
-    stays useful as a unit-level tool for pinning an arbitrary `Autonomy` value
-    (including ones no current fixture declares) without depending on any
-    fixture's actual content.
+    The default base is `brownfield-foundry-scratch-only`, which declares no
+    `.foundry/project.yaml` at all, so nothing competes with the appended
+    finding: `manifest.execution.autonomy` resolves to exactly `autonomy`. Do
+    NOT default this to a fixture that already declares `execution.autonomy`
+    (e.g. `brownfield-sample`) — `_best_finding`
+    (`src/agent_foundry/adopt/manifest.py`) selects among same-kind, same-
+    confidence `ClassificationFinding`s by `max` on `(precedence, confidence or
+    0.0, value or "")`, so two DECLARED findings with `confidence=None` tie-break
+    lexicographically on the value string. On `brownfield-sample` the fixture's
+    own `"suggest"` finding sorts above every other `Autonomy` value, so an
+    appended finding requesting anything but `Autonomy.SUGGEST` is silently
+    discarded by that tie-break, and requesting `Autonomy.SUGGEST` itself makes
+    this helper's output byte-identical to the plain fixture's plan — either way
+    contributing no real coverage. On this scratch-only base there is no
+    competing declaration, so any `Autonomy` member can be pinned here and
+    reaches the manifest untouched.
+
+    On-disk fixtures no longer need this helper to reach
+    `_authority_proposal_changes` at all: AF2's classifier extracts
+    `execution.autonomy` (and other dimensions, not just `project.intake_mode`)
+    straight out of `.foundry/project.yaml` (SUE-302), so
+    `inspect_project(BROWNFIELD)` alone already yields a DECLARED
+    `execution.autonomy` finding and `manifest.execution.autonomy ==
+    Autonomy.SUGGEST` — see `test_real_fixture_autonomy_widening_is_correctly_classified`
+    below, which exercises that real path with no synthetic finding at all. This
+    helper stays useful as a unit-level tool for pinning an arbitrary `Autonomy`
+    value without depending on any fixture's own declared content.
     """
     intake = inspect_project(base)
     declared = ClassificationFinding(
@@ -355,7 +371,7 @@ def _planner_inputs() -> list[tuple[str, ProjectIntake]]:
     specific declared autonomy value as a unit-level companion case.
     """
     inputs = _real_fixture_inputs()
-    inputs.append(("declared-suggest-autonomy", _declared_autonomy_intake()))
+    inputs.append(("declared-suggest-autonomy-no-fixture-declaration", _declared_autonomy_intake()))
     return inputs
 
 
@@ -378,7 +394,7 @@ def test_planner_corpus_actually_produces_an_authority_widening_change() -> None
     """Anti-vacuity guard for the property test below.
 
     This must be satisfied by a REAL on-disk fixture, not only by the
-    constructed `declared-suggest-autonomy` input: a corpus where only the
+    constructed autonomy-pinning input: a corpus where only the
     hand-built entry produced a widening change would still leave
     `test_planned_changes_are_never_both_widening_and_auto_applicable` unable to
     say anything about what AF2's real inspect -> adopt path actually produces.
@@ -395,11 +411,11 @@ def test_planner_corpus_actually_produces_an_authority_widening_change() -> None
         f"targets per input: {widening}"
     )
 
-    real_fixture_names = {name for name, _ in _real_fixture_inputs()}
+    real_fixture_names = {path.name for path in ALL_FIXTURES}
     covered_real_fixtures = covered.keys() & real_fixture_names
     assert covered_real_fixtures, (
         "no on-disk fixture produces an authority-widening change; the corpus is "
-        "exercising only the constructed `declared-suggest-autonomy` input, not a "
+        "exercising only the constructed autonomy-pinning input, not a "
         f"real fixture. targets per input: {widening}"
     )
     assert "execution.autonomy" in {
