@@ -200,11 +200,13 @@ def derive_emitted_subjects(module) -> set[str]:
         )
 
     emitted: set[str] = set()
+    counted_call_ids: set[int] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or _inside_a_helper_definition(node):
             continue
         func = node.func
         if isinstance(func, ast.Name) and func.id in helper_names:
+            counted_call_ids.add(id(node))
             if not node.args:
                 raise UnresolvableSubject(
                     f"{module.__file__}:{node.lineno}: {func.id}() call has no "
@@ -212,9 +214,32 @@ def derive_emitted_subjects(module) -> set[str]:
                 )
             emitted |= _resolve(node.args[0], node.lineno)
         elif isinstance(func, ast.Name) and func.id == "ProjectObservation":
+            counted_call_ids.add(id(node))
             keyword = next((kw for kw in node.keywords if kw.arg == "subject"), None)
             if keyword is not None:
                 emitted |= _resolve(keyword.value, node.lineno)
+
+    # An aliased import (`PO(subject=...)`) or attribute access
+    # (`mod.ProjectObservation(subject=...)`) constructs a `ProjectObservation`
+    # without ever matching the bare `ast.Name` check above, so it would
+    # otherwise contribute nothing -- with no error -- to `emitted`. Any call
+    # site outside a helper definition that carries a `subject=` keyword and
+    # was not already counted is exactly that case: raise loudly rather than
+    # silently under-deriving the vocabulary.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or id(node) in counted_call_ids:
+            continue
+        if _inside_a_helper_definition(node):
+            continue
+        keyword = next((kw for kw in node.keywords if kw.arg == "subject"), None)
+        if keyword is not None:
+            raise UnresolvableSubject(
+                f"{module.__file__}:{node.lineno}: a call with a `subject=` "
+                "keyword argument was not recognised as a literal "
+                "`ProjectObservation(...)` construction (aliased import or "
+                "attribute access?) -- this derivation must not silently "
+                "skip it."
+            )
     return emitted
 
 
@@ -270,7 +295,19 @@ def derive_consumed_subjects(module) -> set[str]:
             left, right = node.left, node.comparators[0]
 
             def _is_subject_attr(candidate: ast.expr) -> bool:
-                return isinstance(candidate, ast.Attribute) and candidate.attr == "subject"
+                # Narrowed to `obs.subject` specifically (the name every
+                # existing comparison site uses for the observation being
+                # inspected) rather than any `<expr>.subject`. A future
+                # `convention.subject == "..."` comparison over an unrelated
+                # object that happens to have a `.subject` attribute must not
+                # be counted as consumption that does not really exist --
+                # that would mask a real lost consumption.
+                return (
+                    isinstance(candidate, ast.Attribute)
+                    and candidate.attr == "subject"
+                    and isinstance(candidate.value, ast.Name)
+                    and candidate.value.id == "obs"
+                )
 
             if _is_subject_attr(left) and isinstance(right, ast.Constant) and isinstance(right.value, str):
                 consumed.add(right.value)
@@ -307,11 +344,13 @@ def test_current_emitted_and_consumed_vocabularies_match_exactly():
 
     only_emitted = sorted(emitted - consumed)
     only_consumed = sorted(consumed - emitted)
-    assert only_emitted == [], (
+    # Collect both directions before asserting anything, so drift in both
+    # directions at once is reported together in a single run -- fixing the
+    # emitted side first and re-running to discover the consumed side (or
+    # vice versa) would cost an extra round trip for no reason.
+    assert only_emitted == [] and only_consumed == [], (
         "collector(s) emit subject(s) no synth dimension consumes -- these "
-        f"observations are silently dropped: {only_emitted}"
-    )
-    assert only_consumed == [], (
+        f"observations are silently dropped: {only_emitted}; "
         "synth subject set(s) reference subject(s) no collector can ever "
         f"emit -- these are dead keys guaranteeing false none-observed: {only_consumed}"
     )
@@ -348,6 +387,34 @@ def test_derivation_rejects_an_unresolvable_emitted_subject_argument(tmp_path):
         "    return _observed(some_var, 'content', 'ref')\n"
     )
     hostile_module = _import_module_from_source(tmp_path, "hostile_collectors", hostile_source)
+
+    with pytest.raises(UnresolvableSubject):
+        derive_emitted_subjects(hostile_module)
+
+
+@pytest.mark.parametrize(
+    "construction",
+    [
+        "PO(subject='aliased-import-subject', content='c', source_ref='r')",
+        "models.ProjectObservation(subject='attribute-form-subject', content='c', source_ref='r')",
+    ],
+    ids=["aliased-import", "attribute-access"],
+)
+def test_derivation_raises_on_aliased_or_attribute_form_project_observation(tmp_path, construction):
+    """F1. `ProjectObservation(subject=...)` constructed via an aliased import
+    (`from ... import ProjectObservation as PO`) or attribute access
+    (`models.ProjectObservation(...)`) is invisible to a bare `ast.Name`
+    match on `func.id == "ProjectObservation"`. Before the F1 fix that meant
+    such a call contributed nothing to `emitted`, with no error -- if one new
+    subject arrived this way while every other subject stayed put, the guard
+    would go green on real drift. Exercises the real
+    `derive_emitted_subjects`, not a copy, and proves it now raises instead.
+    """
+    hostile_source = (
+        "def emit():\n"
+        f"    return {construction}\n"
+    )
+    hostile_module = _import_module_from_source(tmp_path, "hostile_aliased_or_attr", hostile_source)
 
     with pytest.raises(UnresolvableSubject):
         derive_emitted_subjects(hostile_module)
@@ -398,6 +465,98 @@ def test_dead_synthesis_key_a_synth_only_subject_is_detected():
     consumed = derive_consumed_subjects(synth_module) | {"synth-only-phantom-subject"}
     only_consumed = sorted(consumed - emitted)
     assert only_consumed == ["synth-only-phantom-subject"], only_consumed
+
+
+def test_bidirectional_drift_is_reported_in_a_single_run():
+    """F3. Drift in both directions at once must be named together, in one
+    run -- not just the emitted side first, requiring a second run to
+    discover the consumed side (or vice versa).
+    """
+    emitted = derive_emitted_subjects(collectors_module) | {"phantom-emitted-only"}
+    consumed = derive_consumed_subjects(synth_module) | {"phantom-consumed-only"}
+
+    only_emitted = sorted(emitted - consumed)
+    only_consumed = sorted(consumed - emitted)
+
+    with pytest.raises(AssertionError) as excinfo:
+        assert only_emitted == [] and only_consumed == [], (
+            "collector(s) emit subject(s) no synth dimension consumes -- these "
+            f"observations are silently dropped: {only_emitted}; "
+            "synth subject set(s) reference subject(s) no collector can ever "
+            f"emit -- these are dead keys guaranteeing false none-observed: {only_consumed}"
+        )
+
+    message = str(excinfo.value)
+    assert "phantom-emitted-only" in message, message
+    assert "phantom-consumed-only" in message, message
+
+
+def test_api_sources_collect_observations_from_exactly_one_module():
+    """F2. This guard derives emitted subjects from `collectors.py` alone.
+
+    That scoping is correct today -- `intake.observations` is assembled
+    exclusively from `collectors.py`; the other `ProjectObservation`
+    producers (`adopt/manifest.py`, `inspect/conventions.py`) feed different
+    `ProjectIntake` fields, not the observations this guard is about -- but
+    it would go silently stale if a future second collector module were
+    wired into `api.py` alongside it. Rather than restructure the derivation
+    to scan an open-ended module list, assert the single-module assumption
+    directly from `api.py`'s own imports, so that assumption breaking is
+    itself loud.
+    """
+    from agent_foundry.inspect import api as api_module
+
+    source = inspect.getsource(api_module)
+    tree = ast.parse(source, filename=api_module.__file__)
+
+    collect_import_modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            collect_names = [alias.name for alias in node.names if alias.name.startswith("collect_")]
+            if collect_names:
+                collect_import_modules.add(node.module or "")
+
+    assert collect_import_modules == {"agent_foundry.inspect.collectors"}, (
+        "api.py now sources collect_*() observation functions from more than "
+        "the one module this coverage guard derives its emitted-subject "
+        f"vocabulary from: {sorted(collect_import_modules)}"
+    )
+
+
+@pytest.mark.parametrize(
+    "dict_assign",
+    [
+        "_TARGET_SUBJECTS: dict[str, str] = {'build': 'build-target', 'lint': 'lint-target'}",
+        "_TARGET_SUBJECTS = {'build': 'build-target', 'lint': 'lint-target'}",
+    ],
+    ids=["annotated", "unannotated"],
+)
+def test_makefile_dict_loop_resolves_for_both_annotated_and_unannotated_dicts(tmp_path, dict_assign):
+    """F5. The module-level dict-literal resolution used for
+    `_MAKEFILE_TARGET_SUBJECTS` handles both the annotated (`ast.AnnAssign`,
+    the shape `collectors.py` actually uses today) and unannotated
+    (`ast.Assign`) forms, but today that is only implicit in the 18-count
+    against real source. Make it explicit against a hermetic synthetic
+    module so a change that breaks one shape fails here, by name, rather
+    than only surfacing as an unexplained drop in the real count.
+    """
+    hostile_source = (
+        f"{dict_assign}\n"
+        "\n"
+        "def _observed(subject, content, source_ref, *, confidence=1.0):\n"
+        "    return (subject, content, source_ref)\n"
+        "\n"
+        "def emit():\n"
+        "    results = []\n"
+        "    for target, subject in sorted(_TARGET_SUBJECTS.items()):\n"
+        "        results.append(_observed(subject, 'content', target))\n"
+        "    return results\n"
+    )
+    shape = "annotated" if "dict[str, str]" in dict_assign else "unannotated"
+    hostile_module = _import_module_from_source(tmp_path, f"hostile_dict_{shape}", hostile_source)
+
+    emitted = derive_emitted_subjects(hostile_module)
+    assert emitted == {"build-target", "lint-target"}, sorted(emitted)
 
 
 def test_failure_output_is_sorted_and_deterministic():
