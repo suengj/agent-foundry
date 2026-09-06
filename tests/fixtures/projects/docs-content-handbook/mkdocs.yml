@@ -1,0 +1,7 @@
+site_name: Example Handbook
+docs_dir: docs
+nav:
+  - Home: index.md
+  - Guide:
+      - Getting started: guide/getting-started.md
+      - FAQ: guide/faq.md

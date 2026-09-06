@@ -19,13 +19,18 @@ carry, and ``depth_limit_reached`` / ``entry_limit_reached`` /
 ``entries_skipped_refused`` have no observation representation at all — only
 ``TraversalStats`` carries them. So ``assess_readiness`` accepts an optional
 ``stats`` parameter: when a caller has a ``TraversalStats`` to give, depth/entry
-limits and containment refusals are detected too; when it does not (today's
-``inspect.api`` call site does not thread it through yet — a known integration
-gap, not a design choice made here), this module still detects the two hole
-kinds that already have their own observation subjects
-(``path-unobservable``, ``file-read-skipped``) independently of ``stats``,
-because those flow through ``observations`` regardless. Passing ``stats``
-only ever adds detection power; it never removes any.
+limits and containment refusals are detected too; when it does not, this module
+still detects the two hole kinds that already have their own observation
+subjects (``path-unobservable``, ``file-read-skipped``) independently of
+``stats``, because those flow through ``observations`` regardless. Passing
+``stats`` only ever adds detection power; it never removes any.
+
+``inspect.api`` does pass it, and has to: without ``stats`` the three hole kinds
+that travel nowhere else are undetectable in production no matter what this
+module can do, so a bounded or refused walk would report its absences as
+settled. That is why the call site builds ``TraversalStats`` before assessing
+readiness rather than after. The parameter stays optional for callers holding
+only observations, not as a default the pipeline is content to take.
 """
 
 from __future__ import annotations

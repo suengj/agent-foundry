@@ -1,0 +1,9 @@
+[project]
+name = "sample-runtime-service"
+version = "1.0.0"
+requires-python = ">=3.11"
+dependencies = ["pydantic>=2.7"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

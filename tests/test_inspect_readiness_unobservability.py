@@ -180,13 +180,16 @@ def test_depth_limited_walk_end_to_end_through_inspect_project(tmp_path: Path) -
     (nested / "deep.txt").write_text("deep\n")
     intake = inspect_project(tmp_path, max_depth=1)
     assert intake.traversal_stats.depth_limit_reached
-    # Proves this lane's own gating is wired correctly for the case where a
-    # caller *does* have TraversalStats; today's `inspect.api` call site does
-    # not yet thread `stats` into `assess_readiness` (a known integration gap
-    # tracked in the report), so this assertion documents current behavior
-    # rather than asserting the not-yet-wired end state.
+    # The end state, asserted rather than described. `inspect.api` passes
+    # `stats` into `assess_readiness`, so a depth limit — which travels in no
+    # observation and reaches readiness only through `TraversalStats` — has to
+    # surface here. Accepting either severity would pass whether or not the
+    # call site threads `stats`, which is exactly the failure this test exists
+    # to catch.
     completeness = _completeness_finding(intake.readiness_findings)
-    assert completeness.severity.value in {"low", "high"}
+    assert completeness.severity.value == "high"
+    assert "not fully observed" in completeness.message
+    assert "depth limit reached" in completeness.message
 
 
 # ---------------------------------------------------------------------------
