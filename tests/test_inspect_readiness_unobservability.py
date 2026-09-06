@@ -238,6 +238,85 @@ def test_ignored_directory_skip_qualifies_a_resolved_absence_claim() -> None:
     assert "entries_skipped_ignored_dir=2" in testability.message
 
 
+def _owner_excluded(path: str) -> ProjectObservation:
+    """The observation `collect_nested_project_observations` emits for an
+    owner-declared exclusion: DECLARED provenance, boundary-prefixed content."""
+    return ProjectObservation(
+        subject="nested-project",
+        content=(
+            f"nested project boundary: {path} is excluded by owner declaration; "
+            "its contents are not evidence about this project"
+        ),
+        provenance=Provenance(kind=ProvenanceKind.DECLARED, source_ref=path),
+    )
+
+
+def test_owner_declared_nested_exclusion_qualifies_a_resolved_absence_claim() -> None:
+    """SUE-580 S3. The other exclusion class, scoped the same way.
+
+    ``_scope_absence`` scoped a skipped directory but not an owner-declared
+    nested-project exclusion, even though both remove ground from the evidence
+    with the same effect on a "none observed" claim — and an owner may exclude
+    an arbitrary *markerless* directory. Unscoped, a reader of
+    ``runtime-isolation`` alone is told no deploy surface exists in a repository
+    whose only Dockerfile sits inside the excluded subtree.
+    """
+    observations = _BASE_OBSERVATIONS + [
+        _owner_excluded("src"),
+        # An override *decision* shares the `nested-project` subject but does not
+        # name a boundary; a rejected one names a path that is not excluded at
+        # all, so it must never be reported as scope.
+        _observation(
+            "nested-project",
+            "override exclude on vendor: not applied — not an excluded "
+            "nested-project boundary; override has no effect",
+            source_ref="vendor",
+        ),
+    ]
+    findings = assess_readiness(Path("."), observations, [], stats=_stats())
+    isolation = [f for f in findings if f.dimension == "runtime-isolation"][0]
+    assert isolation.message.startswith("No deploy/runtime surfaces observed"), isolation.message
+    assert "nested project boundaries: src" in isolation.message, isolation.message
+    assert "vendor" not in isolation.message, (
+        "a rejected override names a path that was never excluded; scoping a "
+        f"claim by it would be a second false statement: {isolation.message!r}"
+    )
+
+
+def test_manifest_detected_nested_project_does_not_scope_an_absence_claim() -> None:
+    """The deliberate asymmetry, asserted rather than left to chance.
+
+    A subtree carrying its own project manifest is a *different project*, and
+    every claim here is already scoped to this one, so its contents were never
+    candidates for this claim in the first place.
+    ``tests/e2e/test_e2e_project_boundary.py`` states that contract directly:
+    planting a whole second project inside the target must change nothing about
+    the target's diagnosis except the recorded boundary. Naming such a subtree
+    in every absence message would break it.
+    """
+    observations = _BASE_OBSERVATIONS + [
+        _observation(
+            "nested-project",
+            "nested project boundary: components/other declares its own project "
+            "manifest; its contents are not evidence about this project",
+            source_ref="components/other",
+        ),
+    ]
+    findings = assess_readiness(Path("."), observations, [], stats=_stats())
+    isolation = [f for f in findings if f.dimension == "runtime-isolation"][0]
+    assert isolation.message == "No deploy/runtime surfaces observed in repository inventory"
+
+
+def test_both_exclusion_classes_are_named_when_both_apply() -> None:
+    """Skipped directories and owner exclusions are independent scopes."""
+    observations = _BASE_OBSERVATIONS + [_owner_excluded("vendor/app")]
+    stats = _stats(entries_skipped=2, entries_skipped_ignored_dir=2)
+    findings = assess_readiness(Path("."), observations, [], stats=stats)
+    testability = [f for f in findings if f.dimension == "testability"][0]
+    assert "entries_skipped_ignored_dir=2" in testability.message, testability.message
+    assert "nested project boundaries: vendor/app" in testability.message, testability.message
+
+
 # ---------------------------------------------------------------------------
 # D. Absence is never asserted over unobserved ground
 # ---------------------------------------------------------------------------
@@ -260,27 +339,96 @@ def test_no_absence_claim_asserted_when_walk_incomplete(make_stats) -> None:
         assert "not fully observed" in message
 
 
-def test_absence_claim_still_asserted_for_content_only_hole() -> None:
+#: Readiness dimensions whose absence claim depends on what is *inside* a file,
+#: from the per-dimension audit in ``readiness.py``'s module docstring. Only
+#: ``testability`` qualifies: ``test-entrypoint`` is emitted both by marker
+#: filenames and by a ``test:`` target parsed out of the Makefile's bytes
+#: (``_MAKEFILE_TARGET_SUBJECTS`` in ``inspect/collectors.py``), which is why
+#: ``profile/synth.py`` classifies that same subject as
+#: ``_SubjectDerivation.CONTENT``. Every other absence-shaped dimension is
+#: settled by the entry list alone.
+_CONTENT_DERIVED_DIMENSIONS = frozenset({"testability"})
+
+
+def test_content_only_hole_still_allows_a_filename_derived_absence_claim() -> None:
     # SUE-580 S2: a size-skipped file is a *content* hole, not a *path* hole —
     # the walk saw the entry and knows its name; it only declined to read its
-    # bytes. Every absence-shaped dimension here is derived purely from
-    # filename/path presence (deploy markers, integration-config filenames,
-    # package-metadata filenames, agent-instruction-surface paths, ...), never
-    # from file content, so a content-only hole must not manufacture
-    # uncertainty about them: a resolved "No ... observed" claim still stands.
-    # (This inverts the previous version of this test, which asserted the
-    # opposite — that a content-only hole blocked every absence claim across
-    # the board. That was the defect: it let a single oversized lockfile
-    # anywhere in a real repository degrade every filename-derived readiness
-    # finding to "not confirmed" at confidence 0.0, even though none of those
-    # findings' truth depends on that file's content at all.)
+    # bytes. A dimension derived purely from filename/path presence (deploy
+    # markers, integration-config filenames, package-metadata filenames,
+    # agent-instruction-surface paths) must not be made uncertain by it:
+    # a resolved "No ... observed" claim still stands.
     observations = _BASE_OBSERVATIONS + [_observation("file-read-skipped", "big file")]
     findings = assess_readiness(Path("."), observations, [], stats=_stats())
-    messages = _absence_messages(findings)
-    assert messages, "expected at least one absence-shaped dimension to check"
-    for message in messages:
-        assert message.startswith("No "), message
-        assert "not confirmed" not in message, message
+    checked = [
+        f
+        for f in findings
+        if f.dimension in _absence_shaped_dimensions()
+        and f.dimension not in _CONTENT_DERIVED_DIMENSIONS
+    ]
+    assert checked, "expected at least one filename-derived absence dimension to check"
+    for finding in checked:
+        assert finding.message.startswith("No "), finding.message
+        assert "not confirmed" not in finding.message, finding.message
+
+
+def test_content_only_hole_withholds_a_content_derived_absence_claim() -> None:
+    """SUE-580 B1. The defect this replaces was encoded by the test above.
+
+    The previous version of ``test_absence_claim_still_asserted_for_content_only_hole``
+    asserted that *every* absence-shaped dimension keeps its confident "No ..."
+    claim over a content hole, ``testability`` included — pinning the bug rather
+    than catching it. That was wrong for exactly one dimension: ``has_tests``
+    reads the ``test-entrypoint`` subject, which ``collectors.py`` also emits
+    from a ``test:`` target parsed out of the Makefile's *bytes*. With the
+    Makefile unread, "No test entrypoints observed" at MEDIUM/0.7 is a confident
+    false negative over evidence the walk never looked at — and the profile,
+    which classifies the same subject as CONTENT, got it right in the same run.
+
+    Splitting the two claims apart is the fix; asserting both halves in separate
+    tests is what keeps either half from being weakened silently.
+    """
+    observations = _BASE_OBSERVATIONS + [_observation("file-read-skipped", "big file")]
+    findings = assess_readiness(Path("."), observations, [], stats=_stats())
+    for dimension in _CONTENT_DERIVED_DIMENSIONS:
+        finding = next(f for f in findings if f.dimension == dimension)
+        assert not finding.message.startswith("No "), (
+            f"{dimension} is derived from file content; it must not publish a "
+            f"confident absence over an unread file: {finding.message!r}"
+        )
+        assert "not confirmed" in finding.message, finding.message
+        assert "not fully observed" in finding.message, finding.message
+        assert "read-size limit" in finding.message, (
+            "the withheld claim must name the content hole that caused it, not "
+            f"an empty hole list: {finding.message!r}"
+        )
+        assert finding.provenance.confidence == 0.0, finding.provenance.confidence
+
+
+def test_completeness_summary_does_not_vouch_for_more_than_the_report_does() -> None:
+    """SUE-580 B1, second half. The summary certified a claim it did not cover.
+
+    With only a content hole, the old summary said "Findings elsewhere in this
+    report that would otherwise read as confirmed absence are withheld or
+    explicitly qualified instead" — flatly false about the confident
+    ``testability`` negative sitting next to it, and still an overstatement now
+    that ``testability`` is withheld, because the filename-derived findings
+    beside it are *not* withheld and correctly still stand. The summary has to
+    say which half it means.
+    """
+    observations = _BASE_OBSERVATIONS + [_observation("file-read-skipped", "big file")]
+    findings = assess_readiness(Path("."), observations, [], stats=_stats())
+    summary = _completeness_finding(findings).message
+    assert "Content-derived findings" in summary, summary
+    assert "filename-derived findings still stand" in summary, summary
+
+    # A path hole withholds every absence claim, so there the unqualified
+    # sentence is the true one.
+    path_hole = assess_readiness(
+        Path("."), _BASE_OBSERVATIONS, [], stats=_stats(depth_limit_reached=True)
+    )
+    path_summary = _completeness_finding(path_hole).message
+    assert "Findings elsewhere in this report" in path_summary, path_summary
+    assert "Content-derived findings" not in path_summary, path_summary
 
 
 def test_absence_claim_only_made_when_exhaustive_and_reads_as_confident() -> None:

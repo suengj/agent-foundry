@@ -33,6 +33,8 @@ import pytest
 
 from agent_foundry.inspect import inspect_project
 from agent_foundry.inspect.traversal import walk_repository
+from agent_foundry.models.common import ProfileResolution
+from agent_foundry.profile import synthesize_project_profile
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +175,57 @@ def test_traversal_stops_at_declared_bounds(tmp_path: Path) -> None:
     )
     assert "not confirmed" in reproducibility.message
     assert reproducibility.provenance.confidence == 0.0
+
+
+def test_unread_makefile_withholds_the_testability_negative_end_to_end(tmp_path: Path) -> None:
+    """SUE-580 B1, end to end: the exact repository that exposed the defect.
+
+    A repository whose only file is a ``Makefile`` declaring a ``test:`` target.
+    Read it and the readiness finding is "Deterministic test entrypoints are
+    observable"; leave it unread (``max_file_bytes`` below its size) and the
+    only evidence that could have answered the question is the bytes that went
+    unread — so a confident "No test entrypoints observed" at 0.7 is a false
+    negative, not an observation. The profile, which classifies the same
+    ``test-entrypoint`` subject as content-derived, was already correct here;
+    readiness was not, and its own completeness summary claimed otherwise.
+
+    Both halves are asserted from one intake so they cannot drift apart again.
+    """
+    (tmp_path / "Makefile").write_text("test:\n\tpytest -q\n")
+
+    read = inspect_project(tmp_path, max_file_bytes=10_000)
+    read_testability = next(f for f in read.readiness_findings if f.dimension == "testability")
+    assert read_testability.message == "Deterministic test entrypoints are observable"
+    assert read_testability.provenance.confidence == 0.9
+
+    unread = inspect_project(tmp_path, max_file_bytes=10)
+    assert any(o.subject == "file-read-skipped" for o in unread.observations), (
+        "the fixture Makefile must actually exceed the read-size limit"
+    )
+    assert not any(o.subject == "test-entrypoint" for o in unread.observations)
+
+    testability = next(f for f in unread.readiness_findings if f.dimension == "testability")
+    assert "No test entrypoints observed" not in testability.message
+    assert "not confirmed" in testability.message
+    assert testability.provenance.confidence == 0.0
+
+    profile = synthesize_project_profile(unread)
+    dim = next(d for d in profile.dimensions if d.dimension == "testability.test-entrypoint")
+    assert dim.resolution is ProfileResolution.UNKNOWN, (
+        "readiness and the profile must agree about the same subject over the "
+        "same evidence"
+    )
+
+    # The completeness summary must not certify more than the report delivers:
+    # here the withheld claim is the content-derived one, and the
+    # filename-derived findings beside it correctly still stand.
+    completeness = next(
+        f for f in unread.readiness_findings if f.dimension == "inspection-completeness"
+    )
+    assert "Content-derived findings" in completeness.message, completeness.message
+    assert "filename-derived findings still stand" in completeness.message, completeness.message
+    runtime = next(f for f in unread.readiness_findings if f.dimension == "runtime-isolation")
+    assert runtime.message.startswith("No deploy/runtime surfaces observed"), runtime.message
 
 
 def test_fully_covered_small_repo_does_make_confident_absence_claims(tmp_path: Path) -> None:

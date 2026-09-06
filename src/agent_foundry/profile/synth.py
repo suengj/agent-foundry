@@ -89,6 +89,25 @@ so it does not force ``UNKNOWN``; instead the resolved value says explicitly
 that directories were skipped (``_scope_none_observed``), rather than reading as
 a universal claim over ground the walk knowingly did not cover.
 
+An *owner-declared nested-project exclusion* is the second exclusion of that same
+kind, and gets the same scoping. It is not optional politeness: an owner may
+exclude an arbitrary **markerless** directory, so a repository declaring
+``exclude: [src]`` whose only container manifest is ``src/Dockerfile`` would
+otherwise publish ``operating.deploy-surface = none-observed`` at OBSERVED 1.0 —
+a flat, unqualified claim that no deploy surface exists.
+``repository.ownership-boundaries`` does name the exclusions, but making the
+reader cross-reference it is exactly what ``_scope_none_observed`` exists to
+prevent, and scoping one exclusion class while silently ignoring the other was
+an inconsistency, not a design.
+
+A *manifest-detected* nested project is deliberately **not** scoped this way:
+that subtree is a different project, every dimension here is already scoped to
+this one, and ``tests/e2e/test_e2e_project_boundary.py`` requires that planting
+a whole second project inside the target change nothing about the target's
+diagnosis but the recorded boundary. See
+``inspect.readiness.owner_excluded_nested_boundary_refs`` for the full reasoning
+and for how the two are told apart.
+
 **Determinism.** Same structured evidence -> byte-identical ``ProjectProfile``.
 Every dict/set-shaped collection this module touches — findings grouped by
 dimension, distinct attribution values, evidence-ref lists, convention subjects —
@@ -121,6 +140,7 @@ from agent_foundry.inspect.classification import (
     reason_is_absence_enumeration,
     traversal_supports_absence_enumeration,
 )
+from agent_foundry.inspect.readiness import owner_excluded_nested_boundary_refs
 
 # `authority.write_scope` is deliberately never echoed into a profile dimension.
 # Every other CLASSIFICATION_DIMENSIONS member is descriptive; this one names a
@@ -271,20 +291,40 @@ def _traversal_exhaustive(stats: TraversalStats, *, unread_file_count: int = 0) 
     return _path_traversal_exhaustive(stats) and unread_file_count == 0
 
 
-def _scope_none_observed(value: str, stats: TraversalStats) -> str:
-    """Qualify a resolved "not observed" claim when directories were skipped.
+def _scope_none_observed(
+    value: str,
+    stats: TraversalStats,
+    *,
+    nested_boundaries: list[str] | None = None,
+) -> str:
+    """Qualify a resolved "not observed" claim by the ground it does not cover.
 
     "None observed" is only ever a claim about the ground the walk actually
     covered. When ``SKIP_DIR_NAMES`` caused entries to be skipped (true of
     almost every real repository — a `.git` directory alone guarantees it),
     the claim must say so explicitly rather than read as universal.
+
+    A nested-project boundary excludes ground for a different reason but with
+    exactly the same effect on the claim, so it is scoped the same way. Scoping
+    one exclusion class and not the other was the whole defect: an owner may
+    declare an arbitrary *markerless* directory excluded, and a repository whose
+    only container manifest sits inside such a directory would otherwise publish
+    ``operating.deploy-surface = none-observed`` at OBSERVED 1.0 — flat and
+    unscoped. ``repository.ownership-boundaries`` does name the exclusions, but
+    requiring the reader to cross-reference it is precisely what this function
+    exists to avoid.
     """
-    if stats.entries_skipped_ignored_dir <= 0:
+    scopes: list[str] = []
+    if stats.entries_skipped_ignored_dir > 0:
+        scopes.append(
+            f"skipped directories (entries_skipped_ignored_dir="
+            f"{stats.entries_skipped_ignored_dir})"
+        )
+    if nested_boundaries:
+        scopes.append("nested project boundaries (" + ", ".join(nested_boundaries) + ")")
+    if not scopes:
         return value
-    return (
-        f"{value} outside skipped directories "
-        f"(entries_skipped_ignored_dir={stats.entries_skipped_ignored_dir})"
-    )
+    return f"{value} outside " + " and ".join(scopes)
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +406,11 @@ def _aggregate_observation_dimension(
         if not exhaustive:
             return ProfileDimension(dimension=name, resolution=ProfileResolution.UNKNOWN, attributions=[])
         provenance = Provenance(kind=ProvenanceKind.OBSERVED, confidence=1.0, source_ref=".")
-        value = _scope_none_observed(none_observed_value, stats)
+        value = _scope_none_observed(
+            none_observed_value,
+            stats,
+            nested_boundaries=owner_excluded_nested_boundary_refs(observations),
+        )
         return _dimension(name, [_make_attribution(value, provenance, [])])
 
     value = "; ".join(sorted({obs.content for obs in matches}))
@@ -442,7 +486,11 @@ def _conventions_dimension(
         if not _traversal_exhaustive(stats, unread_file_count=unread_file_count):
             return ProfileDimension(dimension=name, resolution=ProfileResolution.UNKNOWN, attributions=[])
         provenance = Provenance(kind=ProvenanceKind.OBSERVED, confidence=1.0, source_ref=".")
-        value = _scope_none_observed("no-conventions-observed", stats)
+        value = _scope_none_observed(
+            "no-conventions-observed",
+            stats,
+            nested_boundaries=owner_excluded_nested_boundary_refs(observations),
+        )
         return _dimension(name, [_make_attribution(value, provenance, [])])
 
     # One composite fact, not competing alternatives: "a test-invocation convention

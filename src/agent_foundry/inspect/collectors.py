@@ -333,6 +333,13 @@ def collect_foundry_observations(
     return observations
 
 
+# The lead-in every `nested-project` boundary observation shares. `readiness` reads it
+# to tell a boundary record apart from the override-decision and supersession records
+# that travel under the same subject, so it lives here, with the code that writes it,
+# rather than being spelled a second time at the reader.
+NESTED_BOUNDARY_CONTENT_PREFIX = "nested project boundary: "
+
+
 def collect_nested_project_observations(
     boundaries: list[str],
     *,
@@ -358,8 +365,8 @@ def collect_nested_project_observations(
             _declared(
                 "nested-project",
                 (
-                    f"nested project boundary: {boundary} is excluded by owner declaration; "
-                    "its contents are not evidence about this project"
+                    f"{NESTED_BOUNDARY_CONTENT_PREFIX}{boundary} is excluded by owner "
+                    "declaration; its contents are not evidence about this project"
                 ),
                 boundary,
             )
@@ -367,8 +374,8 @@ def collect_nested_project_observations(
             else _observed(
                 "nested-project",
                 (
-                    f"nested project boundary: {boundary} declares its own project manifest; "
-                    "its contents are not evidence about this project"
+                    f"{NESTED_BOUNDARY_CONTENT_PREFIX}{boundary} declares its own project "
+                    "manifest; its contents are not evidence about this project"
                 ),
                 boundary,
             )

@@ -519,26 +519,165 @@ def test_c_an_unread_file_does_not_make_a_filename_derived_absence_unknown(
 
     by_name = {d.dimension: d for d in synthesize_project_profile(intake).dimensions}
 
-    for name in (
-        "operating.deploy-surface",
-        "integration.config-surface",
-        "testability.config-schema",
-        "repository.package-metadata",
-        "instruction.fragmentation",
-    ):
+    # SUE-580 S5: the previous version of this loop asserted
+    #     "none-observed" in value or value
+    # whose right operand is a non-empty string, so the whole disjunction was
+    # always truthy and the assertion could never fail — the exact failure mode
+    # this suite exists to prevent. Each dimension's own none-observed value is
+    # spelled out instead, so a dimension that silently started publishing some
+    # other value goes red.
+    for name, expected in {
+        "operating.deploy-surface": "none-observed",
+        "integration.config-surface": "none-observed",
+        "testability.config-schema": "none-observed",
+        "repository.package-metadata": "none-observed",
+        "instruction.fragmentation": "no-agent-instruction-surface-observed",
+    }.items():
         dim = by_name[name]
         assert dim.resolution is ProfileResolution.RESOLVED, (
             f"{name} is decided by filenames on the entry list, but resolved to "
             f"{dim.resolution} because an unrelated oversized file went unread"
         )
-        assert "none-observed" in dim.attributions[0].value or dim.attributions[0].value
+        assert len(dim.attributions) == 1, name
+        # startswith, not equality: `_scope_none_observed` may append an
+        # "outside ..." qualifier, which is a scope on the same claim, not a
+        # different claim.
+        assert dim.attributions[0].value.startswith(expected), (
+            f"{name} published {dim.attributions[0].value!r}, expected the "
+            f"none-observed value {expected!r}"
+        )
 
     # The content-derived half of the same profile must NOT have moved: an unread
-    # file could genuinely hide a Makefile target or a parsed convention.
-    for name in ("testability.test-entrypoint", "assurance.conventions-observed"):
+    # file could genuinely hide a Makefile target, a nested-project override or a
+    # parsed convention.
+    #
+    # SUE-580 S1: this list covers EVERY content-derived dimension whose
+    # none-observed branch this fixture can reach, not just the two it used to
+    # name. `_SubjectDerivation` is a hand-maintained per-call-site judgement and
+    # only the safe direction was guarded: mismarking a CONTENT subject as NAME
+    # publishes an absence claim over ground the walk could not read, and the
+    # suite stayed green through a three-way flip of
+    # `repository.ownership-boundaries`, `testability.lint-type-entrypoint` and
+    # `testability.ci-entrypoint`. Flipping any one of these to NAME now fails
+    # here. (`repository.revision` is the sixth CONTENT call site; its
+    # none-observed branch is unreachable from a real walk, so it is covered at
+    # unit level by the table test below.)
+    for name in (
+        "repository.ownership-boundaries",
+        "testability.test-entrypoint",
+        "testability.lint-type-entrypoint",
+        "testability.ci-entrypoint",
+        "assurance.conventions-observed",
+    ):
         assert by_name[name].resolution is ProfileResolution.UNKNOWN, (
-            f"{name} is derived from file content; an unread file must keep it UNKNOWN"
+            f"{name} is derived from file content; an unread file must keep it "
+            f"UNKNOWN, got {by_name[name].resolution} "
+            f"{[a.value for a in by_name[name].attributions]}"
         )
+
+
+#: Every ``_SubjectDerivation.CONTENT`` call site in ``profile/synth.py``, and
+#: every ``NAME`` one, as of SUE-580. A dimension moving between these lists is
+#: a deliberate re-classification of what evidence decides its emptiness, and
+#: must be made here as well as at the call site.
+_CONTENT_DERIVED_DIMENSIONS = (
+    "repository.revision",
+    "repository.ownership-boundaries",
+    "testability.test-entrypoint",
+    "testability.lint-type-entrypoint",
+    "testability.ci-entrypoint",
+    "assurance.conventions-observed",
+)
+
+_NAME_DERIVED_DIMENSIONS = (
+    "repository.structure",
+    "repository.package-metadata",
+    "repository.foundry-artifacts",
+    "testability.config-schema",
+    "operating.deploy-surface",
+    "integration.config-surface",
+    "instruction.fragmentation",
+)
+
+
+def test_c_every_content_derived_dimension_is_gated_on_the_content_hole() -> None:
+    """SUE-580 S1. The unguarded direction of the `_SubjectDerivation` judgement.
+
+    The classification is correct today, but only its *safe* direction had a
+    test: marking a NAME subject as CONTENT costs a little precision and was
+    caught, while marking a CONTENT subject as NAME publishes a confident
+    absence over bytes the walk never read and was caught by nothing. A probe
+    flipping three CONTENT call sites to NAME in one patch left the entire suite
+    green.
+
+    Every content-derived dimension must therefore be UNKNOWN over a
+    ``file-read-skipped`` observation, and — so this cannot be satisfied by
+    over-gating everything — every name-derived dimension must stay RESOLVED
+    over the same evidence.
+    """
+    unread = ProjectObservation(
+        subject="file-read-skipped",
+        content="file exceeds read limit (99999 > 10 bytes): big.py",
+        provenance=Provenance(kind=ProvenanceKind.OBSERVED, confidence=1.0, source_ref="big.py"),
+    )
+    by_name = {
+        d.dimension: d
+        for d in synthesize_project_profile(_minimal_intake(observations=[unread])).dimensions
+    }
+
+    for name in _CONTENT_DERIVED_DIMENSIONS:
+        assert by_name[name].resolution is ProfileResolution.UNKNOWN, (
+            f"{name} is classified CONTENT but published an absence over an "
+            f"unread file: {by_name[name].resolution} "
+            f"{[a.value for a in by_name[name].attributions]}"
+        )
+
+    for name in _NAME_DERIVED_DIMENSIONS:
+        assert by_name[name].resolution is ProfileResolution.RESOLVED, (
+            f"{name} is classified NAME and is settled by the entry list, but an "
+            f"unrelated unread file made it {by_name[name].resolution}"
+        )
+
+
+def test_c_nested_project_boundary_scopes_the_none_observed_claims_it_creates(
+    tmp_path: Path,
+) -> None:
+    """SUE-580 S3. An owner-declared exclusion must scope its own absences.
+
+    ``_scope_none_observed`` already scopes a "none observed" claim when
+    ``SKIP_DIR_NAMES`` caused a skip, on the stated reasoning that such a claim
+    "must not read as universal". A nested-project boundary excludes ground for
+    a different reason with the identical effect — and, on this branch, an owner
+    may apply it to an arbitrary *markerless* directory. Without scoping, a
+    reader of ``operating.deploy-surface`` alone is told at OBSERVED 1.0 that no
+    deploy surface exists in a repository that contains a Dockerfile.
+    """
+    (tmp_path / ".foundry").mkdir()
+    (tmp_path / ".foundry" / "project.yaml").write_text(
+        "inspection:\n"
+        "  nested_project_overrides:\n"
+        "    exclude:\n"
+        "      - src\n"
+    )
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "Dockerfile").write_text("FROM python:3.12\n")
+    (tmp_path / "README.md").write_text("# sample\n")
+
+    intake = inspect_project(tmp_path)
+    assert any(
+        obs.subject == "nested-project" and obs.provenance.source_ref == "src"
+        for obs in intake.observations
+    ), "the fixture's owner-declared exclusion must actually apply"
+
+    by_name = {d.dimension: d for d in synthesize_project_profile(intake).dimensions}
+    deploy = by_name["operating.deploy-surface"]
+    assert deploy.resolution is ProfileResolution.RESOLVED
+    value = deploy.attributions[0].value
+    assert value.startswith("none-observed"), value
+    assert "nested project boundaries" in value and "src" in value, (
+        "a 'none observed' claim created by an owner-declared exclusion must name "
+        f"that exclusion rather than read as universal, got {value!r}"
+    )
 
 
 def test_c_a_path_hole_still_gates_filename_derived_absence(tmp_path: Path) -> None:

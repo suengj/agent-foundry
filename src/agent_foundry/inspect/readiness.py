@@ -37,19 +37,58 @@ only observations, not as a default the pipeline is content to take.
 the walk never even saw, so it does not know what is there — not even a
 filename. ``file-read-skipped`` is different in kind: the walk saw the entry,
 recorded its name, and only declined to read its *content* (see
-``DEFAULT_MAX_FILE_BYTES``). Every dimension finding in this module is derived
-from filename/path presence — a deploy marker, an integration-config filename,
-a package-metadata filename, an agent-instruction-surface path, and so on —
-never from what is inside the file. So a size-skipped file cannot make any of
-those findings unknown: the walk already knows the name either way. Only the
-single ``inspection-completeness`` summary finding, which describes the walk
-as a whole rather than any one dimension, folds the content hole in alongside
-the path holes. Should a future dimension in this module ever be derived from
-file *content* rather than filename presence, it would need to gate on
-``_content_hole_descriptions`` (or the combined ``_hole_descriptions``)
-directly, the way ``profile/synth.py``'s ``_traversal_exhaustive`` (which takes
-an ``unread_file_count`` of its own, for content-derived profile dimensions)
-already must.
+``DEFAULT_MAX_FILE_BYTES``).
+
+*Most* dimension findings in this module are derived from filename/path
+presence — a deploy marker, an integration-config filename, a package-metadata
+filename, an agent-instruction-surface path — and for those a size-skipped file
+cannot manufacture uncertainty: the walk knows the name either way. They gate on
+``_traversal_exhaustive`` (path holes only).
+
+``testability`` is **not** one of them. An earlier version of this docstring
+claimed that every dimension here was filename-derived; that claim was false,
+and the finding it excused was a confident false negative. ``test-entrypoint``
+is emitted both by filename markers (``pytest.ini``, ``conftest.py``, ...) *and*
+by a ``test:`` target parsed out of the Makefile's bytes
+(``_MAKEFILE_TARGET_SUBJECTS`` in ``inspect/collectors.py``), so an unread
+Makefile hides exactly the evidence whose absence would otherwise be reported at
+0.7 confidence. It therefore gates on ``_content_traversal_exhaustive``,
+agreeing with ``profile/synth.py``, which already classifies that same subject
+as ``_SubjectDerivation.CONTENT``.
+
+The full per-dimension audit is recorded here so the next reader does not have
+to redo it, and so a wrong blanket claim cannot survive a second time:
+
+* ``repository-legibility`` — ``repository-structure``: entry counts and
+  top-level names taken off the walked entry list. NAME.
+* ``reproducibility`` — ``package-metadata`` (filename match against
+  ``PACKAGE_METADATA_FILES``) or ``foundry-artifact`` (a ``.foundry/`` path
+  prefix). NAME. The content-derived ``foundry-declaration`` subject is
+  deliberately not consulted, so no file is read to decide this.
+* ``testability`` — ``test-entrypoint``. **CONTENT**: Makefile ``test:`` target.
+* ``observability`` — a constant finding; it asserts no absence at all.
+* ``authority-ownership-clarity`` — ``project-docs`` (``docs/ai/`` prefix, ``.md``
+  suffix) and ``agent-instruction-surface`` (``AGENT_RULE_RELATIVE_PATHS`` plus
+  the ``.cursor/rules`` prefix). NAME.
+* ``runtime-isolation`` — ``runtime-deploy-hint``: deploy marker filenames and
+  the ``deploy/`` prefix. NAME.
+* ``credential-permission-isolation`` — ``integration-config``: marker
+  filenames (``.env.example`` and friends). NAME.
+* ``fragmented-agent-rule-surfaces`` — observation ``source_ref`` paths spelling
+  ``AGENTS`` / ``CLAUDE`` / ``.cursor``. That a path exists is a name fact no
+  matter which collector emitted the observation carrying it. NAME.
+* ``unreconciled-subject-mentions`` — ``ConventionSpec`` records, which *are*
+  content-derived (``inspect/conventions.py``). This finding is emitted only
+  when two or more such records exist: it makes no absence claim, so a content
+  hole has nothing here to falsify. Should it ever grow an ``else`` branch, that
+  branch must gate on ``_content_traversal_exhaustive``.
+* ``inspection-completeness`` — reports every hole, path and content alike.
+
+A future dimension derived from file *content* must gate on
+``_content_traversal_exhaustive`` and pass ``_hole_descriptions`` (not
+``_path_hole_descriptions``) to ``_unknown_absence_message``. A filename-derived
+one keeps ``_traversal_exhaustive``. ``profile/synth.py``'s
+``_SubjectDerivation`` makes the same distinction per call site.
 """
 
 from __future__ import annotations
@@ -117,11 +156,12 @@ def _content_hole_descriptions(*, unread_file_count: int) -> list[str]:
 
     A size-skipped file is not an unobserved path — the walk saw it, named it,
     and knows exactly where it is; only its content is unread. This can only
-    ever affect a finding whose truth depends on file content. A finding
-    derived purely from filename/path presence (deploy markers, integration
-    markers, package-metadata filenames, agent-instruction filenames, and so
-    on — every dimension this module currently derives) is unaffected: the
-    walk already knows the name either way.
+    ever affect a finding whose truth depends on file content — in this module,
+    ``testability``, whose ``test-entrypoint`` subject is also emitted from a
+    Makefile ``test:`` target. A finding derived purely from filename/path
+    presence (deploy markers, integration markers, package-metadata filenames,
+    agent-instruction filenames) is unaffected: the walk already knows the name
+    either way. The module docstring carries the per-dimension audit.
     """
     if unread_file_count:
         return [f"{unread_file_count} file(s) skipped for exceeding the read-size limit"]
@@ -149,28 +189,139 @@ def _traversal_exhaustive(
 ) -> bool:
     """True only when the walk left no genuine *path* hole in the ground it covered.
 
-    Every finding in this module that consults this flag is derived from
-    filename/path presence, never from file content, so a content-only hole
-    (a file skipped for size) must never make such a finding read as unknown —
-    the walk still knows the file's name. Only a path hole — ground the walk
-    could not even see — can make a filename-derived finding genuinely unknown.
+    This is the gate for a *name-derived* absence only. Such a finding is
+    settled by the entry list, so a content-only hole (a file skipped for size)
+    must never make it read as unknown — the walk still knows the file's name,
+    and three oversized source files cannot change whether a ``Dockerfile``
+    exists. Only a path hole — ground the walk could not even see — can make a
+    filename-derived finding genuinely unknown.
+
+    A *content-derived* absence needs more than this and must call
+    ``_content_traversal_exhaustive`` instead.
     """
     return not _path_hole_descriptions(observations, stats)
 
 
-def _scope_absence(message: str, stats: TraversalStats | None) -> str:
-    """Qualify a resolved "none observed" claim when directories were skipped.
+def _content_traversal_exhaustive(
+    observations: list[ProjectObservation],
+    stats: TraversalStats | None,
+    *,
+    unread_file_count: int,
+) -> bool:
+    """True only when the walk left no genuine hole at all — path *or* content.
+
+    This is the gate for an absence claim whose truth depends on what is inside
+    a file. A file skipped for exceeding the read-size limit might hold exactly
+    the thing whose absence is being reported (a Makefile ``test:`` target), so
+    reporting "none observed" over it is a confident false negative, not an
+    observation. Deliberately coarse, exactly as
+    ``profile.synth._traversal_exhaustive`` is: any unread file anywhere forces
+    every content-derived absence in this module to "not confirmed", because
+    mapping each dimension to the specific files whose content could affect it
+    would need updating every time a collector started reading a new file, and a
+    stale mapping there fails open precisely where this module must fail closed.
+    """
+    return _traversal_exhaustive(observations, stats) and unread_file_count == 0
+
+
+#: Imported from the collector that writes it rather than spelled again here. The
+#: ``nested-project`` subject also carries override *decisions* — including rejected
+#: ones, whose ``source_ref`` is a path that is not a boundary at all — and
+#: supersession notes, so the subject alone cannot answer "which subtrees were
+#: excluded", and this prefix is what separates a boundary record from the rest.
+#: Re-typing it here would put the same string in two places and let the reader
+#: drift silently away from the writer, which is exactly how a scope note goes
+#: missing without any test noticing.
+from agent_foundry.inspect.collectors import (  # noqa: E402  (placed with its rationale)
+    NESTED_BOUNDARY_CONTENT_PREFIX,
+)
+
+
+def owner_excluded_nested_boundary_refs(
+    observations: list[ProjectObservation],
+) -> list[str]:
+    """Owner-*declared* nested-project exclusions, sorted. Not manifest-detected ones.
+
+    Only the owner-declared half scopes a "none observed" claim, and the
+    asymmetry is deliberate rather than an oversight in the other direction.
+
+    A subtree that carries its own project manifest is a *different project*.
+    Every claim in a readiness report or a profile is scoped to "this project"
+    already, so the nested project's files were never candidates for it: nothing
+    about "no deploy surface in this project" becomes less true because some
+    other project living in a subdirectory has a Dockerfile.
+    ``tests/e2e/test_e2e_project_boundary.py`` states that contract directly —
+    planting a whole second project inside the target must change *nothing*
+    about the target's diagnosis except the recorded boundary — and adding the
+    subtree's name to every absence message would break it, in service of an
+    ambiguity that does not exist.
+
+    An owner-declared exclusion is a different thing. It can be applied to an
+    arbitrary **markerless** directory, so the excluded ground carries no signal
+    of its own that it belongs to a separate project; by every structural
+    measure it is part of this one, and the owner has simply asked that it not
+    be treated as evidence. There "none observed" genuinely does read as a
+    universal claim over ground the report knowingly did not cover — a
+    repository with ``exclude: [src]`` and a ``src/Dockerfile`` would otherwise
+    be published as having no deploy surface at all — which is exactly what
+    ``_scope_absence`` exists to prevent for a skipped directory.
+
+    Identified by the content prefix *and* by ``DECLARED`` provenance, both of
+    which ``collect_nested_project_observations`` sets for precisely this case:
+    the ``nested-project`` subject also carries override *decisions* (rejected
+    ones name a path that is not a boundary at all) and supersession notes,
+    which the prefix filters out, and manifest-detected boundaries, which the
+    provenance kind filters out. This couples the helper to that collector's
+    wording; the end-to-end scoping tests fail loudly if it drifts rather than
+    silently dropping the scope note.
+    """
+    return sorted(
+        {
+            obs.provenance.source_ref
+            for obs in observations
+            if obs.subject == "nested-project"
+            and obs.provenance.kind is ProvenanceKind.DECLARED
+            and obs.content.startswith(NESTED_BOUNDARY_CONTENT_PREFIX)
+            and obs.provenance.source_ref
+        }
+    )
+
+
+def _scope_absence(
+    message: str,
+    stats: TraversalStats | None,
+    *,
+    nested_boundaries: list[str] | None = None,
+) -> str:
+    """Qualify a resolved "none observed" claim by the ground it does not cover.
 
     Mirrors ``profile.synth._scope_none_observed``: "none observed" is only ever
     a claim about the ground the walk actually covered, and a `.git`-style skip
     (true of nearly every real repository) must not silently read as universal.
+
+    An *owner-declared* nested-project exclusion is an exclusion of exactly the
+    same kind and gets exactly the same treatment. It is arguably the more
+    urgent of the two, because an owner may declare an arbitrary *markerless*
+    directory excluded: with such an exclusion covering a directory that holds a
+    container manifest, this module would otherwise report no deploy surface at
+    all, as a flat unscoped claim. That the exclusion is recoverable by
+    cross-referencing another finding is precisely the cross-referencing this
+    scoping exists to make unnecessary.
+
+    A *manifest-detected* nested project is not scoped here; see
+    ``owner_excluded_nested_boundary_refs`` for why the two differ.
     """
-    if stats is None or stats.entries_skipped_ignored_dir <= 0:
+    scopes: list[str] = []
+    if stats is not None and stats.entries_skipped_ignored_dir > 0:
+        scopes.append(
+            "skipped directories; "
+            f"entries_skipped_ignored_dir={stats.entries_skipped_ignored_dir}"
+        )
+    if nested_boundaries:
+        scopes.append("nested project boundaries: " + ", ".join(nested_boundaries))
+    if not scopes:
         return message
-    return (
-        f"{message} (outside skipped directories; "
-        f"entries_skipped_ignored_dir={stats.entries_skipped_ignored_dir})"
-    )
+    return f"{message} (outside {' and '.join(scopes)})"
 
 
 def _unknown_absence_message(topic: str, holes: list[str]) -> str:
@@ -194,10 +345,14 @@ def _inspection_completeness_finding(
     else, whether every other "not observed" finding in this report reflects a
     genuine absence or an unobserved region.
     """
-    holes = _hole_descriptions(observations, stats, unread_file_count=unread_file_count)
+    path_holes = _path_hole_descriptions(observations, stats)
+    content_holes = _content_hole_descriptions(unread_file_count=unread_file_count)
+    holes = path_holes + content_holes
     if not holes:
         message = _scope_absence(
-            "Inspection walked the tree without leaving a genuine hole", stats
+            "Inspection walked the tree without leaving a genuine hole",
+            stats,
+            nested_boundaries=owner_excluded_nested_boundary_refs(observations),
         )
         return _finding(
             "inspection-completeness",
@@ -207,14 +362,28 @@ def _inspection_completeness_finding(
             confidence=1.0,
         )
     detail = "; ".join(holes)
+    # The summary must not vouch for more than the report actually does. A path
+    # hole withholds every absence claim here; a content-only hole withholds
+    # only the content-derived ones (``testability``), because a filename-derived
+    # absence is still directly observed over an unread file. Saying "findings
+    # elsewhere ... are withheld" in that second case would certify something
+    # false about the findings sitting next to it.
+    if path_holes:
+        scope = (
+            "Findings elsewhere in this report that would otherwise read as "
+            "confirmed absence are withheld or explicitly qualified instead."
+        )
+    else:
+        scope = (
+            "Content-derived findings elsewhere in this report that would otherwise "
+            "read as confirmed absence are withheld or explicitly qualified instead; "
+            "filename-derived findings still stand, because the walk recorded every "
+            "name it saw."
+        )
     return _finding(
         "inspection-completeness",
         ConsequenceClass.HIGH,
-        (
-            f"Inspection was not fully observed: {detail}. Findings elsewhere in this "
-            "report that would otherwise read as confirmed absence are withheld or "
-            "explicitly qualified instead."
-        ),
+        f"Inspection was not fully observed: {detail}. {scope}",
         kind=ProvenanceKind.OBSERVED,
         confidence=0.0,
     )
@@ -236,12 +405,24 @@ def assess_readiness(
         if obs.provenance.source_ref
     }
     unread_file_count = sum(1 for obs in observations if obs.subject == "file-read-skipped")
-    # Every dimension finding below is derived from filename/path presence, never
-    # from file content, so it is gated on path holes only — a size-skipped file's
-    # content is irrelevant to whether the walk observed its name. Only the
-    # inspection-completeness summary (below) reports the content hole too.
+    # Two gates, because this module publishes two kinds of absence claim. Most
+    # dimensions below are decided by filename/path presence and are gated on
+    # path holes only: a size-skipped file's content is irrelevant to whether the
+    # walk observed its name, and degrading them over it would launder a hole in
+    # one dimension's evidence into a hole in another's. `testability` is the
+    # exception — `test-entrypoint` is also emitted from a Makefile `test:`
+    # target — so it gates on the content hole as well. The module docstring
+    # carries the per-dimension audit behind that split.
     exhaustive = _traversal_exhaustive(observations, stats)
     holes = _path_hole_descriptions(observations, stats)
+    content_exhaustive = _content_traversal_exhaustive(
+        observations, stats, unread_file_count=unread_file_count
+    )
+    content_holes = _hole_descriptions(observations, stats, unread_file_count=unread_file_count)
+    # A resolved "none observed" claim is scoped by every exclusion that shaped
+    # the evidence — deliberately skipped directories and owner/manifest nested
+    # project boundaries alike.
+    nested_boundaries = owner_excluded_nested_boundary_refs(observations)
 
     if "repository-structure" in subjects:
         findings.append(
@@ -268,7 +449,11 @@ def assess_readiness(
             _finding(
                 "repository-legibility",
                 ConsequenceClass.HIGH,
-                _scope_absence("Repository structure could not be established", stats),
+                _scope_absence(
+                    "Repository structure could not be established",
+                    stats,
+                    nested_boundaries=nested_boundaries,
+                ),
                 blocker=True,
                 confidence=0.5,
             )
@@ -303,6 +488,7 @@ def assess_readiness(
                 _scope_absence(
                     "No package metadata or Foundry declaration observed for reproducibility",
                     stats,
+                    nested_boundaries=nested_boundaries,
                 ),
                 confidence=0.6,
             )
@@ -319,12 +505,16 @@ def assess_readiness(
                 confidence=0.9,
             )
         )
-    elif not exhaustive:
+    elif not content_exhaustive:
+        # CONTENT-derived: `test-entrypoint` comes from marker filenames *and*
+        # from a `test:` target parsed out of the Makefile's bytes, so an unread
+        # Makefile is a genuine hole in this dimension's evidence. `content_holes`
+        # (not `holes`) so the message names the read-size skip that caused it.
         findings.append(
             _finding(
                 "testability",
                 ConsequenceClass.MEDIUM,
-                _unknown_absence_message("Test entrypoints", holes),
+                _unknown_absence_message("Test entrypoints", content_holes),
                 confidence=0.0,
             )
         )
@@ -333,7 +523,11 @@ def assess_readiness(
             _finding(
                 "testability",
                 ConsequenceClass.MEDIUM,
-                _scope_absence("No test entrypoints observed", stats),
+                _scope_absence(
+                    "No test entrypoints observed",
+                    stats,
+                    nested_boundaries=nested_boundaries,
+                ),
                 confidence=0.7,
             )
         )
@@ -373,7 +567,11 @@ def assess_readiness(
             _finding(
                 "authority-ownership-clarity",
                 ConsequenceClass.MEDIUM,
-                _scope_absence("No project docs or agent instruction surfaces observed", stats),
+                _scope_absence(
+                    "No project docs or agent instruction surfaces observed",
+                    stats,
+                    nested_boundaries=nested_boundaries,
+                ),
                 confidence=0.65,
             )
         )
@@ -403,7 +601,11 @@ def assess_readiness(
             _finding(
                 "runtime-isolation",
                 ConsequenceClass.LOW,
-                _scope_absence("No deploy/runtime surfaces observed in repository inventory", stats),
+                _scope_absence(
+                    "No deploy/runtime surfaces observed in repository inventory",
+                    stats,
+                    nested_boundaries=nested_boundaries,
+                ),
                 confidence=0.5,
             )
         )
@@ -433,7 +635,11 @@ def assess_readiness(
             _finding(
                 "credential-permission-isolation",
                 ConsequenceClass.LOW,
-                _scope_absence("No integration declaration surfaces observed", stats),
+                _scope_absence(
+                    "No integration declaration surfaces observed",
+                    stats,
+                    nested_boundaries=nested_boundaries,
+                ),
                 confidence=0.55,
             )
         )
@@ -495,7 +701,11 @@ def assess_readiness(
             _finding(
                 "fragmented-agent-rule-surfaces",
                 ConsequenceClass.MEDIUM,
-                _scope_absence("No agent instruction surfaces observed", stats),
+                _scope_absence(
+                    "No agent instruction surfaces observed",
+                    stats,
+                    nested_boundaries=nested_boundaries,
+                ),
                 confidence=0.6,
             )
         )
