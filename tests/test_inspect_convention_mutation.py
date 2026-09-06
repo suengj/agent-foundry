@@ -131,10 +131,21 @@ def test_package_json_with_no_test_script_yields_nothing(tmp_path: Path) -> None
     assert _conventions(intake, TEST_INVOCATION_SUBJECT) == []
 
 
-def test_package_json_test_script_that_deliberately_fails_is_not_pytest(
+def test_package_json_test_script_that_deliberately_fails_is_declared_verbatim_not_pytest(
     tmp_path: Path,
 ) -> None:
-    """``scripts.test`` exists and is non-empty, but names no test runner at all."""
+    """``scripts.test`` exists, is non-empty, and names no test runner Foundry
+    recognises — but it is still a real declaration the project owner wrote.
+
+    This is the exact shape of SUE-580's S4 defect: a ``scripts.test`` entry
+    Foundry successfully parses must never be discarded into "no test
+    entrypoint observed" just because the command is not one it recognises as
+    a runner. The correct claim is a DECLARED ``test-invocation`` convention
+    that quotes the command verbatim, asserting nothing about which runner (if
+    any) it is — not "no convention whatsoever" (this file's previous
+    assertion here, which was itself the false negative under review), and
+    not a guessed pytest/other-runner claim either.
+    """
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "package.json").write_text(
@@ -147,7 +158,17 @@ def test_package_json_test_script_that_deliberately_fails_is_not_pytest(
         encoding="utf-8",
     )
     intake = inspect_project(repo)
-    assert _conventions(intake, TEST_INVOCATION_SUBJECT) == []
+
+    found = _conventions(intake, TEST_INVOCATION_SUBJECT)
+    assert len(found) == 1
+    convention = found[0]
+    assert convention.source_ref == "package.json"
+    assert convention.provenance.kind is ProvenanceKind.DECLARED
+    assert convention.confidence == STRUCTURED_CONFIDENCE
+    assert convention.pattern == (
+        'package.json \'test\' script is "echo \\"no tests\\" && exit 1"'
+    )
+    assert "pytest" not in convention.pattern
 
 
 def test_makefile_test_target_with_empty_recipe_yields_nothing(tmp_path: Path) -> None:

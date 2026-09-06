@@ -26,7 +26,10 @@ observation model:
   agent instruction surfaces, and so on), grouped by the fixed observation
   ``subject`` vocabulary the inspector's collectors already emit.
 * ``intake.conventions`` — for a compact summary of which convention categories
-  were discovered.
+  were discovered, each published with the strongest evidence backing that
+  category and the provenance kind that evidence carries (see
+  ``_conventions_dimension``: a joined summary must never restate a DECLARED fact
+  as INFERRED, nor floor one subject's confidence on an unrelated subject's).
 * ``intake.traversal_stats`` — both to gate "absence" claims (see below) and to
   report the walk's own coverage as first-class dimensions.
 
@@ -47,10 +50,17 @@ those two golden files byte-identical to pass review.
 dimension sourced from ``classification_findings`` (state, impact, execution,
 assurance, access, work-mode, artifact, intake-mode facts), the *complete*
 absence of a valued finding always yields ``UNKNOWN`` — never a value guessed
-from silence, regardless of how much of the tree was walked. The one exception is
-a small family of purely structural "is file/marker X present anywhere in the
-walked tree" dimensions (test harness markers, CI workflow files, deploy hints,
-and so on): here, and only when the traversal was *exhaustive* (see
+from silence, regardless of how much of the tree was walked. A finding that
+*exists* but whose value was itself chosen from silence — its reason enumerates
+signals that were checked and not found, which the producer marks with
+``ABSENCE_ENUMERATION_REASON_PREFIXES`` — answers to the same rule and is gated
+on ``_traversal_exhaustive`` in ``_classification_dimension``: ``intake_mode =
+greenfield`` must not be published over a repository whose CI workflow,
+container manifest and source tree simply sat past the walk's entry limit.
+
+The one exception is a small family of purely structural "is file/marker X
+present anywhere in the walked tree" dimensions (test harness markers, CI
+workflow files, deploy hints, and so on): here, and only when the traversal was *exhaustive* (see
 ``_traversal_exhaustive``), "no such marker was observed" is itself a directly
 observed fact — not a claim about safety, risk, or authority, and not drawn from
 a walk that hit a depth/entry limit, left a path unobservable, refused a
@@ -90,7 +100,10 @@ from agent_foundry.models.project import (
     ProjectProfile,
     TraversalStats,
 )
-from agent_foundry.inspect.classification import CLASSIFICATION_DIMENSIONS
+from agent_foundry.inspect.classification import (
+    CLASSIFICATION_DIMENSIONS,
+    reason_is_absence_enumeration,
+)
 
 # `authority.write_scope` is deliberately never echoed into a profile dimension.
 # Every other CLASSIFICATION_DIMENSIONS member is descriptive; this one names a
@@ -214,11 +227,33 @@ def _scope_none_observed(value: str, stats: TraversalStats) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _classification_dimension(name: str, findings: list[ClassificationFinding]) -> ProfileDimension:
+def _classification_dimension(
+    name: str,
+    findings: list[ClassificationFinding],
+    *,
+    exhaustive: bool,
+) -> ProfileDimension:
+    """Echo valued classification findings, gating the ones derived from absence.
+
+    A finding whose reason is an *enumeration of signals that were checked and
+    not found* (``reason_is_absence_enumeration``) is a claim about ground the
+    walk covered — exactly like a "no marker observed" structural fact, and
+    subject to the same rule. When the walk stopped at a depth/entry limit, hit
+    an unobservable path, refused a containment escape, or skipped a file for
+    size, the signals it enumerates may sit in the region it never looked at, so
+    the finding is dropped here and the dimension falls back to UNKNOWN rather
+    than publishing a confident negative (``intake_mode = greenfield`` over a
+    repository whose CI, Dockerfile and source tree were simply never reached).
+
+    Only the absence-derived findings are dropped: a declared or
+    positively-evidenced finding for the same dimension still resolves it, since
+    a truncated walk does not un-see what it did see.
+    """
     attributions = [
         _make_attribution(finding.value, finding.provenance, finding.evidence_refs)
         for finding in findings
         if finding.value is not None
+        and not (reason_is_absence_enumeration(finding.reason) and not exhaustive)
     ]
     return _dimension(name, attributions)
 
@@ -317,11 +352,65 @@ def _conventions_dimension(
         value = _scope_none_observed("no-conventions-observed", stats)
         return _dimension(name, [_make_attribution(value, provenance, [])])
 
-    value = ", ".join(sorted({convention.subject for convention in conventions}))
-    confidences = [convention.confidence for convention in conventions]
-    confidence = min(confidences) if confidences else None
+    # One composite fact, not competing alternatives: "a test-invocation convention
+    # and a git-policy convention were both discovered" is a single joined value in
+    # exactly the way `_repository_structure_dimension` joins co-existing structural
+    # facts — splitting it into one attribution per subject would make `_dimension`
+    # read four co-existing conventions as CONFLICTED.
+    #
+    # What the composite must NOT do is launder the evidence it aggregates. Two
+    # things are computed per *subject*, because a subject is the thing a claim is
+    # about; conventions with different subjects are not competing claims and must
+    # not be allowed to weaken or strengthen one another:
+    #
+    #   * strength — the strongest evidence discovered for that subject. A
+    #     `test-invocation` fact parsed out of `pyproject.toml` (DECLARED, 0.8) is
+    #     not made less true by a prose mention of `test-runner` in an instruction
+    #     file (INFERRED, 0.15); a global `min()` over every convention reported
+    #     exactly that, republishing an 0.8 declaration at 0.15.
+    #   * kind — the provenance kind backing that strongest evidence, preserved
+    #     rather than hardcoded. A dimension carrying nothing but DECLARED facts
+    #     said INFERRED before this, which is provenance laundering outright.
+    #
+    # A single ``Provenance`` cannot carry one confidence per subject, so the
+    # per-subject strength and kind are stated in the value itself — every subject
+    # is published with the evidence that actually backs it, and no consumer has to
+    # infer that a listed subject inherits the aggregate's number. The aggregate's
+    # own confidence is then the strongest evidence behind any listed subject
+    # (never the weakest, which floors an unrelated claim on an unrelated one), and
+    # its kind follows the `_aggregate_observation_dimension` precedent: a single
+    # contributing kind is preserved, a heterogeneous set is a derivation over
+    # disagreeing provenance and reports INFERRED.
+    by_subject: dict[str, list[ConventionSpec]] = {}
+    for convention in conventions:
+        by_subject.setdefault(convention.subject, []).append(convention)
+
+    parts: list[str] = []
+    subject_kinds: set[ProvenanceKind] = set()
+    subject_strengths: list[float] = []
+    for subject in sorted(by_subject):
+        subject_conventions = by_subject[subject]
+        strength = max(convention.confidence for convention in subject_conventions)
+        strongest_kinds = {
+            convention.provenance.kind
+            for convention in subject_conventions
+            if convention.confidence == strength
+        }
+        # Same rule as the aggregate one level up: if the strongest evidence for a
+        # single subject disagrees with itself about provenance, the subject's kind
+        # is a derivation over that disagreement, not either source's own claim.
+        subject_kind = (
+            next(iter(strongest_kinds)) if len(strongest_kinds) == 1 else ProvenanceKind.INFERRED
+        )
+        subject_kinds.add(subject_kind)
+        subject_strengths.append(strength)
+        parts.append(f"{subject} ({subject_kind.value} {strength:.2f})")
+
+    value = ", ".join(parts)
+    kind = next(iter(subject_kinds)) if len(subject_kinds) == 1 else ProvenanceKind.INFERRED
+    confidence = max(subject_strengths)
     evidence_refs = sorted({convention.source_ref for convention in conventions if convention.source_ref})
-    provenance = Provenance(kind=ProvenanceKind.INFERRED, confidence=confidence, source_ref=None)
+    provenance = Provenance(kind=kind, confidence=confidence, source_ref=None)
     return _dimension(name, [_make_attribution(value, provenance, evidence_refs)])
 
 
@@ -397,6 +486,13 @@ def synthesize_project_profile(intake: ProjectIntake) -> ProjectProfile:
     """
     stats = intake.traversal_stats
     grouped = _group_classification_findings(intake.classification_findings)
+    # The same exhaustiveness gate the observation-derived dimensions use, computed
+    # once here because `classification_findings` is the third producer feeding this
+    # profile and its absence-derived findings answer to the identical rule.
+    unread_file_count = sum(
+        1 for obs in intake.observations if obs.subject == "file-read-skipped"
+    )
+    exhaustive = _traversal_exhaustive(stats, unread_file_count=unread_file_count)
 
     dimensions: list[ProfileDimension] = []
     for classification_dimension in CLASSIFICATION_DIMENSIONS:
@@ -404,7 +500,9 @@ def synthesize_project_profile(intake: ProjectIntake) -> ProjectProfile:
             continue
         dimensions.append(
             _classification_dimension(
-                classification_dimension, grouped.get(classification_dimension, [])
+                classification_dimension,
+                grouped.get(classification_dimension, []),
+                exhaustive=exhaustive,
             )
         )
 

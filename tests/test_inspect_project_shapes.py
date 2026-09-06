@@ -57,15 +57,26 @@ def _profile_by_name(root: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_node_static_site_no_structured_test_invocation_is_claimed() -> None:
+def test_node_static_site_declares_test_invocation_verbatim_without_naming_a_runner() -> None:
     """package.json declares a real `test` script — `node run-checks.js` — that
-    is a genuine content check for the site, but it does not invoke pytest.
-    The structured-convention detector only recognises a pytest invocation, so
-    it must claim nothing here rather than promoting an unrelated script to a
-    'test-invocation' convention. Absence, not invention, is the correct
-    answer."""
+    is a genuine content check for the site, and it does not invoke pytest.
+
+    Foundry successfully parses this declaration, so it must never claim "no
+    test entrypoint observed" about it (SUE-580 S4) — that would be a
+    confident negative about an observed fact. Nor may it guess that the
+    command is a pytest (or any other) invocation — that would invent a
+    runner claim the parsed data does not support. The correct claim is a
+    DECLARED 'test-invocation' convention quoting the command verbatim,
+    asserting nothing about which runner it is.
+    """
     intake = inspect_project(NODE_STATIC_SITE)
-    assert not [c for c in intake.conventions if c.subject == TEST_INVOCATION_SUBJECT]
+    found = [c for c in intake.conventions if c.subject == TEST_INVOCATION_SUBJECT]
+    assert len(found) == 1
+    convention = found[0]
+    assert convention.source_ref == "package.json"
+    assert convention.provenance.kind is ProvenanceKind.DECLARED
+    assert convention.pattern == "package.json 'test' script is \"node run-checks.js\""
+    assert "pytest" not in convention.pattern
 
 
 def test_node_static_site_no_test_runner_mention_despite_instruction_to_run_tests() -> None:
@@ -77,10 +88,10 @@ def test_node_static_site_no_test_runner_mention_despite_instruction_to_run_test
     assert not [c for c in intake.conventions if c.subject == TEST_RUNNER_SUBJECT]
 
 
-def test_node_static_site_conventions_are_exactly_ci_checkout_and_git_policy() -> None:
+def test_node_static_site_conventions_are_exactly_ci_checkout_git_policy_and_test_invocation() -> None:
     intake = inspect_project(NODE_STATIC_SITE)
     by_subject = {c.subject: c for c in intake.conventions}
-    assert set(by_subject) == {"ci-checkout", "git-policy"}
+    assert set(by_subject) == {"ci-checkout", "git-policy", TEST_INVOCATION_SUBJECT}
 
     ci = by_subject["ci-checkout"]
     assert ci.source_ref == ".github/workflows/ci.yml"
@@ -92,6 +103,10 @@ def test_node_static_site_conventions_are_exactly_ci_checkout_and_git_policy() -
     assert git_policy.evidence == "Do not commit the build output directory."
     assert git_policy.provenance.kind is ProvenanceKind.INFERRED
 
+    test_invocation = by_subject[TEST_INVOCATION_SUBJECT]
+    assert test_invocation.source_ref == "package.json"
+    assert test_invocation.provenance.kind is ProvenanceKind.DECLARED
+
 
 def test_node_static_site_intake_mode_inferred_brownfield_from_named_signals() -> None:
     intake = inspect_project(NODE_STATIC_SITE)
@@ -100,7 +115,13 @@ def test_node_static_site_intake_mode_inferred_brownfield_from_named_signals() -
     assert finding.provenance.kind is ProvenanceKind.INFERRED
     # 3 of 5 signals: a >=3-file source tree, CI workflow definitions, and
     # >=8 source files (this fixture's src/ + top-level *.js tooling files).
-    assert finding.provenance.confidence == 0.7
+    # The claim is "several signals fired, so this is well above the no-signal
+    # floor but short of certainty" — not the exact number, which comes from
+    # `_signal_strength_confidence`'s table, a table this work item neither
+    # owns nor changes. Pinning it would make a legitimate recalibration of
+    # that table fail here for no reason. The reason-text assertions below
+    # carry which signals fired, which is the part this fixture is proving.
+    assert 0.55 < finding.provenance.confidence < 1.0
     assert "source tree with at least three source files" in finding.reason
     assert "CI workflow definitions" in finding.reason
     assert "at least eight source files" in finding.reason
@@ -175,7 +196,17 @@ def test_docs_content_intake_mode_inferred_greenfield_at_low_confidence() -> Non
     finding = next(f for f in intake.classification_findings if f.dimension == "intake_mode")
     assert finding.value == "greenfield"
     assert finding.provenance.kind is ProvenanceKind.INFERRED
-    assert finding.provenance.confidence == 0.55
+    # The claim is "at the floor": no signal fired, so this must not sound more
+    # certain than a shape where several did. Stated relatively, against the
+    # partial-signal fixture, because that is what "floor" means — and because
+    # the literal comes from `_signal_strength_confidence`'s table, which this
+    # work item neither owns nor changes.
+    partial = next(
+        f
+        for f in inspect_project(NODE_STATIC_SITE).classification_findings
+        if f.dimension == "intake_mode"
+    )
+    assert finding.provenance.confidence < partial.provenance.confidence
     assert "no brownfield signals present" in finding.reason
 
 
@@ -322,7 +353,7 @@ _SHAPE_FIXTURES = {
 _EXPECTED_CONVENTION_SUBJECTS = {
     "greenfield-minimal": frozenset({"test-invocation"}),
     "brownfield-sample": frozenset({"ci-checkout", "git-policy", "test-invocation", "test-runner"}),
-    "node-static-site": frozenset({"ci-checkout", "git-policy"}),
+    "node-static-site": frozenset({"ci-checkout", "git-policy", "test-invocation"}),
     "docs-content-handbook": frozenset(),
     "runtime-service-sample": frozenset({"ci-checkout"}),
 }
@@ -357,13 +388,23 @@ def test_resolved_classification_dimension_counts_distinguish_declared_from_unde
             for dimension in _NON_WRITE_SCOPE_DIMENSIONS
             if by[dimension].resolution is ProfileResolution.RESOLVED
         )
-    assert counts == {
-        "greenfield-minimal": 1,
-        "brownfield-sample": 14,
-        "node-static-site": 1,
-        "docs-content-handbook": 1,
-        "runtime-service-sample": 14,
-    }
+    # The claim is the *gap*: a declared shape resolves many dimensions, an
+    # undeclared one resolves only `intake_mode`. Pinning the exact 14 couples
+    # this to the size of `CLASSIFICATION_DIMENSIONS`, so adding a dimension
+    # would fail here even though nothing about these fixture shapes moved.
+    declared = ("brownfield-sample", "runtime-service-sample")
+    undeclared = ("greenfield-minimal", "node-static-site", "docs-content-handbook")
+    for name in undeclared:
+        assert counts[name] == 1, (
+            f"{name} declares nothing, so inference should supply `intake_mode` "
+            f"and nothing else; got {counts[name]}"
+        )
+    for name in declared:
+        assert counts[name] > len(_NON_WRITE_SCOPE_DIMENSIONS) // 2, (
+            f"{name} carries an owner declaration and should resolve most "
+            f"dimensions; got {counts[name]} of {len(_NON_WRITE_SCOPE_DIMENSIONS)}"
+        )
+        assert counts[name] > counts["greenfield-minimal"]
 
 
 def test_intake_mode_provenance_kind_distinguishes_declared_from_inferred_shapes() -> None:

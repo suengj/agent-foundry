@@ -463,3 +463,206 @@ def test_default_heuristic_pure_function_unaffected_by_import(tmp_path: Path) ->
     _plant_nested_project(root / "components", "other-service")
     entries = walk_repository(root).entries
     assert nested_project_roots(root, entries) == ["components/other-service"]
+
+
+# ---------------------------------------------------------------------------
+# A truncated walk must not report a false, confident "does not exist"
+# ---------------------------------------------------------------------------
+
+
+def test_override_exclude_naming_a_real_path_missed_by_a_truncated_walk_is_uncertain(
+    tmp_path: Path,
+) -> None:
+    """The path genuinely exists on disk; only the bounded walk never reached it.
+
+    Reproduces the exact scenario from review: a repo whose `.foundry/project.yaml`
+    declares `exclude: [zsub]`, inspected with a `max_entries` small enough that the
+    walk stops before visiting `zsub` at all. The override decision must not claim
+    the path "does not exist" (a false, confident statement), and must not be
+    reported at full confidence.
+    """
+    root = _target_project(tmp_path / "project")
+    zsub = root / "zsub"
+    zsub.mkdir()
+    (zsub / "notes.txt").write_text("vendored content\n", encoding="utf-8")
+    _write_override(root, exclude=["zsub"])
+
+    # Confirm the walk really is truncated before reaching zsub, and that zsub
+    # really does exist as a directory in the repository.
+    assert zsub.is_dir()
+    small_walk = walk_repository(root, max_entries=5)
+    assert small_walk.entry_limit_reached is True
+    assert not any(e.relative_path == "zsub" for e in small_walk.entries)
+
+    intake = inspect_project(root, max_entries=5)
+    assert intake.traversal_stats.entry_limit_reached is True
+
+    decisions = [
+        item
+        for item in intake.observations
+        if item.subject == "nested-project" and item.content.startswith("override exclude")
+    ]
+    assert len(decisions) == 1
+    decision = decisions[0]
+    assert "not applied" in decision.content
+    # Must not assert confident, false non-existence.
+    assert "does not exist" not in decision.content
+    # Must say the walk was incomplete, distinguishing "not found" from "confirmed absent".
+    assert "walk was incomplete" in decision.content
+    # Must not be reported at full confidence: this is a gap in evidence, not a
+    # settled fact.
+    assert decision.provenance.confidence is not None
+    assert decision.provenance.confidence < 1.0
+
+
+def test_override_exclude_naming_a_genuinely_nonexistent_path_stays_confident(
+    tmp_path: Path,
+) -> None:
+    """A complete walk that never finds the path is entitled to full confidence.
+
+    Guards the distinction the truncated-walk fix must preserve: when the walk is
+    NOT truncated, "does not exist" is a settled fact and stays at confidence 1.0.
+    """
+    root = _target_project(tmp_path / "project")
+    _write_override(root, exclude=["does/not/exist"])
+
+    intake = inspect_project(root)
+    assert intake.traversal_stats.entry_limit_reached is False
+    assert intake.traversal_stats.depth_limit_reached is False
+
+    decisions = [
+        item
+        for item in intake.observations
+        if item.subject == "nested-project" and item.content.startswith("override exclude")
+    ]
+    assert len(decisions) == 1
+    assert "does not exist" in decisions[0].content
+    assert decisions[0].provenance.confidence == 1.0
+
+
+def test_resolve_nested_project_boundaries_truncated_flag_via_pure_resolver(
+    tmp_path: Path,
+) -> None:
+    """Direct unit coverage of the pure resolver's `walk_truncated` parameter."""
+    root = _target_project(tmp_path / "project")
+    zsub = root / "zsub"
+    zsub.mkdir()
+    (zsub / "notes.txt").write_text("vendored\n", encoding="utf-8")
+
+    entries = walk_repository(root).entries
+    # Simulate a truncated walk that never reached zsub, even though it exists.
+    truncated_entries = [e for e in entries if not e.relative_path.startswith("zsub")]
+    assert not any(e.relative_path == "zsub" for e in truncated_entries)
+
+    overrides = NestedProjectOverrides(exclude=("zsub",))
+    _, decisions = resolve_nested_project_boundaries(
+        root, truncated_entries, overrides, walk_truncated=True
+    )
+    decision = next(d for d in decisions if d.path == "zsub")
+    assert decision.applied is False
+    assert decision.uncertain is True
+    assert "does not exist" not in decision.reason
+    assert "walk was incomplete" in decision.reason
+
+    # The same missing path, with the walk NOT reported as truncated, keeps the
+    # original confident phrasing and is not marked uncertain.
+    _, decisions_not_truncated = resolve_nested_project_boundaries(
+        root, truncated_entries, overrides, walk_truncated=False
+    )
+    decision_not_truncated = next(d for d in decisions_not_truncated if d.path == "zsub")
+    assert decision_not_truncated.uncertain is False
+    assert "does not exist" in decision_not_truncated.reason
+
+
+# ---------------------------------------------------------------------------
+# An owner-declared boundary is DECLARED provenance, never OBSERVED
+# ---------------------------------------------------------------------------
+
+
+def test_owner_declared_nested_project_boundary_is_declared_not_observed(
+    tmp_path: Path,
+) -> None:
+    """A markerless subtree excluded purely by owner declaration is not something
+    Foundry observed — it must carry `ProvenanceKind.DECLARED`, distinct from a
+    boundary the default heuristic actually found via a project manifest.
+    """
+    root = _target_project(tmp_path / "project")
+    _plant_markerless_subtree(root, "quiet-vendor")
+    _plant_nested_project(root / "components", "other-service")
+    _write_override(root, exclude=["quiet-vendor"])
+
+    intake = inspect_project(root)
+
+    boundary_observations = {
+        item.provenance.source_ref: item
+        for item in intake.observations
+        if item.subject == "nested-project" and item.content.startswith("nested project boundary")
+    }
+    assert set(boundary_observations) == {"quiet-vendor", "components/other-service"}
+
+    owner_declared = boundary_observations["quiet-vendor"]
+    assert owner_declared.provenance.kind.value == "declared"
+    assert "excluded by owner declaration" in owner_declared.content
+    assert "declares its own project manifest" not in owner_declared.content
+
+    manifest_detected = boundary_observations["components/other-service"]
+    assert manifest_detected.provenance.kind.value == "observed"
+    assert "declares its own project manifest" in manifest_detected.content
+
+
+# ---------------------------------------------------------------------------
+# A caller-supplied override must not silently discard the owner's declaration
+# ---------------------------------------------------------------------------
+
+
+def test_caller_supplied_override_records_the_superseded_owner_declaration(
+    tmp_path: Path,
+) -> None:
+    """Passing `nested_project_overrides` explicitly bypasses `.foundry/project.yaml`
+    for *effect*, but the owner's on-disk declaration — if present — must still be
+    recorded as superseded rather than vanishing without a trace.
+    """
+    root = _target_project(tmp_path / "project")
+    zsub = root / "zsub"
+    zsub.mkdir()
+    (zsub / "Dockerfile").write_text("FROM python:3.11-slim\n", encoding="utf-8")
+    _write_override(root, exclude=["zsub"])
+
+    # A caller supplies its own override directly (empty: no include/exclude at all).
+    intake = inspect_project(root, nested_project_overrides=NestedProjectOverrides())
+
+    # The owner's exclusion was NOT applied under the caller-supplied override:
+    # zsub/Dockerfile is attributed to the target.
+    assert any(
+        item.provenance.source_ref == "zsub/Dockerfile"
+        for item in intake.observations
+    )
+    # But its supersession is recorded, naming the on-disk source.
+    superseded = [
+        item
+        for item in intake.observations
+        if item.subject == "nested-project" and "superseded" in item.content
+    ]
+    assert len(superseded) == 1
+    assert ".foundry/project.yaml" in superseded[0].content
+    assert superseded[0].provenance.kind.value == "observed"
+
+
+def test_caller_supplied_override_matching_the_disk_declaration_is_not_reported_as_superseded(
+    tmp_path: Path,
+) -> None:
+    """No spurious "superseded" observation when the caller passes through the same
+    declaration that is already on disk — nothing was actually overridden."""
+    root = _target_project(tmp_path / "project")
+    _plant_markerless_subtree(root, "zsub")
+    _write_override(root, exclude=["zsub"])
+
+    same_override = load_nested_project_overrides(root, walk_repository(root).entries)
+    intake = inspect_project(root, nested_project_overrides=same_override)
+
+    superseded = [
+        item
+        for item in intake.observations
+        if item.subject == "nested-project" and "superseded" in item.content
+    ]
+    assert superseded == []

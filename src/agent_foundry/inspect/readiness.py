@@ -31,6 +31,25 @@ module can do, so a bounded or refused walk would report its absences as
 settled. That is why the call site builds ``TraversalStats`` before assessing
 readiness rather than after. The parameter stays optional for callers holding
 only observations, not as a default the pipeline is content to take.
+
+**Path hole vs. content hole.** ``depth_limit_reached`` / ``entry_limit_reached``
+/ ``entries_skipped_refused`` / ``path-unobservable`` are *path* holes: ground
+the walk never even saw, so it does not know what is there — not even a
+filename. ``file-read-skipped`` is different in kind: the walk saw the entry,
+recorded its name, and only declined to read its *content* (see
+``DEFAULT_MAX_FILE_BYTES``). Every dimension finding in this module is derived
+from filename/path presence — a deploy marker, an integration-config filename,
+a package-metadata filename, an agent-instruction-surface path, and so on —
+never from what is inside the file. So a size-skipped file cannot make any of
+those findings unknown: the walk already knows the name either way. Only the
+single ``inspection-completeness`` summary finding, which describes the walk
+as a whole rather than any one dimension, folds the content hole in alongside
+the path holes. Should a future dimension in this module ever be derived from
+file *content* rather than filename presence, it would need to gate on
+``_content_hole_descriptions`` (or the combined ``_hole_descriptions``)
+directly, the way ``profile/synth.py``'s ``_traversal_exhaustive`` (which takes
+an ``unread_file_count`` of its own, for content-derived profile dimensions)
+already must.
 """
 
 from __future__ import annotations
@@ -65,17 +84,19 @@ def _finding(
     )
 
 
-def _hole_descriptions(
+def _path_hole_descriptions(
     observations: list[ProjectObservation],
     stats: TraversalStats | None,
-    *,
-    unread_file_count: int,
 ) -> list[str]:
-    """Describe every genuine hole the walk left, in a fixed, deterministic order.
+    """Describe every genuine *path* hole the walk left, in fixed, deterministic order.
 
-    An empty list means the walked tree was covered without a hole — never that
-    nothing exists beyond it (a deliberately skipped directory is scoping, not a
-    hole, and is reported separately by ``_scope_absence``).
+    A path hole is a location the walk could not see at all — a depth or entry
+    limit, a containment refusal, or an unobservable path — as opposed to a
+    location the walk saw and named but whose *content* it declined to read
+    (``file-read-skipped``; see ``_content_hole_descriptions``). An empty list
+    means the walked tree's paths were covered without a hole — never that
+    nothing exists beyond it (a deliberately skipped directory is scoping, not
+    a hole, and is reported separately by ``_scope_absence``).
     """
     holes: list[str] = []
     if stats is not None:
@@ -88,19 +109,53 @@ def _hole_descriptions(
     unobservable_count = sum(1 for obs in observations if obs.subject == "path-unobservable")
     if unobservable_count:
         holes.append(f"{unobservable_count} unobservable path(s)")
-    if unread_file_count:
-        holes.append(f"{unread_file_count} file(s) skipped for exceeding the read-size limit")
     return holes
+
+
+def _content_hole_descriptions(*, unread_file_count: int) -> list[str]:
+    """Describe the genuine *content* hole a size-skipped file leaves.
+
+    A size-skipped file is not an unobserved path — the walk saw it, named it,
+    and knows exactly where it is; only its content is unread. This can only
+    ever affect a finding whose truth depends on file content. A finding
+    derived purely from filename/path presence (deploy markers, integration
+    markers, package-metadata filenames, agent-instruction filenames, and so
+    on — every dimension this module currently derives) is unaffected: the
+    walk already knows the name either way.
+    """
+    if unread_file_count:
+        return [f"{unread_file_count} file(s) skipped for exceeding the read-size limit"]
+    return []
+
+
+def _hole_descriptions(
+    observations: list[ProjectObservation],
+    stats: TraversalStats | None,
+    *,
+    unread_file_count: int,
+) -> list[str]:
+    """All genuine holes — path holes followed by content holes — for the
+    single, always-present inspection-completeness summary, which reports on
+    the walk as a whole rather than on any one filename-derived dimension.
+    """
+    return _path_hole_descriptions(observations, stats) + _content_hole_descriptions(
+        unread_file_count=unread_file_count
+    )
 
 
 def _traversal_exhaustive(
     observations: list[ProjectObservation],
     stats: TraversalStats | None,
-    *,
-    unread_file_count: int,
 ) -> bool:
-    """True only when the walk left no genuine hole in the ground it covered."""
-    return not _hole_descriptions(observations, stats, unread_file_count=unread_file_count)
+    """True only when the walk left no genuine *path* hole in the ground it covered.
+
+    Every finding in this module that consults this flag is derived from
+    filename/path presence, never from file content, so a content-only hole
+    (a file skipped for size) must never make such a finding read as unknown —
+    the walk still knows the file's name. Only a path hole — ground the walk
+    could not even see — can make a filename-derived finding genuinely unknown.
+    """
+    return not _path_hole_descriptions(observations, stats)
 
 
 def _scope_absence(message: str, stats: TraversalStats | None) -> str:
@@ -181,8 +236,12 @@ def assess_readiness(
         if obs.provenance.source_ref
     }
     unread_file_count = sum(1 for obs in observations if obs.subject == "file-read-skipped")
-    exhaustive = _traversal_exhaustive(observations, stats, unread_file_count=unread_file_count)
-    holes = _hole_descriptions(observations, stats, unread_file_count=unread_file_count)
+    # Every dimension finding below is derived from filename/path presence, never
+    # from file content, so it is gated on path holes only — a size-skipped file's
+    # content is irrelevant to whether the walk observed its name. Only the
+    # inspection-completeness summary (below) reports the content hole too.
+    exhaustive = _traversal_exhaustive(observations, stats)
+    holes = _path_hole_descriptions(observations, stats)
 
     if "repository-structure" in subjects:
         findings.append(

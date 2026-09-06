@@ -351,22 +351,35 @@ def test_readiness_no_longer_reports_surfaces_this_repository_does_not_have(
     fixture `Dockerfile`s and `env.example`s.
 
     This repository's own tree also has a handful of source files that exceed the
-    read-size limit (SUE-580) — a genuine hole the walk could not see through, so
-    neither dimension is allowed to assert a confident "no such surface" absence
-    claim any more; both must read as "not confirmed" instead, qualified by the
-    read-skipped-file hole that produced the uncertainty.
+    read-size limit (SUE-580) — but that is a *content* hole, not a *path* hole:
+    the walk saw and named every such file. Both `runtime-isolation` and
+    `credential-permission-isolation` are filename/path matchers over the entry
+    list (`collect_runtime_deploy_observations`, `collect_integration_observations`
+    in `inspect/collectors.py`) — neither one's answer can possibly change based
+    on what is *inside* an oversized file, since neither reads file content at
+    all. Gating them on the read-size hole manufactured uncertainty where
+    coverage was in fact complete: on a real repository, virtually any oversized
+    lockfile would degrade the whole readiness report to "not confirmed" across
+    every filename-derived dimension, which defeats the purpose of the finding.
+    So both must confidently assert absence here, not read as "not confirmed" —
+    this repository really does have no deploy/runtime or integration/credential
+    surfaces of its own, and the walk's coverage of *those filenames* was
+    complete regardless of the unrelated oversized source files.
+
+    (An earlier version of this test asserted the opposite — that the read-size
+    hole degraded both findings to "not confirmed". That was the defect this
+    test now guards against: SUE-580 S2.)
     """
     by_dimension = {
         finding.dimension: finding for finding in result.intake.readiness_findings
     }
-    assert "not confirmed" in by_dimension["runtime-isolation"].message
-    assert "not fully observed" in by_dimension["runtime-isolation"].message
+    assert "not confirmed" not in by_dimension["runtime-isolation"].message
+    assert "No deploy/runtime surfaces observed" in by_dimension["runtime-isolation"].message
+    assert "not confirmed" not in by_dimension["credential-permission-isolation"].message
     assert (
-        "file(s) skipped for exceeding the read-size limit"
-        in by_dimension["runtime-isolation"].message
+        "No integration declaration surfaces observed"
+        in by_dimension["credential-permission-isolation"].message
     )
-    assert "not confirmed" in by_dimension["credential-permission-isolation"].message
-    assert "not fully observed" in by_dimension["credential-permission-isolation"].message
 
 
 def test_the_retrofit_is_additive_and_the_declaration_is_kept(

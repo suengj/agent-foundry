@@ -133,17 +133,29 @@ def test_pyproject_name_drop_is_not_a_structured_declaration(
     assert _conventions(intake, TEST_INVOCATION_SUBJECT) == []
 
 
-def test_package_json_test_script_naming_something_else_is_not_pytest(
+def test_package_json_test_script_naming_something_else_is_declared_not_pytest(
     tmp_path: Path,
 ) -> None:
+    """A ``scripts.test`` naming a real runner Foundry does not special-case
+    (jest, here) is still a genuine declaration — it must be quoted verbatim as
+    a DECLARED ``test-invocation`` fact, never claimed to invoke pytest, and
+    never discarded as though nothing were declared."""
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "package.json").write_text(
-        '{"name": "demo", "scripts": {"test": "jest --coverage"}}\n',
+        '{\n  "name": "demo",\n  "scripts": {\n    "test": "jest --coverage"\n  }\n}\n',
         encoding="utf-8",
     )
     intake = inspect_project(repo)
-    assert _conventions(intake, TEST_INVOCATION_SUBJECT) == []
+
+    found = _conventions(intake, TEST_INVOCATION_SUBJECT)
+    assert len(found) == 1
+    convention = found[0]
+    assert convention.source_ref == "package.json"
+    assert convention.provenance.kind is ProvenanceKind.DECLARED
+    assert convention.confidence == STRUCTURED_CONFIDENCE
+    assert convention.pattern == "package.json 'test' script is \"jest --coverage\""
+    assert "pytest" not in convention.pattern
 
 
 def test_makefile_pytest_in_unrelated_target_is_not_structured(tmp_path: Path) -> None:

@@ -67,16 +67,25 @@ def _completeness_finding(findings):
     return matches[0]
 
 
+def _absence_shaped_dimensions() -> set[str]:
+    """Every dimension with a "found vs not found" shape, derived from the
+    findings themselves rather than hand-listed (SUE-580 S6): assess a fully
+    exhaustive walk that observed nothing beyond the base observations, and
+    collect every dimension whose resolved message reads as a plain "No ..."
+    absence claim. A dimension added to ``readiness.py`` without an
+    ``elif not exhaustive`` branch — the bug this suite exists to catch — still
+    shows up here automatically, because it still resolves to a "No ..."
+    message on a fully exhaustive walk; only the *gating* on incompleteness is
+    what could be silently missing, which is exactly what the tests below
+    check for each such dimension.
+    """
+    findings = assess_readiness(Path("."), _BASE_OBSERVATIONS, [], stats=_stats())
+    return {f.dimension for f in findings if f.message.startswith("No ")}
+
+
 def _absence_messages(findings) -> list[str]:
     """Every message from a dimension that has a "found vs not found" shape."""
-    absence_dims = {
-        "reproducibility",
-        "testability",
-        "authority-ownership-clarity",
-        "runtime-isolation",
-        "credential-permission-isolation",
-        "fragmented-agent-rule-surfaces",
-    }
+    absence_dims = _absence_shaped_dimensions()
     return [f.message for f in findings if f.dimension in absence_dims]
 
 
@@ -251,11 +260,27 @@ def test_no_absence_claim_asserted_when_walk_incomplete(make_stats) -> None:
         assert "not fully observed" in message
 
 
-def test_no_absence_claim_asserted_for_unread_file_hole() -> None:
+def test_absence_claim_still_asserted_for_content_only_hole() -> None:
+    # SUE-580 S2: a size-skipped file is a *content* hole, not a *path* hole —
+    # the walk saw the entry and knows its name; it only declined to read its
+    # bytes. Every absence-shaped dimension here is derived purely from
+    # filename/path presence (deploy markers, integration-config filenames,
+    # package-metadata filenames, agent-instruction-surface paths, ...), never
+    # from file content, so a content-only hole must not manufacture
+    # uncertainty about them: a resolved "No ... observed" claim still stands.
+    # (This inverts the previous version of this test, which asserted the
+    # opposite — that a content-only hole blocked every absence claim across
+    # the board. That was the defect: it let a single oversized lockfile
+    # anywhere in a real repository degrade every filename-derived readiness
+    # finding to "not confirmed" at confidence 0.0, even though none of those
+    # findings' truth depends on that file's content at all.)
     observations = _BASE_OBSERVATIONS + [_observation("file-read-skipped", "big file")]
     findings = assess_readiness(Path("."), observations, [], stats=_stats())
-    for message in _absence_messages(findings):
-        assert "No " not in message, message
+    messages = _absence_messages(findings)
+    assert messages, "expected at least one absence-shaped dimension to check"
+    for message in messages:
+        assert message.startswith("No "), message
+        assert "not confirmed" not in message, message
 
 
 def test_absence_claim_only_made_when_exhaustive_and_reads_as_confident() -> None:

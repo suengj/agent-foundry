@@ -173,15 +173,20 @@ def _ini_section_header_line(content: str, section: str) -> str | None:
     return _exact_stripped_line(content, f"[{section}]")
 
 
-def _package_json_pytest_script_line(content: str) -> str | None:
-    """The literal ``"test"`` script line, when it structurally invokes pytest.
+def _package_json_test_script(content: str) -> tuple[str, str] | None:
+    """The declared ``scripts.test`` command and its literal source line, if any.
 
-    ``json`` alone decides whether ``scripts.test`` exists and whether one of its
-    whitespace-separated words names pytest directly or via ``python -m pytest``.
+    ``json`` alone decides whether ``scripts.test`` exists and what its value is.
     The raw text is consulted only afterward, to recover that key's own line, and
     only a line whose value round-trips through ``json.dumps`` to the exact parsed
     string counts as that line — anything else (unusual escaping, a value split
-    across lines) yields no convention rather than a guess.
+    across lines) yields nothing rather than a guess.
+
+    This does not judge *which* runner the command invokes, or whether it is a
+    real test suite versus a stub — a ``scripts.test`` entry is a declared fact
+    the owner wrote, full stop. Callers decide what (if anything) further to
+    claim about its content; this function's only job is recovering the
+    verbatim declaration and the line that proves it.
     """
     try:
         data = json.loads(content)
@@ -196,30 +201,32 @@ def _package_json_pytest_script_line(content: str) -> str | None:
     if not isinstance(test_script, str) or not test_script.strip():
         return None
 
+    expected_value = json.dumps(test_script)
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('"test"') and expected_value in stripped:
+            return test_script, stripped
+    return None
+
+
+def _script_invokes_pytest(test_script: str) -> bool:
+    """Whether one of *test_script*'s whitespace-separated words names pytest
+    directly, or via ``python -m pytest`` (any ``python``/``python3``/``python3.x``
+    spelling). Purely structural token matching — no shell parsing, no guessing
+    about commands this does not recognize."""
     tokens = test_script.split()
-    invokes_pytest = False
     for index, token in enumerate(tokens):
         name = token.rsplit("/", 1)[-1]
         if name == _PYTEST_COMMAND:
-            invokes_pytest = True
-            break
+            return True
         if (
             re.match(r"^python(3(\.\d+)?)?$", name)
             and index + 2 < len(tokens)
             and tokens[index + 1] == "-m"
             and tokens[index + 2].rsplit("/", 1)[-1] == _PYTEST_COMMAND
         ):
-            invokes_pytest = True
-            break
-    if not invokes_pytest:
-        return None
-
-    expected_value = json.dumps(test_script)
-    for line in content.splitlines():
-        stripped = line.strip()
-        if stripped.startswith('"test"') and expected_value in stripped:
-            return stripped
-    return None
+            return True
+    return False
 
 
 def _structured_test_invocation_conventions(
@@ -268,14 +275,20 @@ def _structured_test_invocation_conventions(
 
     package_json = _read("package.json")
     if package_json:
-        line = _package_json_pytest_script_line(package_json)
-        if line is not None:
+        found = _package_json_test_script(package_json)
+        if found is not None:
+            test_script, line = found
+            if _script_invokes_pytest(test_script):
+                pattern = "package.json 'test' script invokes pytest"
+            else:
+                # The declaration is real and directly parsed, but naming which
+                # runner (if any) it invokes would be an inference this module
+                # does not make. Quote the command verbatim instead of either
+                # discarding it (a false "no test entrypoint" negative) or
+                # guessing a runner (a false positive).
+                pattern = f"package.json 'test' script is {json.dumps(test_script)}"
             conventions.append(
-                _structured_convention(
-                    "package.json 'test' script invokes pytest",
-                    "package.json",
-                    line,
-                )
+                _structured_convention(pattern, "package.json", line)
             )
 
     return conventions

@@ -1,5 +1,17 @@
 # SUE-580 — ProjectProfile before/after survey
 
+> **Superseded in part — re-run owed before merge.** Every figure below measures
+> `ba9afa7`. An independent review over `1e04359` found the confidence collapse
+> reported in "One finding this survey turns from a worry into a measurement" to
+> be a provenance-laundering defect rather than a design question, and it has
+> since been fixed: `_conventions_dimension` no longer reports a global `min()`,
+> and no subject inherits another's provenance or confidence. The "mid → low, 8
+> of 12" rows and that section therefore describe behaviour the branch no longer
+> has. The method, the target set and the privacy argument are unchanged and
+> still hold. The table is left as measured rather than edited in place, because
+> a survey rewritten to match a later commit is not a measurement; the numbers
+> are being regenerated against the merge head.
+
 Work Item: SUE-580 — Required Evidence: "Before/after inspection/profile comparison on
 multiple real repositories with only aggregate/public-safe metrics retained."
 

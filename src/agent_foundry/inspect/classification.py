@@ -86,6 +86,33 @@ def _finding(
     )
 
 
+# Reason prefixes that mark a finding as *derived from absence*: its value was
+# chosen because a list of signals was checked and none of them was seen, not
+# because anything was observed. Such a finding is only as trustworthy as the
+# ground the walk actually covered — a walk that stopped at a depth/entry limit,
+# left a path unobservable, or refused a containment escape never looked at the
+# region that could hold the very signals the reason enumerates, so a consumer
+# that knows the traversal's own accounting (`profile.synth`, which holds
+# `TraversalStats`; this module only ever sees the entries it was handed) must
+# gate these exactly as it gates a "no marker observed" structural absence.
+#
+# This is a one-directional data coupling on purpose: the producer of an
+# absence-derived reason declares itself here, rather than the consumer
+# pattern-matching prose it does not own. A new absence-derived finding must add
+# its prefix to this tuple; `tests/test_inspect_classification_absence.py` pins
+# that the reason a producer emits actually starts with a prefix listed here.
+ABSENCE_ENUMERATION_REASON_PREFIXES: tuple[str, ...] = (
+    "no brownfield signals present; checked: ",
+)
+
+
+def reason_is_absence_enumeration(reason: str | None) -> bool:
+    """True when ``reason`` states that a list of signals was checked and none found."""
+    if not reason:
+        return False
+    return reason.startswith(ABSENCE_ENUMERATION_REASON_PREFIXES)
+
+
 # One weak signal must not read like several. Confidence tracks how many independent
 # brownfield signals were found, not merely whether any evidence ref could be listed.
 _SIGNAL_CONFIDENCE_BASE = 0.4
@@ -321,7 +348,7 @@ def propose_classification_findings(
                     source_ref=".",
                     confidence=0.55,
                     reason=(
-                        "no brownfield signals present; checked: "
+                        ABSENCE_ENUMERATION_REASON_PREFIXES[0]
                         + "; ".join(name for name, _ in signals)
                     ),
                 )

@@ -354,18 +354,24 @@ def collect_nested_project_observations(
     justification changes.
     """
     return [
-        _observed(
-            "nested-project",
-            (
-                f"nested project boundary: {boundary} is excluded by owner declaration; "
-                "its contents are not evidence about this project"
+        (
+            _declared(
+                "nested-project",
+                (
+                    f"nested project boundary: {boundary} is excluded by owner declaration; "
+                    "its contents are not evidence about this project"
+                ),
+                boundary,
             )
             if boundary in owner_declared
-            else (
-                f"nested project boundary: {boundary} declares its own project manifest; "
-                "its contents are not evidence about this project"
-            ),
-            boundary,
+            else _observed(
+                "nested-project",
+                (
+                    f"nested project boundary: {boundary} declares its own project manifest; "
+                    "its contents are not evidence about this project"
+                ),
+                boundary,
+            )
         )
         for boundary in sorted(boundaries)
     ]

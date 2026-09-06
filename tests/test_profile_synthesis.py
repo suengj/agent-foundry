@@ -952,3 +952,234 @@ def test_k_profile_loads_without_invoking_contract_migration() -> None:
     restored = load_json(ProjectProfile, payload)
     assert restored.schema_version == "0.2"
     assert dump_json(restored) == payload
+
+
+# ---------------------------------------------------------------------------
+# L. Aggregate dimensions must not launder the provenance they aggregate
+#    (SUE-580 review blocker B1)
+# ---------------------------------------------------------------------------
+
+
+def _convention(
+    subject: str, *, confidence: float, kind: ProvenanceKind, source_ref: str
+) -> ConventionSpec:
+    return ConventionSpec(
+        subject=subject,
+        pattern=f"{subject} pattern",
+        source_ref=source_ref,
+        evidence=f"{subject} evidence",
+        confidence=confidence,
+        provenance=Provenance(kind=kind, confidence=confidence, source_ref=source_ref),
+    )
+
+
+def _conventions_dimension_of(*conventions: ConventionSpec):
+    profile = synthesize_project_profile(_minimal_intake(conventions=list(conventions)))
+    return next(
+        d for d in profile.dimensions if d.dimension == "assurance.conventions-observed"
+    )
+
+
+def test_l_a_declared_convention_is_not_republished_as_inferred() -> None:
+    """A dimension aggregating nothing but DECLARED facts must say DECLARED.
+
+    The `test-invocation` fact here is parsed out of a build config by `tomllib`;
+    reporting it as INFERRED is provenance laundering in the shipped artifact.
+    """
+    dim = _conventions_dimension_of(
+        _convention(
+            "test-invocation",
+            confidence=0.8,
+            kind=ProvenanceKind.DECLARED,
+            source_ref="pyproject.toml",
+        )
+    )
+    assert dim.resolution is ProfileResolution.RESOLVED
+    attribution = dim.attributions[0]
+    assert attribution.provenance.kind is ProvenanceKind.DECLARED
+    assert attribution.provenance.confidence == 0.8
+
+
+def test_l_a_prose_mention_does_not_drag_a_declared_fact_down_to_its_confidence() -> None:
+    """Two conventions with *different subjects* are not competing claims.
+
+    A DECLARED build-config fact (0.8) aggregated with a demoted prose mention of
+    another subject (0.15) must not be republished at 0.15: `min()` across
+    unrelated subjects is not a floor on anything a consumer can act on, and it
+    made a consumer gating at >= 0.5 reject evidence that had just got better.
+    Each subject is published with the strongest evidence that backs *it*.
+    """
+    dim = _conventions_dimension_of(
+        _convention(
+            "test-invocation",
+            confidence=0.8,
+            kind=ProvenanceKind.DECLARED,
+            source_ref="pyproject.toml",
+        ),
+        _convention(
+            "test-runner",
+            confidence=0.15,
+            kind=ProvenanceKind.INFERRED,
+            source_ref="AGENTS.md",
+        ),
+    )
+    # Co-existing conventions stay ONE composite fact — never CONFLICTED, which is
+    # what one-attribution-per-subject would have produced.
+    assert dim.resolution is ProfileResolution.RESOLVED
+    assert len(dim.attributions) == 1
+    attribution = dim.attributions[0]
+    assert attribution.provenance.confidence == 0.8
+    # Heterogeneous provenance is a derivation, so the aggregate kind is INFERRED —
+    # but the per-subject truth is stated, not collapsed.
+    assert attribution.provenance.kind is ProvenanceKind.INFERRED
+    assert "test-invocation (declared 0.80)" in attribution.value
+    assert "test-runner (inferred 0.15)" in attribution.value
+    assert sorted(attribution.evidence_refs) == ["AGENTS.md", "pyproject.toml"]
+
+
+def test_l_the_strongest_evidence_for_one_subject_wins_over_a_weaker_duplicate() -> None:
+    """Within a single subject, a demoted mention co-existing with the structured
+    declaration it was demoted *because of* must not become the reported strength."""
+    dim = _conventions_dimension_of(
+        _convention(
+            "test-invocation",
+            confidence=0.8,
+            kind=ProvenanceKind.DECLARED,
+            source_ref="Makefile",
+        ),
+        _convention(
+            "test-invocation",
+            confidence=0.15,
+            kind=ProvenanceKind.INFERRED,
+            source_ref="CLAUDE.md",
+        ),
+    )
+    attribution = dim.attributions[0]
+    assert attribution.value == "test-invocation (declared 0.80)"
+    assert attribution.provenance.kind is ProvenanceKind.DECLARED
+    assert attribution.provenance.confidence == 0.8
+
+
+def test_l_no_subject_is_published_above_the_evidence_that_backs_it() -> None:
+    """The other direction of the same rule: aggregating a strong fact must never
+    lend its confidence to a weakly-evidenced subject. Every listed subject
+    carries its own strength, so nothing gains confidence it did not earn."""
+    dim = _conventions_dimension_of(
+        _convention(
+            "ci-checkout", confidence=1.0, kind=ProvenanceKind.OBSERVED, source_ref="ci.yml"
+        ),
+        _convention(
+            "git-policy", confidence=0.5, kind=ProvenanceKind.INFERRED, source_ref="AGENTS.md"
+        ),
+    )
+    value = dim.attributions[0].value
+    assert "ci-checkout (observed 1.00)" in value
+    assert "git-policy (inferred 0.50)" in value
+
+
+# ---------------------------------------------------------------------------
+# M. A classification finding derived from absence is gated by the same
+#    exhaustiveness rule as a structural "none observed" (SUE-580 blocker B2)
+# ---------------------------------------------------------------------------
+
+
+def _entry_limited_stats() -> TraversalStats:
+    limits = TraversalLimits(max_depth=8, max_entries=60, max_file_bytes=65536, skipped_dir_names=[])
+    return TraversalStats(
+        entries_visited=60,
+        entries_skipped=0,
+        depth_limit_reached=False,
+        entry_limit_reached=True,
+        limits=limits,
+    )
+
+
+def _greenfield_from_silence_finding() -> ClassificationFinding:
+    from agent_foundry.inspect.classification import ABSENCE_ENUMERATION_REASON_PREFIXES
+
+    return ClassificationFinding(
+        dimension="intake_mode",
+        value="greenfield",
+        reason=ABSENCE_ENUMERATION_REASON_PREFIXES[0] + "CI workflow definitions",
+        provenance=Provenance(kind=ProvenanceKind.INFERRED, confidence=0.55, source_ref="."),
+        evidence_refs=[],
+    )
+
+
+def test_m_absence_derived_classification_finding_is_unknown_under_a_truncated_walk() -> None:
+    """`intake_mode = greenfield` is chosen because a list of brownfield signals was
+    checked and none seen. Under an entry-limited walk the signals may sit in the
+    region never reached, so the profile must say UNKNOWN rather than publish the
+    most confident possible phrasing of a fact it never observed."""
+    intake = _minimal_intake(
+        traversal_stats=_entry_limited_stats(),
+        classification_findings=[_greenfield_from_silence_finding()],
+    )
+    dim = next(
+        d
+        for d in synthesize_project_profile(intake).dimensions
+        if d.dimension == "intake_mode"
+    )
+    assert dim.resolution is ProfileResolution.UNKNOWN, (
+        "an absence-enumerated intake_mode resolved from a walk that stopped at its "
+        "entry limit — absence over unwalked ground is not evidence"
+    )
+    assert dim.attributions == []
+
+
+def test_m_absence_derived_classification_finding_still_resolves_when_walk_exhaustive() -> None:
+    """The counterpart: over a complete walk, "checked, none found" is a real
+    observation and stays resolved."""
+    intake = _minimal_intake(classification_findings=[_greenfield_from_silence_finding()])
+    dim = next(
+        d
+        for d in synthesize_project_profile(intake).dimensions
+        if d.dimension == "intake_mode"
+    )
+    assert dim.resolution is ProfileResolution.RESOLVED
+    assert dim.attributions[0].value == "greenfield"
+
+
+def test_m_a_positively_evidenced_finding_survives_a_truncated_walk() -> None:
+    """Only absence-derived findings are gated: a truncated walk does not un-see
+    what it did see, so a brownfield finding backed by signals it actually found
+    still resolves."""
+    finding = ClassificationFinding(
+        dimension="intake_mode",
+        value="brownfield",
+        reason="4 of 5 brownfield signals present: CI workflow definitions",
+        provenance=Provenance(kind=ProvenanceKind.INFERRED, confidence=0.8, source_ref="."),
+        evidence_refs=[".github/workflows/ci.yml"],
+    )
+    intake = _minimal_intake(
+        traversal_stats=_entry_limited_stats(), classification_findings=[finding]
+    )
+    dim = next(
+        d
+        for d in synthesize_project_profile(intake).dimensions
+        if d.dimension == "intake_mode"
+    )
+    assert dim.resolution is ProfileResolution.RESOLVED
+    assert dim.attributions[0].value == "brownfield"
+
+
+def test_m_declared_intake_mode_is_not_gated_by_a_truncated_walk() -> None:
+    """An owner's declaration is evidence the walk read, not a claim about ground
+    it missed."""
+    declared = ClassificationFinding(
+        dimension="intake_mode",
+        value="brownfield",
+        reason="declared in .foundry/project.yaml",
+        provenance=Provenance(kind=ProvenanceKind.DECLARED, source_ref=".foundry/project.yaml"),
+        evidence_refs=[".foundry/project.yaml"],
+    )
+    intake = _minimal_intake(
+        traversal_stats=_entry_limited_stats(), classification_findings=[declared]
+    )
+    dim = next(
+        d
+        for d in synthesize_project_profile(intake).dimensions
+        if d.dimension == "intake_mode"
+    )
+    assert dim.resolution is ProfileResolution.RESOLVED
+    assert dim.attributions[0].provenance.kind is ProvenanceKind.DECLARED

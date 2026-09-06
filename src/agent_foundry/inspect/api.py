@@ -52,6 +52,11 @@ def _override_decision_observations(
     declaration, not one the owner successfully declared); an override that did
     parse — applied or not — is `ProvenanceKind.DECLARED`, since it originates in
     the owner's own file.
+
+    A decision marked `uncertain` (the walk that would have confirmed or ruled
+    out the named path was truncated) is never reported at full confidence: it
+    is a "we did not finish looking", not a settled fact, and stamping it 1.0
+    would read as the confident, false "does not exist" this exists to prevent.
     """
     observations: list[ProjectObservation] = []
     for decision in decisions:
@@ -60,6 +65,7 @@ def _override_decision_observations(
             if decision.action == "malformed"
             else ProvenanceKind.DECLARED
         )
+        confidence = 0.5 if decision.uncertain else 1.0
         status = "applied" if decision.applied else "not applied"
         observations.append(
             ProjectObservation(
@@ -67,7 +73,7 @@ def _override_decision_observations(
                 content=(
                     f"override {decision.action} on {decision.path}: {status} — {decision.reason}"
                 ),
-                provenance=Provenance(kind=kind, confidence=1.0, source_ref=decision.path),
+                provenance=Provenance(kind=kind, confidence=confidence, source_ref=decision.path),
             )
         )
     return observations
@@ -106,19 +112,47 @@ def inspect_project(
     # them, and either way the outcome is recorded, so every exclusion — and
     # every override decision, applied or not — is a stated fact rather than an
     # absence.
-    overrides = (
-        nested_project_overrides
-        if nested_project_overrides is not None
-        else load_nested_project_overrides(root, traversal.entries, max_file_bytes=max_file_bytes)
-    )
+    superseded_owner_overrides: NestedProjectOverrides | None = None
+    if nested_project_overrides is not None:
+        overrides = nested_project_overrides
+        # The caller supplied an override directly, bypassing the on-disk
+        # declaration surface — but the file may still be there, and if it
+        # declares something, that declaration must not simply vanish. Read
+        # it anyway (it is cheap, and already on disk) and, if it differs
+        # from what is actually in effect, record that it was superseded
+        # rather than dropping it without a trace.
+        on_disk = load_nested_project_overrides(
+            root, traversal.entries, max_file_bytes=max_file_bytes
+        )
+        if on_disk != NestedProjectOverrides() and on_disk != overrides:
+            superseded_owner_overrides = on_disk
+    else:
+        overrides = load_nested_project_overrides(
+            root, traversal.entries, max_file_bytes=max_file_bytes
+        )
     boundaries, override_decisions = resolve_nested_project_boundaries(
-        root, traversal.entries, overrides
+        root,
+        traversal.entries,
+        overrides,
+        walk_truncated=traversal.depth_limit_reached or traversal.entry_limit_reached,
     )
     owned = entries_outside(traversal.entries, boundaries)
 
     observations: list = []
     observations.extend(collect_structure_observations(root, owned))
     observations.extend(collect_revision_observation(root, revision))
+    if superseded_owner_overrides is not None:
+        source = superseded_owner_overrides.source_ref or ".foundry/project.yaml"
+        observations.append(
+            ProjectObservation(
+                subject="nested-project",
+                content=(
+                    f"owner-declared nested-project override in {source} was superseded "
+                    "by a caller-supplied override; the on-disk declaration was not applied"
+                ),
+                provenance=Provenance(kind=ProvenanceKind.OBSERVED, confidence=1.0, source_ref=source),
+            )
+        )
     owner_declared_boundaries = frozenset(
         decision.path
         for decision in override_decisions

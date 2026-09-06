@@ -210,6 +210,13 @@ class NestedProjectOverrideDecision:
     action: str  # "include" (re-include a nested subtree) | "exclude" | "malformed"
     applied: bool
     reason: str
+    # True when this decision could not be made with certainty because the walk that
+    # produced `dir_paths` was truncated (a depth or entry limit was hit) before it
+    # could settle the question. A "not applied" exclude naming a path absent from a
+    # truncated walk means "not found in what we looked at, and we did not finish
+    # looking" — never "confirmed absent". Callers must not report such a decision at
+    # full confidence.
+    uncertain: bool = False
 
 
 def _clean_override_path(value: object) -> str | None:
@@ -334,6 +341,8 @@ def resolve_nested_project_boundaries(
     root: Path,
     entries: list[RepoEntry],
     overrides: NestedProjectOverrides,
+    *,
+    walk_truncated: bool = False,
 ) -> tuple[list[str], list[NestedProjectOverrideDecision]]:
     """Apply an owner override to the default heuristic, one decision per entry.
 
@@ -343,6 +352,12 @@ def resolve_nested_project_boundaries(
     explaining why. An empty override (nothing declared) changes nothing and
     produces no decisions at all — there is nothing to make visible when
     nothing was declared.
+
+    `walk_truncated` says whether `entries` (and therefore `dir_paths`, below)
+    came from a walk that hit its depth or entry limit before finishing. When
+    it did, a path absent from `dir_paths` was not confirmed absent — it may
+    simply lie past where the walk stopped — so "does not exist" must not be
+    reported as a settled, full-confidence fact.
     """
     default_boundaries = nested_project_roots(root, entries)
 
@@ -402,14 +417,29 @@ def resolve_nested_project_boundaries(
             )
             continue
         if path not in dir_paths:
-            decisions.append(
-                NestedProjectOverrideDecision(
-                    path=path,
-                    action="exclude",
-                    applied=False,
-                    reason="override path does not exist as a directory in this repository",
+            if walk_truncated:
+                decisions.append(
+                    NestedProjectOverrideDecision(
+                        path=path,
+                        action="exclude",
+                        applied=False,
+                        reason=(
+                            "override path was not found within the walked tree, and the "
+                            "walk was incomplete (a depth or entry limit was reached) — "
+                            "whether it exists could not be confirmed"
+                        ),
+                        uncertain=True,
+                    )
                 )
-            )
+            else:
+                decisions.append(
+                    NestedProjectOverrideDecision(
+                        path=path,
+                        action="exclude",
+                        applied=False,
+                        reason="override path does not exist as a directory in this repository",
+                    )
+                )
             continue
         if any(_is_within(path, bound) for bound in boundaries):
             decisions.append(
