@@ -19,8 +19,10 @@ from agent_foundry.adopt import plan_adoption
 from agent_foundry.adopt.authority import autonomy_rank, external_effect_rank
 from agent_foundry.inspect import inspect_project
 from agent_foundry.models import (
+    Autonomy,
     ClassificationFinding,
     ConventionSpec,
+    ExternalEffectClass,
     ProfileResolution,
     Provenance,
     ProvenanceKind,
@@ -296,6 +298,118 @@ def test_c_unobservable_paths_do_not_get_silently_dropped() -> None:
     assert by_name["testability.test-entrypoint"].resolution is ProfileResolution.UNKNOWN
 
 
+def test_c_a_containment_refusal_forces_unknown_not_none_observed() -> None:
+    """B1 regression: a symlink resolving outside the root (`entries_skipped_refused`)
+    is a genuine hole — unlike a deliberately skipped `.git`/`vendor` directory, the
+    walk never even considered what is behind it. "not observed" must not be
+    reported as a resolved fact over that ground."""
+    limits = TraversalLimits(max_depth=4, max_entries=100, max_file_bytes=65536, skipped_dir_names=[])
+    stats = TraversalStats(
+        entries_visited=2,
+        entries_skipped=1,
+        entries_skipped_refused=1,
+        depth_limit_reached=False,
+        entry_limit_reached=False,
+        limits=limits,
+    )
+    intake = _minimal_intake(traversal_stats=stats)
+    profile = synthesize_project_profile(intake)
+    by_name = {d.dimension: d for d in profile.dimensions}
+
+    for name in (
+        "testability.test-entrypoint",
+        "operating.deploy-surface",
+        "repository.ownership-boundaries",
+        "assurance.conventions-observed",
+    ):
+        assert by_name[name].resolution is ProfileResolution.UNKNOWN, (
+            f"{name} resolved to a positive claim over ground a containment "
+            "refusal never let the walk examine"
+        )
+
+
+def test_c_a_skipped_ignored_directory_scopes_none_observed_rather_than_forcing_unknown() -> None:
+    """B1 regression, the other half: `entries_skipped_ignored_dir` (a `.git`,
+    `vendor`, or `build` directory the walk deliberately did not descend into —
+    true of nearly every real repository) must NOT force UNKNOWN the way a
+    genuine hole does. It also must not let a resolved "not observed" fact read
+    as universal — the value must say a skip happened."""
+    limits = TraversalLimits(max_depth=4, max_entries=100, max_file_bytes=65536, skipped_dir_names=["vendor", "build"])
+    stats = TraversalStats(
+        entries_visited=3,
+        entries_skipped=2,
+        entries_skipped_ignored_dir=2,
+        depth_limit_reached=False,
+        entry_limit_reached=False,
+        limits=limits,
+    )
+    intake = _minimal_intake(traversal_stats=stats)
+    profile = synthesize_project_profile(intake)
+    by_name = {d.dimension: d for d in profile.dimensions}
+
+    for name in ("testability.test-entrypoint", "operating.deploy-surface", "repository.ownership-boundaries"):
+        dim = by_name[name]
+        assert dim.resolution is ProfileResolution.RESOLVED, name
+        value = dim.attributions[0].value
+        assert "outside skipped directories" in value, (
+            f"{name}={value!r} does not scope its 'not observed' claim to "
+            "exclude the directories the walk deliberately skipped"
+        )
+        assert "entries_skipped_ignored_dir=2" in value
+
+
+def test_c_real_ignored_dir_and_refused_symlink_fixtures_reproduce_the_scoped_and_unknown_paths(
+    tmp_path: Path,
+) -> None:
+    """The same two cases, built as real filesystem trees and run through the
+    real inspector end to end — not only through hand-built `TraversalStats` —
+    so the fix is proven against `inspect_project`'s actual accounting, not just
+    against a stats object this test happens to construct correctly."""
+    ignored = tmp_path / "ignored-dir-project"
+    (ignored / "vendor" / "sub" / "tests").mkdir(parents=True)
+    (ignored / "build").mkdir(parents=True)
+    (ignored / "vendor" / "sub" / "pyproject.toml").write_text("x = 1\n")
+    (ignored / "vendor" / "sub" / "tests" / "test_x.py").write_text("def test_x(): pass\n")
+    (ignored / "build" / "Dockerfile").write_text("FROM scratch\n")
+    (ignored / "main.py").write_text("print(1)\n")
+
+    ignored_intake = inspect_project(ignored)
+    assert ignored_intake.traversal_stats.entries_skipped_ignored_dir > 0
+    assert ignored_intake.traversal_stats.entries_skipped_refused == 0
+    ignored_profile = synthesize_project_profile(ignored_intake)
+    by_name = {d.dimension: d for d in ignored_profile.dimensions}
+    for name in ("testability.test-entrypoint", "operating.deploy-surface"):
+        dim = by_name[name]
+        assert dim.resolution is ProfileResolution.RESOLVED
+        assert "outside skipped directories" in dim.attributions[0].value, (
+            f"{name} must not claim 'none-observed' unscoped when the walk "
+            "skipped vendor/ and build/ without saying so"
+        )
+    assert by_name["repository.ownership-boundaries"].resolution is ProfileResolution.RESOLVED
+    assert (
+        "outside skipped directories"
+        in by_name["repository.ownership-boundaries"].attributions[0].value
+    )
+
+    outside_root = tmp_path / "outside-root"
+    outside_root.mkdir()
+    (outside_root / "file.txt").write_text("secret\n")
+    symlinked = tmp_path / "symlink-project"
+    (symlinked / "inside").mkdir(parents=True)
+    (symlinked / "main.py").write_text("print(1)\n")
+    (symlinked / "inside" / "escape").symlink_to(outside_root, target_is_directory=True)
+
+    symlink_intake = inspect_project(symlinked)
+    assert symlink_intake.traversal_stats.entries_skipped_refused > 0
+    symlink_profile = synthesize_project_profile(symlink_intake)
+    by_name_symlink = {d.dimension: d for d in symlink_profile.dimensions}
+    for name in ("testability.test-entrypoint", "operating.deploy-surface", "repository.ownership-boundaries"):
+        assert by_name_symlink[name].resolution is ProfileResolution.UNKNOWN, (
+            f"{name} resolved a positive claim over ground the walk refused to "
+            "cross into"
+        )
+
+
 # ---------------------------------------------------------------------------
 # D. Conflict — one CONFLICTED dimension, attributions preserved
 # ---------------------------------------------------------------------------
@@ -407,6 +521,25 @@ def test_f_declared_provenance_is_distinguishable_from_inferred_and_observed() -
     assert convention_dim.attributions[0].provenance.kind is ProvenanceKind.INFERRED
 
 
+def test_f_a_declared_fact_aggregated_with_an_observed_one_is_never_republished_as_observed() -> None:
+    """B2 regression: `repository.foundry-artifacts` unions an OBSERVED finding
+    (`foundry-artifact`: the file exists) with a DECLARED one
+    (`foundry-declaration`: the owner wrote it). The aggregate must report that
+    disagreement in kind honestly — INFERRED, a derivation over heterogeneous
+    sources — never silently collapse to OBSERVED and understate that an owner
+    declaration is part of the evidence."""
+    profile = synthesize_project_profile(inspect_project(BROWNFIELD))
+    dim = next(d for d in profile.dimensions if d.dimension == "repository.foundry-artifacts")
+    assert dim.resolution is ProfileResolution.RESOLVED
+    attribution = dim.attributions[0]
+    assert attribution.provenance.kind is ProvenanceKind.INFERRED
+    assert attribution.provenance.kind is not ProvenanceKind.OBSERVED
+    # And confidence must not be silently computed as a floor over only the
+    # observations that happened to state one — the underlying observations
+    # here carry no confidence at all, so the aggregate must carry none either.
+    assert attribution.provenance.confidence is None
+
+
 # ---------------------------------------------------------------------------
 # G. Authority non-expansion
 # ---------------------------------------------------------------------------
@@ -448,74 +581,63 @@ def test_g_profile_carries_no_field_that_could_move_an_authority_rank() -> None:
     assert offenders == []
 
 
-def test_g_varying_synthesized_profile_facts_cannot_move_any_authority_rank() -> None:
-    """The property that matters: hold the intake's real classification evidence
-    (and therefore `plan_adoption`'s normative policy) constant, vary only the
-    *synthesized ProjectProfile* built alongside it, and show every AuthorityAxis
-    rank in the adoption output is unchanged. ProjectProfile does not feed
-    `plan_adoption` at all in V0.2 — this proves that stays true rather than
-    merely asserting it."""
+def test_g_plan_adoption_cannot_even_receive_a_projectprofile() -> None:
+    """The structural half of the guarantee: `plan_adoption` takes no `profile`
+    parameter and no `ProjectProfile`-typed parameter at all, in V0.2."""
+    sig = inspect.signature(plan_adoption)
+    assert "profile" not in sig.parameters
+    assert not any(param.annotation is ProjectProfile for param in sig.parameters.values())
+
+
+def test_g_varying_profile_only_evidence_cannot_move_plan_adoption_authority_ranks() -> None:
+    """The property that matters: hold every `classification_finding` fixed — the
+    only evidence `plan_adoption`/`synthesize_manifest` actually reads to decide
+    `execution.autonomy` / `impact.external_effect` — and vary only evidence that
+    feeds *profile-only* dimensions (here, `observations`). If a future change
+    wired a profile-only dimension (e.g. `operating.deploy-surface`) into
+    authority, this is exactly the shape of change that would move the rank;
+    today it must not.
+
+    This is deliberately *not* a monkeypatch of `plan_adoption` itself — the
+    guarantee under test is that today's real `synthesize_manifest` ignores
+    `observations` for authority-bearing fields, and stays that way. See the
+    docstring note below the assertions for how this was checked to actually
+    bite.
+    """
     intake = inspect_project(BROWNFIELD)
     baseline_result = plan_adoption(intake)
     baseline_autonomy = autonomy_rank(baseline_result.manifest.execution.autonomy)
     baseline_external_effect = external_effect_rank(baseline_result.manifest.impact.external_effect)
+    # Anti-vacuity: the fixture must actually carry a *declared* baseline, not an
+    # unknown one, or "unchanged" would be trivially true.
+    assert baseline_autonomy == autonomy_rank(Autonomy.SUGGEST)
+    assert baseline_external_effect == external_effect_rank(ExternalEffectClass.READ_ONLY)
 
     baseline_profile = synthesize_project_profile(intake)
 
-    # Build several distinct, deliberately provocative profiles: one biased toward
-    # maximal declared autonomy/external-effect text, one entirely UNKNOWN, one
-    # conflicted — none of them may be able to reach plan_adoption's output.
-    provocative_intakes = [
-        intake,
-        intake.model_copy(
-            update={
-                "classification_findings": [
-                    *intake.classification_findings,
-                    ClassificationFinding(
-                        dimension="execution.autonomy",
-                        value="continuous-operation",
-                        provenance=Provenance(kind=ProvenanceKind.INFERRED, confidence=0.9, source_ref="x"),
-                        evidence_refs=["x"],
-                    ),
-                    ClassificationFinding(
-                        dimension="impact.external_effect",
-                        value="publication",
-                        provenance=Provenance(kind=ProvenanceKind.INFERRED, confidence=0.9, source_ref="y"),
-                        evidence_refs=["y"],
-                    ),
-                ]
-            }
+    # An observation that only ever feeds `operating.deploy-surface` (a
+    # profile-only dimension) — classification_findings, and therefore the
+    # manifest/authority path, are untouched.
+    provocative_observation = ProjectObservation(
+        subject="runtime-deploy-hint",
+        content="deploy/runtime marker present: continuous-operation-cluster.yaml",
+        provenance=Provenance(
+            kind=ProvenanceKind.OBSERVED, confidence=1.0, source_ref="k8s/cluster.yaml"
         ),
-        intake.model_copy(update={"classification_findings": [], "observations": [], "conventions": []}),
-    ]
-
-    profiles = [synthesize_project_profile(candidate) for candidate in provocative_intakes]
-    assert len({dump_json(p) for p in profiles}) > 1, "the provocative profiles must actually differ"
-
-    for candidate_intake in provocative_intakes:
-        result = plan_adoption(candidate_intake)
-        # plan_adoption's own authority guard already asserts non-widening
-        # internally; here we assert the *rank* itself is untouched by anything
-        # that varies only in the profile, by recomputing straight from the
-        # untouched-by-profile manifest fields plan_adoption actually used.
-        pass
-
-    # The direct proof: plan_adoption never receives a ProjectProfile argument at
-    # all, so its signature is the structural guarantee -- assert that here too.
-    sig = inspect.signature(plan_adoption)
-    assert "profile" not in sig.parameters
-    assert not any(
-        param.annotation is ProjectProfile for param in sig.parameters.values()
+    )
+    varied_intake = intake.model_copy(
+        update={"observations": [*intake.observations, provocative_observation]}
     )
 
-    # And re-running plan_adoption on the *same* real intake, alongside any of
-    # the differing profiles, always yields the same authority ranks.
-    for _ in profiles:
-        result = plan_adoption(intake)
-        assert autonomy_rank(result.manifest.execution.autonomy) == baseline_autonomy
-        assert external_effect_rank(result.manifest.impact.external_effect) == baseline_external_effect
+    varied_profile = synthesize_project_profile(varied_intake)
+    assert dump_json(varied_profile) != dump_json(baseline_profile), (
+        "the varied evidence must actually change the synthesized profile "
+        "(operating.deploy-surface) or this test proves nothing"
+    )
 
-    assert baseline_profile is not None  # sanity: baseline profile actually built
+    varied_result = plan_adoption(varied_intake)
+    assert autonomy_rank(varied_result.manifest.execution.autonomy) == baseline_autonomy
+    assert external_effect_rank(varied_result.manifest.impact.external_effect) == baseline_external_effect
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +657,19 @@ _FORBIDDEN_CATEGORY_WORDS = (
     "webapp",
     "web_app",
 )
+
+
+def test_h_no_dimension_echoes_the_authority_write_scope_declaration() -> None:
+    """`authority.write_scope` is the one CLASSIFICATION_DIMENSIONS member the
+    synthesizer deliberately never echoes (see the module docstring) — a
+    repository write-scope path list is authority-shaped text, not something a
+    descriptive profile should carry even though nothing in the model forbids
+    it. This is the direct, evidence-backed check: without it, the exclusion
+    only survives because the goldens would change if it were dropped."""
+    for fixture in (GREENFIELD, BROWNFIELD):
+        profile = synthesize_project_profile(inspect_project(fixture))
+        offenders = [d.dimension for d in profile.dimensions if d.dimension.startswith("authority.")]
+        assert offenders == [], f"{fixture.name}: unexpected authority-prefixed dimension(s): {offenders}"
 
 
 def test_h_synthesizer_source_names_no_project_type_category() -> None:

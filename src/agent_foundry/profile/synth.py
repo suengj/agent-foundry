@@ -33,10 +33,15 @@ observation model:
 **No project-type hard-coding.** Every dimension above is either (a) a direct,
 1:1 echo of a fixed evidence field defined upstream in ``inspect/``, or (b) a
 structural presence/absence fact keyed by that same fixed vocabulary. There is no
-branch anywhere in this module keyed on an inferred project *category* (a
-a named domain or application-shape label of any kind), and no lookup table that
-amounts to one — see ``tests/test_profile_synthesis.py`` (test H) for the
-structural guard that keeps it that way.
+branch anywhere in this module keyed on an inferred project *category* (a named
+domain or application-shape label of any kind), and no lookup table that amounts
+to one. ``tests/test_profile_synthesis.py`` (test H) scans for the most naive
+form of that — a quoted string literal spelling a forbidden category word — but
+a word-list scan cannot prove the absence of a differently-spelled lookup table.
+The two committed golden profiles (test J) are the real backstop: they pin the
+*shape* of the output for two structurally different fixtures, so a change that
+started routing output through a project-kind table would have to also keep
+those two golden files byte-identical to pass review.
 
 **Absence is not evidence, with one narrow, structural exception.** For every
 dimension sourced from ``classification_findings`` (state, impact, execution,
@@ -47,11 +52,15 @@ a small family of purely structural "is file/marker X present anywhere in the
 walked tree" dimensions (test harness markers, CI workflow files, deploy hints,
 and so on): here, and only when the traversal was *exhaustive* (see
 ``_traversal_exhaustive``), "no such marker was observed" is itself a directly
-observed fact about the tree that was actually walked in full — not a claim about
-safety, risk, or authority, and not drawn from a *partial* walk. When the walk hit
-a depth/entry limit or left any path unobservable, these dimensions fall back to
-``UNKNOWN`` exactly like every other one: an unexplored subtree might hold
-anything.
+observed fact — not a claim about safety, risk, or authority, and not drawn from
+a walk that hit a depth/entry limit, left a path unobservable, or refused a
+containment escape (all genuine holes, so these dimensions fall back to
+``UNKNOWN`` exactly like every other one when any of them occurred). A
+*deliberately skipped* directory (``.git``, ``node_modules``, and the rest of
+``SKIP_DIR_NAMES`` — true of nearly every real repository) is not such a hole,
+so it does not force ``UNKNOWN``; instead the resolved value says explicitly
+that directories were skipped (``_scope_none_observed``), rather than reading as
+a universal claim over ground the walk knowingly did not cover.
 
 **Determinism.** Same structured evidence -> byte-identical ``ProjectProfile``.
 Every dict/set-shaped collection this module touches — findings grouped by
@@ -149,17 +158,41 @@ def _dimension(name: str, attributions: list[ProfileAttribution]) -> ProfileDime
 
 
 def _traversal_exhaustive(stats: TraversalStats) -> bool:
-    """True only when the walk covered the whole tree within its own bounds.
+    """True only when the walk left no genuine hole in the ground it covered.
 
-    Only then may "no marker of kind X was found" be reported as a resolved
-    structural fact. When the walk was truncated or left a path unobservable,
-    absence proves nothing about the unexamined region, so callers must fall back
-    to UNKNOWN instead.
+    A depth/entry limit, an unobservable path, or a containment refusal (a
+    symlink resolving outside the root) are all genuine holes: the unexamined
+    region might hold anything, so "no marker of kind X was found" must fall
+    back to UNKNOWN rather than be reported as resolved. A *deliberately
+    ignored* directory (``.git``, ``node_modules``, ``vendor``, ``build``, and
+    the rest of ``SKIP_DIR_NAMES``) is different in kind — it is a documented,
+    bounded exclusion, not an unknown hole — so it does not gate this check at
+    all. It still must not be swallowed silently: callers that report a
+    resolved "not observed" fact scope that claim to say a skip happened,
+    rather than asserting it holds over ground the walk knowingly did not
+    cover (see ``_scope_none_observed``).
     """
     return (
         not stats.depth_limit_reached
         and not stats.entry_limit_reached
         and stats.entries_unobservable == 0
+        and stats.entries_skipped_refused == 0
+    )
+
+
+def _scope_none_observed(value: str, stats: TraversalStats) -> str:
+    """Qualify a resolved "not observed" claim when directories were skipped.
+
+    "None observed" is only ever a claim about the ground the walk actually
+    covered. When ``SKIP_DIR_NAMES`` caused entries to be skipped (true of
+    almost every real repository — a `.git` directory alone guarantees it),
+    the claim must say so explicitly rather than read as universal.
+    """
+    if stats.entries_skipped_ignored_dir <= 0:
+        return value
+    return (
+        f"{value} outside skipped directories "
+        f"(entries_skipped_ignored_dir={stats.entries_skipped_ignored_dir})"
     )
 
 
@@ -204,13 +237,22 @@ def _aggregate_observation_dimension(
         if not _traversal_exhaustive(stats):
             return ProfileDimension(dimension=name, resolution=ProfileResolution.UNKNOWN, attributions=[])
         provenance = Provenance(kind=ProvenanceKind.OBSERVED, confidence=1.0, source_ref=".")
-        return _dimension(name, [_make_attribution(none_observed_value, provenance, [])])
+        value = _scope_none_observed(none_observed_value, stats)
+        return _dimension(name, [_make_attribution(value, provenance, [])])
 
     value = "; ".join(sorted({obs.content for obs in matches}))
     kinds = {obs.provenance.kind for obs in matches}
-    kind = next(iter(kinds)) if len(kinds) == 1 else ProvenanceKind.OBSERVED
-    confidences = [obs.provenance.confidence for obs in matches if obs.provenance.confidence is not None]
-    confidence = min(confidences) if confidences else None
+    # A single-kind aggregate stays that kind; a heterogeneous one (e.g. an
+    # OBSERVED file-presence fact unioned with a DECLARED one, as
+    # `repository.foundry-artifacts` does) is a derivation over disagreeing
+    # provenance kinds, not a direct observation — INFERRED, never OBSERVED,
+    # so a declared fact is never silently republished as merely observed.
+    kind = next(iter(kinds)) if len(kinds) == 1 else ProvenanceKind.INFERRED
+    raw_confidences = [obs.provenance.confidence for obs in matches]
+    # Any contributing observation with no stated confidence makes the
+    # aggregate's confidence unstated too, rather than quietly computing a
+    # floor over only the observations that happened to state one.
+    confidence = None if any(c is None for c in raw_confidences) else min(raw_confidences)
     evidence_refs = sorted({obs.provenance.source_ref for obs in matches if obs.provenance.source_ref})
     source_ref = evidence_refs[0] if len(evidence_refs) == 1 else None
     provenance = Provenance(kind=kind, confidence=confidence, source_ref=source_ref)
@@ -252,7 +294,8 @@ def _conventions_dimension(conventions: list[ConventionSpec], *, stats: Traversa
         if not _traversal_exhaustive(stats):
             return ProfileDimension(dimension=name, resolution=ProfileResolution.UNKNOWN, attributions=[])
         provenance = Provenance(kind=ProvenanceKind.OBSERVED, confidence=1.0, source_ref=".")
-        return _dimension(name, [_make_attribution("no-conventions-observed", provenance, [])])
+        value = _scope_none_observed("no-conventions-observed", stats)
+        return _dimension(name, [_make_attribution(value, provenance, [])])
 
     value = ", ".join(sorted({convention.subject for convention in conventions}))
     confidences = [convention.confidence for convention in conventions]

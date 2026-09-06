@@ -129,6 +129,7 @@ These commands ship today, and this is the whole list:
 ```bash
 agent-foundry doctor [<project-path>]         # check the install, and a project if one is in scope
 agent-foundry inspect <project-path>          # read-only inventory, conventions, readiness
+agent-foundry profile <project-path>          # deterministic ProjectProfile synthesis (--format json|yaml)
 agent-foundry adopt <project-path>            # ProjectManifest + AdoptionChangeSet (preview only)
 agent-foundry resolve-toolkit <project-path>  # version-pinned Project Toolkit, or a Task Toolkit
 agent-foundry integration-check <file>        # integration preflight, credentials never read
@@ -138,11 +139,12 @@ agent-foundry version
 ```
 
 `adopt` is preview-only: it prints a plan and writes nothing. There is no `--apply`.
+`profile` is read-only and descriptive only: it grants no authority and does not feed
+`adopt`'s manifest or change-set output.
 
 Still intended, and **not yet built** — no subcommand exists for any of these:
 
 ```text
-agent-foundry profile <project-path>       # ProjectProfile synthesis as a first-class stage
 agent-foundry work plan <objective>        # decomposition from the CLI (Python API only today)
 agent-foundry render <execution-bundle>    # standalone render (today: compile --render)
 agent-foundry reconcile <project-path>     # reconciliation from the CLI (Python API only today)
