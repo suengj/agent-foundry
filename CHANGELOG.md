@@ -71,6 +71,17 @@ recorded as planned rather than implemented.
   **No synthesizer and no `agent-foundry profile` command are added**: nothing in this
   release produces a `ProjectProfile`, and no existing contract gained a field
   referencing one.
+- `ProjectProfile` now rejects duplicate `ProfileDimension.dimension` names within one
+  profile, fail-closed, via a sibling-level `model_validator` on `ProjectProfile` itself
+  (`ProfileDimension` cannot see its siblings, so the rule could not live there). The
+  error names every duplicated dimension, sorted, e.g. `duplicate ProfileDimension
+  name(s) are not allowed within one profile: 'runtime'`. This closes the SUE-609 gap
+  previously recorded here as open: a name-based lookup can no longer silently pick
+  whichever same-named entry it hits first — a genuine disagreement must be expressed as
+  `CONFLICTED` inside one dimension, not as two dimensions sharing a name.
+  `ProfileDimension._validate_resolution_matches_attributions` also gained an explicit
+  `else` branch that raises, so a future `ProfileResolution` member cannot be added
+  without this validator being updated to handle it.
 
 ### Compatibility rule
 
@@ -98,10 +109,6 @@ separately-persisted contract on every entry path (`model_validate`, `load_yaml`
   them reachable would mean versioning a decomposition input, which this release does
   not do. Recorded in `models/compat.py` and in the contract delta rather than left to
   be rediscovered.
-- `ProfileDimension.dimension` names are **not** checked for uniqueness within one
-  `ProjectProfile`: two dimensions with the same name validate today. Left open
-  deliberately (SUE-609) rather than fixed in passing, so the invariant is decided in
-  its own slice.
 
 ### Known residuals
 

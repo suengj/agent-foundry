@@ -9,6 +9,7 @@ outcomes, and that two semantically equal profiles serialize to identical bytes.
 from __future__ import annotations
 
 import typing
+from pathlib import Path
 
 import pytest
 from pydantic import BaseModel, ValidationError
