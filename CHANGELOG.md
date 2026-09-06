@@ -88,9 +88,11 @@ recorded as planned rather than implemented.
   produce one `conflicted` dimension with both provenance-bearing attributions preserved.
   A small, deliberately narrow exception lets a handful of purely structural
   presence/absence dimensions (test/CI/lint markers, deploy hints, and the like) resolve
-  "not observed" — but only when `traversal_stats` shows no genuine hole in what the walk
-  covered (no depth/entry limit, no unobservable path, no containment refusal); any of
-  those leaves the dimension `unknown` like everything else. A directory the walk
+  "not observed" — but only when the intake shows no genuine hole in what the walk
+  covered (no depth/entry limit, no unobservable path, no containment refusal, and no
+  file skipped for exceeding the read-size limit — a content-derived observation, such
+  as a Makefile target, could never have been emitted for a file the walk never read);
+  any of those leaves the dimension `unknown` like everything else. A directory the walk
   deliberately skipped by name (`.git`, `vendor`, `build`, …) is not such a hole, so it does
   not force `unknown` — but the resolved value says so explicitly (`"...outside skipped
   directories (entries_skipped_ignored_dir=N)"`) rather than reading as a universal claim

@@ -410,6 +410,83 @@ def test_c_real_ignored_dir_and_refused_symlink_fixtures_reproduce_the_scoped_an
         )
 
 
+def test_c_makefile_lint_and_typecheck_targets_reach_the_lint_type_entrypoint_dimension(
+    tmp_path: Path,
+) -> None:
+    """B1 revision-2 regression, path 1: `_MAKEFILE_TARGET_SUBJECTS` (collectors.py)
+    emits `lint-entrypoint`/`typecheck-entrypoint` observations for a Makefile's
+    `lint:`/`typecheck:` targets, distinct from the filename-marker subject
+    `lint-type-entrypoint` (ruff.toml, mypy.ini, ...). All three must feed the
+    same dimension, or a Makefile-only project silently under-reports."""
+    (tmp_path / "Makefile").write_text("lint:\n\truff check .\n\ntypecheck:\n\tmypy .\n")
+    (tmp_path / "main.py").write_text("print(1)\n")
+
+    intake = inspect_project(tmp_path)
+    subjects = {obs.subject for obs in intake.observations}
+    assert {"lint-entrypoint", "typecheck-entrypoint"} <= subjects, (
+        "the fixture must actually produce both Makefile-target observations, "
+        "or this test proves nothing"
+    )
+
+    profile = synthesize_project_profile(intake)
+    dim = next(d for d in profile.dimensions if d.dimension == "testability.lint-type-entrypoint")
+    assert dim.resolution is ProfileResolution.RESOLVED
+    assert "lint" in dim.attributions[0].value
+    assert "typecheck" in dim.attributions[0].value
+
+
+def test_c_agent_facing_project_docs_reach_the_instruction_fragmentation_dimension(
+    tmp_path: Path,
+) -> None:
+    """B1 revision-2 regression, path 2: `project-docs` (agent-facing docs under
+    `docs/ai/`, collectors.py) is instruction/context surface exactly as much as
+    an `agent-instruction-surface` file — a dimension whose stated purpose is
+    measuring fragmentation must count both, not just one."""
+    (tmp_path / "docs" / "ai").mkdir(parents=True)
+    (tmp_path / "docs" / "ai" / "project-context.md").write_text("# context\n")
+    (tmp_path / "AGENTS.md").write_text("# agent rules\n")
+    (tmp_path / "main.py").write_text("print(1)\n")
+
+    intake = inspect_project(tmp_path)
+    subjects = {obs.subject for obs in intake.observations}
+    assert {"agent-instruction-surface", "project-docs"} <= subjects, (
+        "the fixture must actually produce both subjects, or this test proves nothing"
+    )
+
+    profile = synthesize_project_profile(intake)
+    dim = next(d for d in profile.dimensions if d.dimension == "instruction.fragmentation")
+    assert dim.resolution is ProfileResolution.RESOLVED
+    assert "AGENTS.md" in dim.attributions[0].value
+    assert "docs/ai/project-context.md" in dim.attributions[0].value
+
+
+def test_c_a_file_skipped_for_size_forces_unknown_rather_than_none_observed(tmp_path: Path) -> None:
+    """B1 revision-2 regression, path 3: a Makefile too large to read
+    (`file-read-skipped`) means `test:`-target detection never ran — the
+    intake itself records the disqualifying fact (`evidence.unread-files`), and
+    the exhaustive-absence exception must account for it rather than reporting
+    'none-observed' over content the walk knowingly never read."""
+    oversized_makefile = "test:\n\tpytest\n" + ("# " + "x" * 70_000 + "\n")
+    (tmp_path / "Makefile").write_text(oversized_makefile)
+    (tmp_path / "main.py").write_text("print(1)\n")
+
+    intake = inspect_project(tmp_path)
+    assert any(obs.subject == "file-read-skipped" for obs in intake.observations), (
+        "the fixture Makefile must actually exceed the read-size limit, or "
+        "this test proves nothing"
+    )
+    # And no marker-based test-entrypoint observation exists either — the only
+    # evidence this project could have produced was inside the unread file.
+    assert not any(obs.subject == "test-entrypoint" for obs in intake.observations)
+
+    profile = synthesize_project_profile(intake)
+    dim = next(d for d in profile.dimensions if d.dimension == "testability.test-entrypoint")
+    assert dim.resolution is ProfileResolution.UNKNOWN, (
+        f"expected UNKNOWN over an unread Makefile, got {dim.resolution} "
+        f"{[a.value for a in dim.attributions]}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # D. Conflict — one CONFLICTED dimension, attributions preserved
 # ---------------------------------------------------------------------------

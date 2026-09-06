@@ -53,9 +53,12 @@ walked tree" dimensions (test harness markers, CI workflow files, deploy hints,
 and so on): here, and only when the traversal was *exhaustive* (see
 ``_traversal_exhaustive``), "no such marker was observed" is itself a directly
 observed fact — not a claim about safety, risk, or authority, and not drawn from
-a walk that hit a depth/entry limit, left a path unobservable, or refused a
-containment escape (all genuine holes, so these dimensions fall back to
-``UNKNOWN`` exactly like every other one when any of them occurred). A
+a walk that hit a depth/entry limit, left a path unobservable, refused a
+containment escape, or skipped a file for exceeding the read-size limit (all
+genuine holes — the last one because a content-derived observation, such as a
+Makefile target, could never have been emitted for a file the walk never read —
+so these dimensions fall back to ``UNKNOWN`` exactly like every other one when
+any of them occurred). A
 *deliberately skipped* directory (``.git``, ``node_modules``, and the rest of
 ``SKIP_DIR_NAMES`` — true of nearly every real repository) is not such a hole,
 so it does not force ``UNKNOWN``; instead the resolved value says explicitly
@@ -157,26 +160,36 @@ def _dimension(name: str, attributions: list[ProfileAttribution]) -> ProfileDime
     return ProfileDimension(dimension=name, resolution=resolution, attributions=deduped)
 
 
-def _traversal_exhaustive(stats: TraversalStats) -> bool:
+def _traversal_exhaustive(stats: TraversalStats, *, unread_file_count: int = 0) -> bool:
     """True only when the walk left no genuine hole in the ground it covered.
 
-    A depth/entry limit, an unobservable path, or a containment refusal (a
-    symlink resolving outside the root) are all genuine holes: the unexamined
-    region might hold anything, so "no marker of kind X was found" must fall
-    back to UNKNOWN rather than be reported as resolved. A *deliberately
-    ignored* directory (``.git``, ``node_modules``, ``vendor``, ``build``, and
-    the rest of ``SKIP_DIR_NAMES``) is different in kind — it is a documented,
-    bounded exclusion, not an unknown hole — so it does not gate this check at
-    all. It still must not be swallowed silently: callers that report a
-    resolved "not observed" fact scope that claim to say a skip happened,
-    rather than asserting it holds over ground the walk knowingly did not
-    cover (see ``_scope_none_observed``).
+    A depth/entry limit, an unobservable path, a containment refusal (a
+    symlink resolving outside the root), or a file skipped for exceeding the
+    read-size limit are all genuine holes: the unexamined content might hold
+    anything a content-derived observation (a Makefile target, say) would have
+    reported, so "no marker of kind X was found" must fall back to UNKNOWN
+    rather than be reported as resolved. This gate is deliberately coarse — a
+    read-skipped file anywhere in the intake forces every exhaustive-absence
+    dimension to UNKNOWN, even one that would not itself have depended on that
+    file's content — because the alternative (mapping each dimension to the
+    specific files whose content could affect it) would silently need updating
+    every time a new observation subject started reading a new file, and a
+    stale mapping there fails open exactly where this module must fail closed.
+
+    A *deliberately ignored* directory (``.git``, ``node_modules``, ``vendor``,
+    ``build``, and the rest of ``SKIP_DIR_NAMES``) is different in kind — it is
+    a documented, bounded exclusion, not an unknown hole — so it does not gate
+    this check at all. It still must not be swallowed silently: callers that
+    report a resolved "not observed" fact scope that claim to say a skip
+    happened, rather than asserting it holds over ground the walk knowingly
+    did not cover (see ``_scope_none_observed``).
     """
     return (
         not stats.depth_limit_reached
         and not stats.entry_limit_reached
         and stats.entries_unobservable == 0
         and stats.entries_skipped_refused == 0
+        and unread_file_count == 0
     )
 
 
@@ -234,7 +247,8 @@ def _aggregate_observation_dimension(
 ) -> ProfileDimension:
     matches = [obs for obs in observations if obs.subject in subjects]
     if not matches:
-        if not _traversal_exhaustive(stats):
+        unread_file_count = sum(1 for obs in observations if obs.subject == "file-read-skipped")
+        if not _traversal_exhaustive(stats, unread_file_count=unread_file_count):
             return ProfileDimension(dimension=name, resolution=ProfileResolution.UNKNOWN, attributions=[])
         provenance = Provenance(kind=ProvenanceKind.OBSERVED, confidence=1.0, source_ref=".")
         value = _scope_none_observed(none_observed_value, stats)
@@ -288,10 +302,16 @@ def _repository_revision_dimension(
     )
 
 
-def _conventions_dimension(conventions: list[ConventionSpec], *, stats: TraversalStats) -> ProfileDimension:
+def _conventions_dimension(
+    conventions: list[ConventionSpec],
+    observations: list[ProjectObservation],
+    *,
+    stats: TraversalStats,
+) -> ProfileDimension:
     name = "assurance.conventions-observed"
     if not conventions:
-        if not _traversal_exhaustive(stats):
+        unread_file_count = sum(1 for obs in observations if obs.subject == "file-read-skipped")
+        if not _traversal_exhaustive(stats, unread_file_count=unread_file_count):
             return ProfileDimension(dimension=name, resolution=ProfileResolution.UNKNOWN, attributions=[])
         provenance = Provenance(kind=ProvenanceKind.OBSERVED, confidence=1.0, source_ref=".")
         value = _scope_none_observed("no-conventions-observed", stats)
@@ -427,7 +447,12 @@ def synthesize_project_profile(intake: ProjectIntake) -> ProjectProfile:
         _aggregate_observation_dimension(
             "testability.lint-type-entrypoint",
             intake.observations,
-            frozenset({"lint-type-entrypoint"}),
+            # `lint-type-entrypoint` covers filename markers (ruff.toml, mypy.ini,
+            # ...); `lint-entrypoint`/`typecheck-entrypoint` are the Makefile
+            # `lint:`/`typecheck:` target observations `_MAKEFILE_TARGET_SUBJECTS`
+            # emits (collectors.py). All three answer the same question — is a
+            # lint or type-check entrypoint present — so all three must feed it.
+            frozenset({"lint-type-entrypoint", "lint-entrypoint", "typecheck-entrypoint"}),
             stats=stats,
         )
     )
@@ -467,12 +492,16 @@ def synthesize_project_profile(intake: ProjectIntake) -> ProjectProfile:
         _aggregate_observation_dimension(
             "instruction.fragmentation",
             intake.observations,
-            frozenset({"agent-instruction-surface"}),
+            # `project-docs` (agent-facing docs under `docs/ai/`, collectors.py)
+            # is instruction/context surface exactly as much as an
+            # `agent-instruction-surface` file is — a dimension whose stated
+            # purpose is measuring fragmentation must count both.
+            frozenset({"agent-instruction-surface", "project-docs"}),
             stats=stats,
             none_observed_value="no-agent-instruction-surface-observed",
         )
     )
-    dimensions.append(_conventions_dimension(intake.conventions, stats=stats))
+    dimensions.append(_conventions_dimension(intake.conventions, intake.observations, stats=stats))
     dimensions.append(_traversal_coverage_dimension(stats))
     dimensions.append(_unobservable_paths_dimension(intake.observations, stats))
     dimensions.append(_unread_files_dimension(intake.observations))
