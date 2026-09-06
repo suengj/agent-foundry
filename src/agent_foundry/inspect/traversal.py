@@ -7,6 +7,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import yaml
+
 # Documented traversal bounds — keep in sync with TraversalLimits defaults.
 DEFAULT_MAX_DEPTH = 12
 DEFAULT_MAX_ENTRIES = 2000
@@ -145,6 +147,298 @@ def entries_outside(entries: list[RepoEntry], boundaries: list[str]) -> list[Rep
             entry.relative_path.startswith(bound + "/") for bound in boundaries
         )
     ]
+
+
+# -----------------------------------------------------------------------------
+# Nested-project ownership: owner-declared override
+# -----------------------------------------------------------------------------
+#
+# `nested_project_roots` above is a heuristic, and a sound one — but an owner
+# sometimes knows better than the marker: a vendored subtree with its own
+# `pyproject.toml` that is nonetheless maintained as part of this project, or a
+# quiet subdirectory with no marker at all that the owner wants treated as if it
+# were somebody else's. Neither case is inferable from the walk; both are a
+# scoping decision only the owner can make. `.foundry/project.yaml` is the
+# surface Foundry already owns for owner declarations (see
+# `inspect/classification.py`), so the override lives there rather than in a
+# new file.
+FOUNDRY_PROJECT_YAML_CANDIDATES: tuple[str, ...] = (
+    ".foundry/project.yaml",
+    ".foundry/project.yml",
+)
+
+# Dotted key path inside the declaration file. Kept separate from
+# classification.py's `_DECLARED_PATHS` table: that table feeds manifest
+# dimensions through `adopt.manifest`, and this key feeds traversal directly —
+# conflating them would make one file's parsing depend on the other's schema.
+NESTED_OVERRIDE_KEY_PATH: tuple[str, ...] = ("inspection", "nested_project_overrides")
+NESTED_OVERRIDE_INCLUDE_KEY = "include"
+NESTED_OVERRIDE_EXCLUDE_KEY = "exclude"
+
+
+@dataclass(frozen=True)
+class NestedProjectOverrides:
+    """Owner-declared adjustment to the nested-project heuristic.
+
+    Absent entirely (no declaration file, no key, or an explicit empty
+    mapping/list) this carries no paths and `malformed=False`: that is the
+    "no override declared" case, and the default heuristic applies exactly as
+    before. `malformed=True` means a declaration existed but could not be
+    trusted — the default heuristic still applies, but the fact that an
+    override was attempted and rejected is preserved rather than discarded, so
+    a reader is never left believing nothing was ever declared.
+    """
+
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
+    source_ref: str | None = None
+    malformed: bool = False
+    malformed_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class NestedProjectOverrideDecision:
+    """One override outcome — recorded whether or not it changed anything.
+
+    A no-op override (naming a path that was never excluded, or that some
+    other boundary already covers) is exactly as visible as one that took
+    effect: silently accepting a no-op would look identical to silently
+    ignoring a typo.
+    """
+
+    path: str
+    action: str  # "include" (re-include a nested subtree) | "exclude" | "malformed"
+    applied: bool
+    reason: str
+
+
+def _clean_override_path(value: object) -> str | None:
+    """Normalize one declared override path, or None when it cannot be trusted.
+
+    `.` is accepted here and rejected later, by name, when it is used to name
+    the repository root — that keeps "the root can't be a nested project" a
+    legible, specific decision instead of a blanket parse failure.
+    """
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return None
+    candidate = candidate.strip("/")
+    if not candidate:
+        return "."
+    parts = candidate.split("/")
+    if any(part in ("", "..") for part in parts):
+        return None
+    return candidate
+
+
+def _validate_override_path_list(raw: object) -> tuple[str, ...] | None:
+    """Return a normalized, deduplicated, sorted path tuple, or None if unusable."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        return None
+    cleaned: list[str] = []
+    for item in raw:
+        path = _clean_override_path(item)
+        if path is None:
+            return None
+        cleaned.append(path)
+    return tuple(sorted(set(cleaned)))
+
+
+def load_nested_project_overrides(
+    root: Path,
+    entries: list[RepoEntry],
+    *,
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+) -> NestedProjectOverrides:
+    """Read the owner's nested-project override declaration, failing closed on doubt.
+
+    Only `.foundry/project.yaml` (or `.yml`) is consulted. Anything short of a
+    clean `{include: [...], exclude: [...]}` mapping of relative path strings
+    under `inspection.nested_project_overrides` is treated as malformed: an
+    owner who misconfigures the override must see that it was rejected, not
+    have Foundry silently fall back to "no exclusion at all" or silently guess
+    at a shape.
+    """
+    key_label = ".".join(NESTED_OVERRIDE_KEY_PATH)
+    rel = next(
+        (c for c in FOUNDRY_PROJECT_YAML_CANDIDATES if c in file_path_set(entries)), None
+    )
+    if rel is None:
+        return NestedProjectOverrides()
+
+    content = read_text_bounded(root / rel, max_bytes=max_file_bytes)
+    if content is None:
+        # The declaration file exists but could not be read within bounds — that
+        # is a fact `collect_unread_file_observations`/`unobservable` already
+        # surfaces elsewhere; here it simply means no override was read.
+        return NestedProjectOverrides(source_ref=rel)
+
+    try:
+        parsed = yaml.safe_load(content)
+    except yaml.YAMLError:
+        return NestedProjectOverrides(
+            source_ref=rel, malformed=True, malformed_reason=f"{rel} is not valid YAML"
+        )
+
+    if parsed is None:
+        return NestedProjectOverrides(source_ref=rel)
+    if not isinstance(parsed, dict):
+        return NestedProjectOverrides(source_ref=rel)
+
+    node: object = parsed
+    for key in NESTED_OVERRIDE_KEY_PATH:
+        if not isinstance(node, dict):
+            node = None
+            break
+        node = node.get(key)
+    if node is None:
+        return NestedProjectOverrides(source_ref=rel)
+    if not isinstance(node, dict):
+        return NestedProjectOverrides(
+            source_ref=rel,
+            malformed=True,
+            malformed_reason=f"{key_label} in {rel} must be a mapping with 'include'/'exclude' lists",
+        )
+
+    unknown_keys = set(node.keys()) - {NESTED_OVERRIDE_INCLUDE_KEY, NESTED_OVERRIDE_EXCLUDE_KEY}
+    if unknown_keys:
+        return NestedProjectOverrides(
+            source_ref=rel,
+            malformed=True,
+            malformed_reason=(
+                f"{key_label} in {rel} has unrecognised key(s): "
+                + ", ".join(sorted(str(k) for k in unknown_keys))
+            ),
+        )
+
+    include = _validate_override_path_list(node.get(NESTED_OVERRIDE_INCLUDE_KEY))
+    exclude = _validate_override_path_list(node.get(NESTED_OVERRIDE_EXCLUDE_KEY))
+    if include is None or exclude is None:
+        return NestedProjectOverrides(
+            source_ref=rel,
+            malformed=True,
+            malformed_reason=(
+                f"{key_label} in {rel}: 'include'/'exclude' must each be a list of "
+                "relative path strings"
+            ),
+        )
+
+    return NestedProjectOverrides(include=include, exclude=exclude, source_ref=rel)
+
+
+def resolve_nested_project_boundaries(
+    root: Path,
+    entries: list[RepoEntry],
+    overrides: NestedProjectOverrides,
+) -> tuple[list[str], list[NestedProjectOverrideDecision]]:
+    """Apply an owner override to the default heuristic, one decision per entry.
+
+    The default heuristic (`nested_project_roots`) always runs first and is
+    never weakened: an override only ever adds an explicit decision on top of
+    it. A malformed override changes nothing and produces exactly one decision
+    explaining why. An empty override (nothing declared) changes nothing and
+    produces no decisions at all — there is nothing to make visible when
+    nothing was declared.
+    """
+    default_boundaries = nested_project_roots(root, entries)
+
+    if overrides.malformed:
+        reason = overrides.malformed_reason or "nested-project override could not be parsed"
+        return default_boundaries, [
+            NestedProjectOverrideDecision(
+                path=overrides.source_ref or ".",
+                action="malformed",
+                applied=False,
+                reason=f"{reason}; default heuristic applied unchanged",
+            )
+        ]
+
+    if not overrides.include and not overrides.exclude:
+        return default_boundaries, []
+
+    dir_paths = {entry.relative_path for entry in entries if entry.is_dir}
+    boundaries: set[str] = set(default_boundaries)
+    decisions: list[NestedProjectOverrideDecision] = []
+
+    for path in overrides.include:
+        covering = next(
+            (bound for bound in default_boundaries if _is_within(path, bound)), None
+        )
+        if covering is None:
+            decisions.append(
+                NestedProjectOverrideDecision(
+                    path=path,
+                    action="include",
+                    applied=False,
+                    reason="not an excluded nested-project boundary; override has no effect",
+                )
+            )
+            continue
+        boundaries.discard(covering)
+        if covering == path:
+            reason = f"override re-included nested-project boundary {covering}"
+        else:
+            reason = (
+                f"override re-included nested-project boundary {covering} "
+                f"(named via {path})"
+            )
+        decisions.append(
+            NestedProjectOverrideDecision(path=covering, action="include", applied=True, reason=reason)
+        )
+
+    for path in overrides.exclude:
+        if path == ".":
+            decisions.append(
+                NestedProjectOverrideDecision(
+                    path=path,
+                    action="exclude",
+                    applied=False,
+                    reason="the repository root can never be declared a nested project",
+                )
+            )
+            continue
+        if path not in dir_paths:
+            decisions.append(
+                NestedProjectOverrideDecision(
+                    path=path,
+                    action="exclude",
+                    applied=False,
+                    reason="override path does not exist as a directory in this repository",
+                )
+            )
+            continue
+        if any(_is_within(path, bound) for bound in boundaries):
+            decisions.append(
+                NestedProjectOverrideDecision(
+                    path=path,
+                    action="exclude",
+                    applied=False,
+                    reason="already covered by an existing nested-project boundary",
+                )
+            )
+            continue
+        boundaries.add(path)
+        decisions.append(
+            NestedProjectOverrideDecision(
+                path=path,
+                action="exclude",
+                applied=True,
+                reason=f"override excluded {path} as a nested-project boundary despite no project manifest",
+            )
+        )
+
+    final = sorted(boundaries)
+    outermost = [
+        candidate
+        for candidate in final
+        if not any(_is_within(candidate, other) for other in final if other != candidate)
+    ]
+    decisions.sort(key=lambda decision: (decision.path, decision.action))
+    return sorted(outermost), decisions
 
 
 CI_WORKFLOW_PREFIX = ".github/workflows/"

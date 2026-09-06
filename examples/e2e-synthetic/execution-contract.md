@@ -78,8 +78,8 @@ Apply the planned adoption change set so agent execution in this repository is b
 - capability/validation.review: required by selected task skills
 - capability/validation.test: required by selected task skills
 - convention/git-policy: convention selected because its evidence shares tokens with the work item objective (selection score=0.05)
-- convention/test-invocation: convention selected because its subject, pattern shares tokens with the work item scope, title (selection score=0.05)
-- convention/test-runner: convention selected because its subject, evidence shares tokens with the work item objective, title (selection score=0.07)
-- convention/test-runner: convention selected because its subject, evidence shares tokens with the work item objective, title (selection score=0.07)
-- integration/work-tracker: integration preflight health authorized meets required authorized within work item authority
-- ... and 25 further selection record(s); the ExecutionBundle `provenance` field carries all of them
+- convention/test-invocation: convention selected because its subject shares tokens with the work item title (selection score=0.04)
+- convention/test-invocation: convention selected because its subject, pattern shares tokens with the work item scope, title (selection score=0.08)
+- convention/test-runner: convention selected because its subject, pattern, evidence shares tokens with the work item objective, title (selection score=0.03)
+- convention/test-runner: convention selected because its subject, pattern, evidence shares tokens with the work item objective, title (selection score=0.03)
+- ... and 26 further selection record(s); the ExecutionBundle `provenance` field carries all of them

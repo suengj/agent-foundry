@@ -156,27 +156,44 @@ def test_repository_revision_is_unknown_in_a_git_worktree() -> None:
     assert revision_observations, "the absence must be recorded, not merely absent"
 
 
-def test_convention_discovery_covers_four_hardcoded_surfaces_only(
+def test_convention_discovery_covers_five_hardcoded_surfaces_only(
     result: PipelineResult,
 ) -> None:
     """AF8 measurement: what convention discovery can find, and what it cannot.
 
-    Discovery knows four patterns — a pytest mention in an instruction surface, a
-    commit constraint in one, a Makefile `test` recipe, and a CI checkout step. This
-    repository has the first two and neither of the last two, so it yields exactly the
-    conventions those patterns can see. The declared test runner in
-    `pyproject.toml [tool.pytest.ini_options]` — a stronger, declared fact — is not
-    among them, because nothing reads it.
+    Discovery knows five patterns — a pytest mention in an instruction surface, a
+    commit constraint in one, a Makefile `test` recipe, a structured
+    `pyproject.toml [tool.pytest.ini_options]` declaration, and a CI checkout step.
+    This repository has the first three and not the last one, so it yields exactly
+    the conventions those patterns can see. The structured `pyproject.toml`
+    declaration is now read, and it outranks the textual mentions: it is `DECLARED`
+    at a higher confidence, and every mention is demoted below its own baseline
+    confidence precisely because that stronger, structured fact is now known.
     """
     subjects = {convention.subject for convention in result.intake.conventions}
     assert subjects <= {"test-runner", "test-invocation", "ci-checkout", "git-policy"}
     assert "test-runner" in subjects
+    assert "test-invocation" in subjects, (
+        "pyproject.toml declares [tool.pytest.ini_options]; that structured fact "
+        "must now surface as a test-invocation convention"
+    )
     for convention in result.intake.conventions:
-        assert convention.provenance.kind is ProvenanceKind.INFERRED
-        assert convention.confidence <= 0.5, (
-            "every discoverable convention here is a textual mention, and a mention "
-            "is weaker evidence than the declaration in pyproject.toml that is not read"
-        )
+        if convention.subject == "test-invocation":
+            assert convention.provenance.kind is ProvenanceKind.DECLARED
+            assert convention.confidence > 0.5, (
+                "a structured declaration must outrank every textual mention"
+            )
+        else:
+            assert convention.provenance.kind is ProvenanceKind.INFERRED
+            assert convention.confidence <= 0.5, (
+                "every non-structured convention here is a textual mention, and a "
+                "mention is weaker evidence than the pyproject.toml declaration"
+            )
+            if convention.subject == "test-runner":
+                assert convention.confidence < 0.5, (
+                    "test-runner mentions must be demoted once pyproject.toml's "
+                    "structured declaration is known"
+                )
 
 
 def test_an_undeclared_copy_of_this_repository_resolves_no_toolkit(tmp_path) -> None:
@@ -332,15 +349,24 @@ def test_readiness_no_longer_reports_surfaces_this_repository_does_not_have(
     `credential-permission-isolation` said "Integration or credential declaration
     surfaces present". This repository has neither: both came entirely from nested
     fixture `Dockerfile`s and `env.example`s.
+
+    This repository's own tree also has a handful of source files that exceed the
+    read-size limit (SUE-580) — a genuine hole the walk could not see through, so
+    neither dimension is allowed to assert a confident "no such surface" absence
+    claim any more; both must read as "not confirmed" instead, qualified by the
+    read-skipped-file hole that produced the uncertainty.
     """
     by_dimension = {
         finding.dimension: finding for finding in result.intake.readiness_findings
     }
-    assert "No deploy/runtime surfaces observed" in by_dimension["runtime-isolation"].message
+    assert "not confirmed" in by_dimension["runtime-isolation"].message
+    assert "not fully observed" in by_dimension["runtime-isolation"].message
     assert (
-        "No integration declaration surfaces observed"
-        in by_dimension["credential-permission-isolation"].message
+        "file(s) skipped for exceeding the read-size limit"
+        in by_dimension["runtime-isolation"].message
     )
+    assert "not confirmed" in by_dimension["credential-permission-isolation"].message
+    assert "not fully observed" in by_dimension["credential-permission-isolation"].message
 
 
 def test_the_retrofit_is_additive_and_the_declaration_is_kept(

@@ -95,12 +95,22 @@ provenance:
 - component_id: test-invocation
   component_kind: convention
   evidence_refs:
+  - pyproject.toml
+  policy_id: null
+  project_fact: matching_fields=['subject']; work_item_fields=['title']; selection_score=0.04
+  rationale: convention selected because its subject shares tokens with the work item
+    title (selection score=0.04)
+  selected: true
+  source: project-fact
+- component_id: test-invocation
+  component_kind: convention
+  evidence_refs:
   - Makefile
   policy_id: null
   project_fact: matching_fields=['subject', 'pattern']; work_item_fields=['scope',
-    'title']; selection_score=0.05
+    'title']; selection_score=0.08
   rationale: convention selected because its subject, pattern shares tokens with the
-    work item scope, title (selection score=0.05)
+    work item scope, title (selection score=0.08)
   selected: true
   source: project-fact
 - component_id: test-runner
@@ -108,10 +118,10 @@ provenance:
   evidence_refs:
   - AGENTS.md
   policy_id: null
-  project_fact: matching_fields=['subject', 'evidence']; work_item_fields=['objective',
-    'title']; selection_score=0.07
-  rationale: convention selected because its subject, evidence shares tokens with
-    the work item objective, title (selection score=0.07)
+  project_fact: matching_fields=['subject', 'pattern', 'evidence']; work_item_fields=['objective',
+    'title']; selection_score=0.03
+  rationale: convention selected because its subject, pattern, evidence shares tokens
+    with the work item objective, title (selection score=0.03)
   selected: true
   source: project-fact
 - component_id: test-runner
@@ -119,10 +129,10 @@ provenance:
   evidence_refs:
   - CLAUDE.md
   policy_id: null
-  project_fact: matching_fields=['subject', 'evidence']; work_item_fields=['objective',
-    'title']; selection_score=0.07
-  rationale: convention selected because its subject, evidence shares tokens with
-    the work item objective, title (selection score=0.07)
+  project_fact: matching_fields=['subject', 'pattern', 'evidence']; work_item_fields=['objective',
+    'title']; selection_score=0.03
+  rationale: convention selected because its subject, pattern, evidence shares tokens
+    with the work item objective, title (selection score=0.03)
   selected: true
   source: project-fact
 - component_id: convention:remainder
@@ -417,6 +427,7 @@ scope:
 - Makefile
 selected_conventions:
 - git-policy
+- test-invocation
 - test-invocation
 - test-runner
 - test-runner

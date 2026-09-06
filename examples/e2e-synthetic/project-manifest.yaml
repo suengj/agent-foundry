@@ -40,21 +40,27 @@ observations:
     kind: inferred
     source_ref: AGENTS.md
   subject: convention-mention:git-policy
+- content: '[tool.pytest.ini_options]'
+  provenance:
+    confidence: 0.8
+    kind: declared
+    source_ref: pyproject.toml
+  subject: convention-mention:test-invocation
 - content: pytest -q
   provenance:
-    confidence: 0.5
-    kind: inferred
+    confidence: 0.8
+    kind: declared
     source_ref: Makefile
   subject: convention-mention:test-invocation
 - content: Run the test suite with pytest before proposing any change.
   provenance:
-    confidence: 0.5
+    confidence: 0.15
     kind: inferred
     source_ref: AGENTS.md
   subject: convention-mention:test-runner
 - content: Tests run under pytest. Keep the order model in `src/orders/`.
   provenance:
-    confidence: 0.5
+    confidence: 0.15
     kind: inferred
     source_ref: CLAUDE.md
   subject: convention-mention:test-runner
@@ -93,6 +99,14 @@ readiness_findings:
     kind: observed
     source_ref: AGENTS.md
   severity: high
+- blocker: false
+  dimension: inspection-completeness
+  message: Inspection walked the tree without leaving a genuine hole
+  provenance:
+    confidence: 1.0
+    kind: observed
+    source_ref: .
+  severity: low
 - blocker: false
   dimension: observability
   message: Runtime observability cannot be confirmed from repository inventory alone

@@ -333,7 +333,11 @@ def collect_foundry_observations(
     return observations
 
 
-def collect_nested_project_observations(boundaries: list[str]) -> list[ProjectObservation]:
+def collect_nested_project_observations(
+    boundaries: list[str],
+    *,
+    owner_declared: frozenset[str] = frozenset(),
+) -> list[ProjectObservation]:
     """Record every nested project boundary the walk found.
 
     The exclusion has to be visible. A nested project whose files are simply absent
@@ -341,11 +345,23 @@ def collect_nested_project_observations(boundaries: list[str]) -> list[ProjectOb
     not attribute this" would then read exactly like "there was nothing here" — the
     same confusion that made a truncated traversal report a repository as having no
     tests.
+
+    ``owner_declared`` names boundaries that exist because an owner declared them,
+    not because a project manifest was found there. Their reason has to differ:
+    saying such a subtree "declares its own project manifest" states something the
+    walk did not observe and, for an owner-excluded markerless directory, something
+    that is simply false. The exclusion is equally real either way; only its
+    justification changes.
     """
     return [
         _observed(
             "nested-project",
             (
+                f"nested project boundary: {boundary} is excluded by owner declaration; "
+                "its contents are not evidence about this project"
+            )
+            if boundary in owner_declared
+            else (
                 f"nested project boundary: {boundary} declares its own project manifest; "
                 "its contents are not evidence about this project"
             ),

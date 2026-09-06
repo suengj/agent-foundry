@@ -470,6 +470,14 @@ def test_entropy_tier_false_positives_are_measured_not_assumed_absent(
     the measurement working: `WorkClass` wire tokens moved from `ADOPTION` to
     `adoption`, which removed the mixed-case signal from every provenance string
     carrying one. The noise is smaller, not gone, and it is still not a secret.
+
+    SUE-580 raised it from 16 to 17: convention discovery now also reads
+    `pyproject.toml [tool.pytest.ini_options]` as a structured declaration, and every
+    textual pytest mention in this fixture is demoted accordingly — one more long,
+    punctuated `project_fact` string (the demoted mention's pattern, spelling out
+    that a structured declaration takes precedence) crosses the entropy rule's
+    threshold. Still ordinary prose, still not a secret, still worth re-measuring
+    rather than assuming away.
     """
     tier_b = [
         finding
@@ -489,7 +497,7 @@ def test_entropy_tier_false_positives_are_measured_not_assumed_absent(
     # Pinned to what was measured, not to a floor the measurement clears by a mile.
     # A drift in either direction is a change to the heuristic or to the artifacts,
     # and either is worth looking at.
-    assert len(tier_b) == 16, (
+    assert len(tier_b) == 17, (
         "measured Tier B false-positive count changed; the heuristic or the artifacts "
         "moved, and which one is worth knowing"
     )
