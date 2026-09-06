@@ -100,13 +100,19 @@ reader cross-reference it is exactly what ``_scope_none_observed`` exists to
 prevent, and scoping one exclusion class while silently ignoring the other was
 an inconsistency, not a design.
 
-A *manifest-detected* nested project is deliberately **not** scoped this way:
-that subtree is a different project, every dimension here is already scoped to
-this one, and ``tests/e2e/test_e2e_project_boundary.py`` requires that planting
-a whole second project inside the target change nothing about the target's
-diagnosis but the recorded boundary. See
-``inspect.readiness.owner_excluded_nested_boundary_refs`` for the full reasoning
-and for how the two are told apart.
+A *manifest-detected* nested project gets the same scoping, and an earlier
+revision of this module was wrong to withhold it. That revision argued the
+subtree is a different project, that every dimension here is already scoped to
+this one, and that ``tests/e2e/test_e2e_project_boundary.py`` required planting
+a second project to change nothing but the recorded boundary. The first two are
+false and the third was pinning the defect: "different project" is *Foundry's
+inference* from a subdirectory manifest, and a workspace root declaring
+``[tool.uv.workspace] members=["packages/*"]`` is the owner saying the opposite,
+so the heuristic overrode a real declaration and then published
+``operating.deploy-surface = none-observed`` at OBSERVED 1.0 over a tree holding
+``packages/api/Dockerfile``. The scope note is also not silent — it *enumerates*
+the exclusions, so naming only ``.git`` reads as the complete list. See
+``inspect.readiness.nested_boundary_refs``.
 
 **Determinism.** Same structured evidence -> byte-identical ``ProjectProfile``.
 Every dict/set-shaped collection this module touches — findings grouped by
@@ -140,7 +146,7 @@ from agent_foundry.inspect.classification import (
     reason_is_absence_enumeration,
     traversal_supports_absence_enumeration,
 )
-from agent_foundry.inspect.readiness import owner_excluded_nested_boundary_refs
+from agent_foundry.inspect.readiness import nested_boundary_refs
 
 # `authority.write_scope` is deliberately never echoed into a profile dimension.
 # Every other CLASSIFICATION_DIMENSIONS member is descriptive; this one names a
@@ -377,6 +383,39 @@ def _group_classification_findings(
 # ---------------------------------------------------------------------------
 
 
+def _none_observed_dimension(
+    name: str,
+    none_observed_value: str,
+    observations: list[ProjectObservation],
+    *,
+    stats: TraversalStats,
+    derivation: _SubjectDerivation,
+) -> ProfileDimension:
+    """The single emptiness gate: may ``name`` publish "nothing was observed"?
+
+    Every dimension that can report an absence routes its empty case through
+    here, stating the ``_SubjectDerivation`` that says which kind of hole can
+    hide what it looked for. Keeping the decision in one function means the
+    per-call-site judgement lives in exactly one place per dimension, and lets
+    ``tests/test_profile_synthesis.py`` bind its derivation tables to the actual
+    call sites rather than to a hand-kept list of dimension names.
+    """
+    if derivation is _SubjectDerivation.CONTENT:
+        unread_file_count = sum(1 for obs in observations if obs.subject == "file-read-skipped")
+        exhaustive = _traversal_exhaustive(stats, unread_file_count=unread_file_count)
+    else:
+        exhaustive = _path_traversal_exhaustive(stats)
+    if not exhaustive:
+        return ProfileDimension(dimension=name, resolution=ProfileResolution.UNKNOWN, attributions=[])
+    provenance = Provenance(kind=ProvenanceKind.OBSERVED, confidence=1.0, source_ref=".")
+    value = _scope_none_observed(
+        none_observed_value,
+        stats,
+        nested_boundaries=nested_boundary_refs(observations),
+    )
+    return _dimension(name, [_make_attribution(value, provenance, [])])
+
+
 def _aggregate_observation_dimension(
     name: str,
     observations: list[ProjectObservation],
@@ -398,20 +437,13 @@ def _aggregate_observation_dimension(
     """
     matches = [obs for obs in observations if obs.subject in subjects]
     if not matches:
-        if derivation is _SubjectDerivation.CONTENT:
-            unread_file_count = sum(1 for obs in observations if obs.subject == "file-read-skipped")
-            exhaustive = _traversal_exhaustive(stats, unread_file_count=unread_file_count)
-        else:
-            exhaustive = _path_traversal_exhaustive(stats)
-        if not exhaustive:
-            return ProfileDimension(dimension=name, resolution=ProfileResolution.UNKNOWN, attributions=[])
-        provenance = Provenance(kind=ProvenanceKind.OBSERVED, confidence=1.0, source_ref=".")
-        value = _scope_none_observed(
+        return _none_observed_dimension(
+            name,
             none_observed_value,
-            stats,
-            nested_boundaries=owner_excluded_nested_boundary_refs(observations),
+            observations,
+            stats=stats,
+            derivation=derivation,
         )
-        return _dimension(name, [_make_attribution(value, provenance, [])])
 
     value = "; ".join(sorted({obs.content for obs in matches}))
     kinds = {obs.provenance.kind for obs in matches}
@@ -481,17 +513,17 @@ def _conventions_dimension(
         # filename. A file the walk declined to read could hold a convention
         # this dimension would have reported, so "none observed" over an unread
         # file is not an observed fact. The content gate here is correct and
-        # stays -- unlike the filename-derived aggregates above.
-        unread_file_count = sum(1 for obs in observations if obs.subject == "file-read-skipped")
-        if not _traversal_exhaustive(stats, unread_file_count=unread_file_count):
-            return ProfileDimension(dimension=name, resolution=ProfileResolution.UNKNOWN, attributions=[])
-        provenance = Provenance(kind=ProvenanceKind.OBSERVED, confidence=1.0, source_ref=".")
-        value = _scope_none_observed(
+        # stays -- unlike the filename-derived aggregates above. It goes through
+        # the same `_none_observed_dimension` gate as every other absence claim
+        # rather than restating it, so this is a derivation call site like the
+        # others and the guard in `tests/test_profile_synthesis.py` sees it.
+        return _none_observed_dimension(
+            name,
             "no-conventions-observed",
-            stats,
-            nested_boundaries=owner_excluded_nested_boundary_refs(observations),
+            observations,
+            stats=stats,
+            derivation=_SubjectDerivation.CONTENT,
         )
-        return _dimension(name, [_make_attribution(value, provenance, [])])
 
     # One composite fact, not competing alternatives: "a test-invocation convention
     # and a git-policy convention were both discovered" is a single joined value in
@@ -507,8 +539,7 @@ def _conventions_dimension(
     #   * strength — the strongest evidence discovered for that subject. A
     #     `test-invocation` fact parsed out of `pyproject.toml` (DECLARED, 0.8) is
     #     not made less true by a prose mention of `test-runner` in an instruction
-    #     file (INFERRED, 0.15); a global `min()` over every convention reported
-    #     exactly that, republishing an 0.8 declaration at 0.15.
+    #     file (INFERRED, 0.15).
     #   * kind — the provenance kind backing that strongest evidence, preserved
     #     rather than hardcoded. A dimension carrying nothing but DECLARED facts
     #     said INFERRED before this, which is provenance laundering outright.
@@ -516,12 +547,23 @@ def _conventions_dimension(
     # A single ``Provenance`` cannot carry one confidence per subject, so the
     # per-subject strength and kind are stated in the value itself — every subject
     # is published with the evidence that actually backs it, and no consumer has to
-    # infer that a listed subject inherits the aggregate's number. The aggregate's
-    # own confidence is then the strongest evidence behind any listed subject
-    # (never the weakest, which floors an unrelated claim on an unrelated one), and
-    # its kind follows the `_aggregate_observation_dimension` precedent: a single
-    # contributing kind is preserved, a heterogeneous set is a derivation over
-    # disagreeing provenance and reports INFERRED.
+    # infer that a listed subject inherits the aggregate's number. That annotation
+    # is what answers the older complaint that a global floor "republished an 0.8
+    # declaration at 0.15": the 0.8 declaration is published, in the value, as
+    # `test-invocation (declared 0.80)`, whatever the composite's own number says.
+    #
+    # The composite's own confidence is therefore the *weakest* subject strength,
+    # exactly as `_aggregate_observation_dimension` does for the structurally
+    # identical join thirty lines up. It is one number attached to a value that
+    # asserts every listed subject at once, so it can only honestly be read as the
+    # confidence in the whole conjunction — and a conjunction is no better
+    # supported than its worst-supported term. Taking the strongest instead
+    # published, on this very repository, an INFERRED composite at 0.8 when no
+    # inference in it exceeded 0.15: an aggregate carrying a confidence nothing
+    # under it earned, which is laundering in the other direction. The kind
+    # follows the same precedent: a single contributing kind is preserved, a
+    # heterogeneous set is a derivation over disagreeing provenance and reports
+    # INFERRED.
     by_subject: dict[str, list[ConventionSpec]] = {}
     for convention in conventions:
         by_subject.setdefault(convention.subject, []).append(convention)
@@ -549,7 +591,7 @@ def _conventions_dimension(
 
     value = ", ".join(parts)
     kind = next(iter(subject_kinds)) if len(subject_kinds) == 1 else ProvenanceKind.INFERRED
-    confidence = max(subject_strengths)
+    confidence = min(subject_strengths)
     evidence_refs = sorted({convention.source_ref for convention in conventions if convention.source_ref})
     provenance = Provenance(kind=kind, confidence=confidence, source_ref=None)
     return _dimension(name, [_make_attribution(value, provenance, evidence_refs)])

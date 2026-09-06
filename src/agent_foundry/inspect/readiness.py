@@ -74,9 +74,20 @@ to redo it, and so a wrong blanket claim cannot survive a second time:
   the ``deploy/`` prefix. NAME.
 * ``credential-permission-isolation`` — ``integration-config``: marker
   filenames (``.env.example`` and friends). NAME.
-* ``fragmented-agent-rule-surfaces`` — observation ``source_ref`` paths spelling
-  ``AGENTS`` / ``CLAUDE`` / ``.cursor``. That a path exists is a name fact no
-  matter which collector emitted the observation carrying it. NAME.
+* ``fragmented-agent-rule-surfaces`` — ``agent-instruction-surface``
+  observations (``AGENT_RULE_RELATIVE_PATHS`` plus the ``.cursor/rules``
+  prefix), read by **subject**. NAME. An earlier version of this row read
+  "observation ``source_ref`` paths spelling ``AGENTS`` / ``CLAUDE`` /
+  ``.cursor``. That a path exists is a name fact no matter which collector
+  emitted the observation carrying it." Both halves were false, and the second
+  is what hid the first. A ``source_ref`` is not an assertion that its path
+  exists, let alone that a surface is there: a *rejected* ``nested-project``
+  override decision carries the path of a directory the walk has just
+  determined does **not** exist, and the substring scan republished exactly
+  that path as an OBSERVED surface at confidence 1.0. It also outlived owner
+  exclusions, so removing a surface left the finding still asserting it. Which
+  collector emitted an observation is therefore not incidental — it is the
+  whole of what the observation means, and only the subject records it.
 * ``unreconciled-subject-mentions`` — ``ConventionSpec`` records, which *are*
   content-derived (``inspect/conventions.py``). This finding is emitted only
   when two or more such records exist: it makes no absence claim, so a content
@@ -237,50 +248,58 @@ from agent_foundry.inspect.collectors import (  # noqa: E402  (placed with its r
 )
 
 
-def owner_excluded_nested_boundary_refs(
+def nested_boundary_refs(
     observations: list[ProjectObservation],
 ) -> list[str]:
-    """Owner-*declared* nested-project exclusions, sorted. Not manifest-detected ones.
+    """Every nested-project boundary, sorted — owner-declared *and* manifest-detected.
 
-    Only the owner-declared half scopes a "none observed" claim, and the
-    asymmetry is deliberate rather than an oversight in the other direction.
+    An earlier version returned only the owner-declared half, on the argument
+    that a subtree carrying its own project manifest is a *different project*,
+    so its files were never candidates for "this project's" claims and naming it
+    in an absence message adds nothing. That asymmetry has been overturned, for
+    three reasons.
 
-    A subtree that carries its own project manifest is a *different project*.
-    Every claim in a readiness report or a profile is scoped to "this project"
-    already, so the nested project's files were never candidates for it: nothing
-    about "no deploy surface in this project" becomes less true because some
-    other project living in a subdirectory has a Dockerfile.
-    ``tests/e2e/test_e2e_project_boundary.py`` states that contract directly —
-    planting a whole second project inside the target must change *nothing*
-    about the target's diagnosis except the recorded boundary — and adding the
-    subtree's name to every absence message would break it, in service of an
-    ambiguity that does not exist.
+    **The note is printed, and it is wrong.** ``_scope_absence`` does not stay
+    silent about exclusions; it *enumerates* them. Under the old rule a
+    uv/poetry-style workspace — root ``pyproject.toml`` with
+    ``[tool.uv.workspace] members = ["packages/*"]``, a ``Dockerfile`` under
+    ``packages/api`` — published "No deploy/runtime surfaces observed in
+    repository inventory (outside skipped directories; ...)". A reader handed a
+    list of the exclusions that shaped a claim reads it as *the* list, so
+    enumerating one exclusion and suppressing another is worse than enumerating
+    neither.
 
-    An owner-declared exclusion is a different thing. It can be applied to an
-    arbitrary **markerless** directory, so the excluded ground carries no signal
-    of its own that it belongs to a separate project; by every structural
-    measure it is part of this one, and the owner has simply asked that it not
-    be treated as evidence. There "none observed" genuinely does read as a
-    universal claim over ground the report knowingly did not cover — a
-    repository with ``exclude: [src]`` and a ``src/Dockerfile`` would otherwise
-    be published as having no deploy surface at all — which is exactly what
-    ``_scope_absence`` exists to prevent for a skipped directory.
+    **"Different project" is Foundry's inference, not the owner's.**
+    ``traversal.nested_project_roots`` fires on any subdirectory
+    ``pyproject.toml`` / ``package.json`` / ``go.mod`` / ``setup.py``. In the
+    workspace case that inference is simply false: the root's own
+    ``[tool.uv.workspace]`` is the owner declaring these are one project, and
+    the heuristic overrides it. So the manifest-detected half is the half where
+    *no human asserted anything*, which makes it the weaker claim to leave
+    unscoped, not the stronger — exactly backwards from the old justification.
 
-    Identified by the content prefix *and* by ``DECLARED`` provenance, both of
-    which ``collect_nested_project_observations`` sets for precisely this case:
-    the ``nested-project`` subject also carries override *decisions* (rejected
-    ones name a path that is not a boundary at all) and supersession notes,
-    which the prefix filters out, and manifest-detected boundaries, which the
-    provenance kind filters out. This couples the helper to that collector's
-    wording; the end-to-end scoping tests fail loudly if it drifts rather than
-    silently dropping the scope note.
+    **There is no principled line.** ``vendor`` and ``node_modules`` are "not
+    this project" by precisely the same reasoning, and they are scoped.
+
+    ``tests/e2e/test_e2e_project_boundary.py`` already carves out
+    ``repository-structure`` from its "planting a project changes nothing"
+    contract, because a new directory existing *is* a fact about the target. A
+    scope note is the same class of fact: that the diagnosis no longer covers
+    ground it previously covered. The test now states that.
+
+    Boundary records are still identified by the content prefix
+    ``collect_nested_project_observations`` writes, because the
+    ``nested-project`` subject also carries override *decisions* (a rejected one
+    names a path that is not a boundary at all — it does not exist) and
+    supersession notes. Only the ``DECLARED`` provenance filter is gone. This
+    couples the helper to that collector's wording; the end-to-end scoping tests
+    fail loudly if it drifts rather than silently dropping the scope note.
     """
     return sorted(
         {
             obs.provenance.source_ref
             for obs in observations
             if obs.subject == "nested-project"
-            and obs.provenance.kind is ProvenanceKind.DECLARED
             and obs.content.startswith(NESTED_BOUNDARY_CONTENT_PREFIX)
             and obs.provenance.source_ref
         }
@@ -299,17 +318,16 @@ def _scope_absence(
     a claim about the ground the walk actually covered, and a `.git`-style skip
     (true of nearly every real repository) must not silently read as universal.
 
-    An *owner-declared* nested-project exclusion is an exclusion of exactly the
-    same kind and gets exactly the same treatment. It is arguably the more
-    urgent of the two, because an owner may declare an arbitrary *markerless*
-    directory excluded: with such an exclusion covering a directory that holds a
-    container manifest, this module would otherwise report no deploy surface at
-    all, as a flat unscoped claim. That the exclusion is recoverable by
-    cross-referencing another finding is precisely the cross-referencing this
-    scoping exists to make unnecessary.
-
-    A *manifest-detected* nested project is not scoped here; see
-    ``owner_excluded_nested_boundary_refs`` for why the two differ.
+    A nested-project exclusion is an exclusion of exactly the same kind and gets
+    exactly the same treatment, whether the owner declared it or a manifest
+    triggered it. With either kind covering a directory that holds a container
+    manifest, this module would otherwise report no deploy surface at all, as a
+    flat unscoped claim. That the exclusion is recoverable by cross-referencing
+    another finding is precisely the cross-referencing this scoping exists to
+    make unnecessary — and this function *enumerates* the exclusions it applies,
+    so listing one kind and hiding the other reads as a complete list that is
+    not one. See ``nested_boundary_refs`` for why the earlier asymmetry was
+    wrong.
     """
     scopes: list[str] = []
     if stats is not None and stats.entries_skipped_ignored_dir > 0:
@@ -352,7 +370,7 @@ def _inspection_completeness_finding(
         message = _scope_absence(
             "Inspection walked the tree without leaving a genuine hole",
             stats,
-            nested_boundaries=owner_excluded_nested_boundary_refs(observations),
+            nested_boundaries=nested_boundary_refs(observations),
         )
         return _finding(
             "inspection-completeness",
@@ -399,11 +417,6 @@ def assess_readiness(
     findings: list[ReadinessFinding] = []
     conventions = conventions or []
     subjects = {obs.subject for obs in observations}
-    source_refs = {
-        obs.provenance.source_ref
-        for obs in observations
-        if obs.provenance.source_ref
-    }
     unread_file_count = sum(1 for obs in observations if obs.subject == "file-read-skipped")
     # Two gates, because this module publishes two kinds of absence claim. Most
     # dimensions below are decided by filename/path presence and are gated on
@@ -422,7 +435,7 @@ def assess_readiness(
     # A resolved "none observed" claim is scoped by every exclusion that shaped
     # the evidence — deliberately skipped directories and owner/manifest nested
     # project boundaries alike.
-    nested_boundaries = owner_excluded_nested_boundary_refs(observations)
+    nested_boundaries = nested_boundary_refs(observations)
 
     if "repository-structure" in subjects:
         findings.append(
@@ -644,8 +657,25 @@ def assess_readiness(
             )
         )
 
+    # An instruction surface is a surface because a collector *observed one
+    # there* — never because some path happens to spell `AGENTS`, `CLAUDE` or
+    # `.cursor`. The subject is the only evidence that a surface exists, so it
+    # is what this reads, agreeing with `profile/synth.py`'s
+    # `instruction.fragmentation`. A substring scan over every observation's
+    # `source_ref` counted paths that are not surfaces at all: a *rejected*
+    # `nested-project` override decision carries the path of a directory the
+    # walk has just determined does not exist, and republishing that as
+    # "a surface was OBSERVED here" at confidence 1.0 is a false positive of
+    # the same class as a false absence. It also ignored owner exclusions —
+    # an owner who excludes `.cursor` still saw `.cursor/rules/note.md`
+    # asserted as a live surface, because the excluded path survived in some
+    # *other* observation's `source_ref`.
     agent_surfaces = sorted(
-        ref for ref in source_refs if ref and ("AGENTS" in ref or "CLAUDE" in ref or ".cursor" in ref)
+        {
+            obs.provenance.source_ref
+            for obs in observations
+            if obs.subject == "agent-instruction-surface" and obs.provenance.source_ref
+        }
     )
     mention_surfaces = sorted({conv.source_ref for conv in conventions if conv.subject == "test-runner"})
     if len(mention_surfaces) >= 2:

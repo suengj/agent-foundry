@@ -283,16 +283,33 @@ def test_owner_declared_nested_exclusion_qualifies_a_resolved_absence_claim() ->
     )
 
 
-def test_manifest_detected_nested_project_does_not_scope_an_absence_claim() -> None:
-    """The deliberate asymmetry, asserted rather than left to chance.
+def test_manifest_detected_nested_project_scopes_an_absence_claim_too() -> None:
+    """This test previously pinned the opposite, and the assertion it pinned was wrong.
 
-    A subtree carrying its own project manifest is a *different project*, and
-    every claim here is already scoped to this one, so its contents were never
-    candidates for this claim in the first place.
-    ``tests/e2e/test_e2e_project_boundary.py`` states that contract directly:
-    planting a whole second project inside the target must change nothing about
-    the target's diagnosis except the recorded boundary. Naming such a subtree
-    in every absence message would break it.
+    It used to assert that a manifest-detected boundary leaves the absence
+    message untouched — the deliberate asymmetry, asserted rather than left to
+    chance. The argument was that a subtree carrying its own project manifest is
+    a *different project*, so its contents were never candidates for a claim
+    about this one, and naming it would add nothing.
+
+    Three things falsify that, so the assertion is inverted here rather than
+    deleted:
+
+    1. ``_scope_absence`` does not stay silent — it *enumerates* the exclusions
+       that shaped the claim. A reader handed a list reads it as the list, so
+       naming ``.git`` while suppressing a nested boundary is worse than naming
+       neither.
+    2. "Different project" is Foundry's own inference from a subdirectory
+       manifest, not the owner's assertion. In a uv/poetry-style workspace
+       (``[tool.uv.workspace] members = ["packages/*"]``) the inference is
+       false — the root manifest is the owner saying these are one project —
+       and the repository published "no deploy surface" over a tree containing
+       ``packages/api/Dockerfile``. The owner-declared half, which already
+       scoped, is the half where a human actually asserted the exclusion.
+    3. ``vendor`` and ``node_modules`` are "not this project" by identical
+       reasoning and are scoped. There is no principled line between them.
+
+    So the scope note is now emitted for both kinds of boundary.
     """
     observations = _BASE_OBSERVATIONS + [
         _observation(
@@ -304,7 +321,86 @@ def test_manifest_detected_nested_project_does_not_scope_an_absence_claim() -> N
     ]
     findings = assess_readiness(Path("."), observations, [], stats=_stats())
     isolation = [f for f in findings if f.dimension == "runtime-isolation"][0]
-    assert isolation.message == "No deploy/runtime surfaces observed in repository inventory"
+    assert isolation.message == (
+        "No deploy/runtime surfaces observed in repository inventory "
+        "(outside nested project boundaries: components/other)"
+    )
+
+
+def test_a_path_that_merely_spells_cursor_is_not_an_instruction_surface() -> None:
+    """A false positive at OBSERVED 1.0 is the same defect class as a false absence.
+
+    ``fragmented-agent-rule-surfaces`` used to be decided by substring-scanning
+    the ``source_ref`` of *every* observation for ``AGENTS`` / ``CLAUDE`` /
+    ``.cursor``. A ``source_ref`` is not an assertion that a surface is there —
+    it is not even an assertion that the path exists. A **rejected**
+    ``nested-project`` override decision carries the path of a directory the
+    walk has just determined does not exist, so "this path does not exist" was
+    republished as "a surface was OBSERVED here" at confidence 1.0, in a
+    repository with zero instruction surfaces of any kind.
+
+    The surface is now read off the ``agent-instruction-surface`` subject, which
+    is the only record that a collector actually observed one — the same key
+    ``profile/synth.py`` uses for ``instruction.fragmentation``, so the two can
+    no longer publish contradictory facts from one intake.
+    """
+    observations = _BASE_OBSERVATIONS + [
+        _observation(
+            "nested-project",
+            "override exclude on .cursor/rules: not applied — override path does "
+            "not exist as a directory in this repository",
+            source_ref=".cursor/rules",
+        ),
+        _observation(
+            "nested-project",
+            "override exclude on components/CLAUDE-service: not applied — override "
+            "path does not exist as a directory in this repository",
+            source_ref="components/CLAUDE-service",
+        ),
+    ]
+    findings = assess_readiness(Path("."), observations, [], stats=_stats())
+    fragmentation = [f for f in findings if f.dimension == "fragmented-agent-rule-surfaces"][0]
+    assert fragmentation.message.startswith("No agent instruction surfaces observed"), (
+        "no collector observed an instruction surface, so none may be reported: "
+        f"{fragmentation.message!r} at confidence {fragmentation.provenance.confidence}"
+    )
+    assert fragmentation.provenance.kind is not ProvenanceKind.OBSERVED
+
+
+def test_instruction_surfaces_are_counted_from_the_subject_not_stray_source_refs() -> None:
+    """Removing a surface must remove it from the count.
+
+    Under the substring scan, an owner who excluded ``.cursor`` still saw
+    ``.cursor/rules/note.md`` counted as a live surface, because the excluded
+    path survived in some *other* observation's ``source_ref`` — so Foundry went
+    on reporting fragmentation across a surface that was no longer evidence.
+    """
+    surface = _observation("agent-instruction-surface", "agent rules", source_ref="AGENTS.md")
+    stray = _observation(
+        "nested-project",
+        "nested project boundary: .cursor is excluded by owner declaration; its "
+        "contents are not evidence about this project",
+        source_ref=".cursor",
+    )
+    findings = assess_readiness(Path("."), _BASE_OBSERVATIONS + [surface, stray], [], stats=_stats())
+    fragmentation = [f for f in findings if f.dimension == "fragmented-agent-rule-surfaces"][0]
+    assert fragmentation.message == "Single agent instruction surface observed", (
+        fragmentation.message
+    )
+    assert fragmentation.provenance.source_ref == "AGENTS.md"
+
+
+def test_two_observed_surfaces_still_report_fragmentation() -> None:
+    """The finding must still fire on the evidence it is actually for."""
+    observations = _BASE_OBSERVATIONS + [
+        _observation("agent-instruction-surface", "agent rules", source_ref="AGENTS.md"),
+        _observation("agent-instruction-surface", "cursor rules", source_ref=".cursor/rules/a.md"),
+    ]
+    findings = assess_readiness(Path("."), observations, [], stats=_stats())
+    fragmentation = [f for f in findings if f.dimension == "fragmented-agent-rule-surfaces"][0]
+    assert "must not be treated as normative" in fragmentation.message
+    assert fragmentation.provenance.kind is ProvenanceKind.OBSERVED
+    assert fragmentation.provenance.source_ref == ".cursor/rules/a.md"
 
 
 def test_both_exclusion_classes_are_named_when_both_apply() -> None:
