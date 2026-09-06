@@ -364,9 +364,34 @@ def test_multiple_duplicated_names_are_all_named_and_sorted() -> None:
             ],
         )
     message = str(exc_info.value)
-    assert "'language'" in message
-    assert "'runtime'" in message
-    assert message.index("'language'") < message.index("'runtime'")
+    assert "'language', 'runtime'" in message
+
+
+def test_non_adjacent_duplicate_dimension_names_are_still_rejected() -> None:
+    """A duplicate separated by an intervening distinct dimension must still be
+    caught: a validator that only compares neighboring entries would miss it."""
+    with pytest.raises(ValidationError) as exc_info:
+        ProjectProfile(
+            schema_version=FOUNDRY_SCHEMA_VERSION,
+            dimensions=[
+                ProfileDimension(
+                    dimension="runtime",
+                    resolution=ProfileResolution.RESOLVED,
+                    attributions=[_attribution("service", ProvenanceKind.OBSERVED)],
+                ),
+                ProfileDimension(
+                    dimension="language",
+                    resolution=ProfileResolution.RESOLVED,
+                    attributions=[_attribution("python", ProvenanceKind.OBSERVED)],
+                ),
+                ProfileDimension(
+                    dimension="runtime",
+                    resolution=ProfileResolution.RESOLVED,
+                    attributions=[_attribution("worker", ProvenanceKind.OBSERVED)],
+                ),
+            ],
+        )
+    assert "'runtime'" in str(exc_info.value)
 
 
 def test_unique_dimension_names_are_still_accepted() -> None:
