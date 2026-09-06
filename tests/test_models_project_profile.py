@@ -299,6 +299,161 @@ def test_incompatible_major_schema_version_raises() -> None:
     assert "1.0" in message
 
 
+def test_duplicate_dimension_names_are_rejected() -> None:
+    with pytest.raises(ValidationError):
+        ProjectProfile(
+            schema_version=FOUNDRY_SCHEMA_VERSION,
+            project_name="sample-service",
+            dimensions=[
+                ProfileDimension(
+                    dimension="runtime",
+                    resolution=ProfileResolution.RESOLVED,
+                    attributions=[_attribution("service", ProvenanceKind.OBSERVED)],
+                ),
+                ProfileDimension(
+                    dimension="runtime",
+                    resolution=ProfileResolution.RESOLVED,
+                    attributions=[_attribution("worker", ProvenanceKind.OBSERVED)],
+                ),
+            ],
+        )
+
+
+def test_duplicate_dimension_error_names_the_duplicate() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        ProjectProfile(
+            schema_version=FOUNDRY_SCHEMA_VERSION,
+            dimensions=[
+                ProfileDimension(
+                    dimension="runtime",
+                    resolution=ProfileResolution.RESOLVED,
+                    attributions=[_attribution("service", ProvenanceKind.OBSERVED)],
+                ),
+                ProfileDimension(
+                    dimension="runtime",
+                    resolution=ProfileResolution.RESOLVED,
+                    attributions=[_attribution("worker", ProvenanceKind.OBSERVED)],
+                ),
+            ],
+        )
+    assert "'runtime'" in str(exc_info.value)
+
+
+def test_multiple_duplicated_names_are_all_named_and_sorted() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        ProjectProfile(
+            schema_version=FOUNDRY_SCHEMA_VERSION,
+            dimensions=[
+                ProfileDimension(
+                    dimension="runtime",
+                    resolution=ProfileResolution.UNKNOWN,
+                ),
+                ProfileDimension(
+                    dimension="runtime",
+                    resolution=ProfileResolution.UNKNOWN,
+                ),
+                ProfileDimension(
+                    dimension="language",
+                    resolution=ProfileResolution.UNKNOWN,
+                ),
+                ProfileDimension(
+                    dimension="language",
+                    resolution=ProfileResolution.UNKNOWN,
+                ),
+            ],
+        )
+    message = str(exc_info.value)
+    assert "'language'" in message
+    assert "'runtime'" in message
+    assert message.index("'language'") < message.index("'runtime'")
+
+
+def test_unique_dimension_names_are_still_accepted() -> None:
+    profile = ProjectProfile(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        project_name="sample-service",
+        dimensions=[
+            ProfileDimension(
+                dimension="runtime",
+                resolution=ProfileResolution.RESOLVED,
+                attributions=[_attribution("service", ProvenanceKind.OBSERVED)],
+            ),
+            ProfileDimension(
+                dimension="language",
+                resolution=ProfileResolution.RESOLVED,
+                attributions=[_attribution("python", ProvenanceKind.OBSERVED)],
+            ),
+        ],
+    )
+    assert [dimension.dimension for dimension in profile.dimensions] == [
+        "runtime",
+        "language",
+    ]
+
+
+def test_conflict_within_one_dimension_remains_valid_alongside_uniqueness() -> None:
+    """A genuine disagreement inside a single dimension is unaffected by the
+    sibling-uniqueness rule: it is one dimension name, CONFLICTED, not two."""
+    profile = ProjectProfile(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        dimensions=[
+            ProfileDimension(
+                dimension="release-cadence",
+                resolution=ProfileResolution.CONFLICTED,
+                attributions=[
+                    _attribution("continuous", ProvenanceKind.OBSERVED),
+                    _attribution("scheduled", ProvenanceKind.DECLARED),
+                ],
+            ),
+        ],
+    )
+    assert profile.dimensions[0].resolution is ProfileResolution.CONFLICTED
+    assert {a.value for a in profile.dimensions[0].attributions} == {
+        "continuous",
+        "scheduled",
+    }
+
+
+def test_canonical_fixture_still_loads_and_round_trips() -> None:
+    fixture_path = (
+        Path(__file__).parent / "fixtures" / "valid" / "project_profile.yaml"
+    )
+    profile = load_yaml(ProjectProfile, fixture_path.read_bytes())
+    dumped = dump_yaml(profile)
+    assert dump_yaml(load_yaml(ProjectProfile, dumped)) == dumped
+
+
+def test_unknown_dimension_unaffected_by_uniqueness_rule() -> None:
+    profile = ProjectProfile(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        dimensions=[
+            ProfileDimension(
+                dimension="data-sensitivity",
+                resolution=ProfileResolution.UNKNOWN,
+            ),
+        ],
+    )
+    assert profile.dimensions[0].resolution is ProfileResolution.UNKNOWN
+    assert profile.dimensions[0].attributions == []
+
+
+def test_exhaustiveness_guard_fires_for_an_unhandled_resolution() -> None:
+    """The resolution/attribution validator has no bare `else`: a future
+    `ProfileResolution` member must be rejected rather than silently pass
+    through unvalidated. There is no fourth real enum member to construct
+    honestly, so this exercises the guard by installing a value the enum
+    branches do not recognise onto an already-validated, frozen instance and
+    re-invoking the same validator method the constructor already ran."""
+    dimension = ProfileDimension(
+        dimension="primary-artifact",
+        resolution=ProfileResolution.RESOLVED,
+        attributions=[_attribution("service", ProvenanceKind.OBSERVED)],
+    )
+    object.__setattr__(dimension, "resolution", "not-a-real-resolution-member")
+    with pytest.raises(ValueError, match="unhandled ProfileResolution"):
+        dimension._validate_resolution_matches_attributions()
+
+
 def test_unknown_key_is_rejected() -> None:
     payload = _minimal_profile_payload(FOUNDRY_SCHEMA_VERSION)
     payload["write_scope"] = ["src/"]
