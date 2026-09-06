@@ -313,15 +313,20 @@ def _declared_autonomy_intake(
     base: Path = BROWNFIELD,
     autonomy: Autonomy = Autonomy.SUGGEST,
 ) -> ProjectIntake:
-    """Intake for a project whose owner has declared `execution.autonomy`.
+    """Unit-level companion input: pins a specific declared `execution.autonomy`
+    value on top of a real intake, independent of what that fixture happens to
+    declare on disk.
 
-    `brownfield-sample/.foundry/project.yaml` really does declare
-    `execution.autonomy: suggest`, but AF2's classifier extracts only
-    `project.intake_mode` from that file and emits every other dimension as
-    unknown. So no on-disk fixture can reach `_authority_proposal_changes`, and
-    `manifest.execution.autonomy` is None for all seven of them — which is exactly
-    why this property test was vacuous. The declared finding is attached here
-    rather than by widening AF2's classifier, which is out of scope for SUE-337.
+    On-disk fixtures no longer need this to reach `_authority_proposal_changes`:
+    AF2's classifier extracts `execution.autonomy` (and other dimensions, not
+    just `project.intake_mode`) straight out of `.foundry/project.yaml` (SUE-302),
+    so `inspect_project(BROWNFIELD)` alone already yields a DECLARED
+    `execution.autonomy` finding and `manifest.execution.autonomy == Autonomy.SUGGEST`
+    — see `test_real_fixture_autonomy_widening_is_correctly_classified` below,
+    which exercises that real path with no synthetic finding at all. This helper
+    stays useful as a unit-level tool for pinning an arbitrary `Autonomy` value
+    (including ones no current fixture declares) without depending on any
+    fixture's actual content.
     """
     intake = inspect_project(base)
     declared = ClassificationFinding(
@@ -335,9 +340,21 @@ def _declared_autonomy_intake(
     )
 
 
+def _real_fixture_inputs() -> list[tuple[str, ProjectIntake]]:
+    """Intakes produced by inspecting an on-disk fixture, unmodified.
+
+    No `ClassificationFinding` is constructed or attached here — each intake is
+    exactly what `inspect_project` returns for a real fixture directory.
+    """
+    return [(path.name, inspect_project(path)) for path in ALL_FIXTURES]
+
+
 def _planner_inputs() -> list[tuple[str, ProjectIntake]]:
-    """Every intake the adoption property tests run over."""
-    inputs = [(path.name, inspect_project(path)) for path in ALL_FIXTURES]
+    """Every intake the adoption property tests run over: every real fixture,
+    plus one constructed input (`_declared_autonomy_intake`) that pins a
+    specific declared autonomy value as a unit-level companion case.
+    """
+    inputs = _real_fixture_inputs()
     inputs.append(("declared-suggest-autonomy", _declared_autonomy_intake()))
     return inputs
 
@@ -360,8 +377,11 @@ def _widening_changes(result: object) -> list[AdoptionChangeItem]:
 def test_planner_corpus_actually_produces_an_authority_widening_change() -> None:
     """Anti-vacuity guard for the property test below.
 
-    All seven on-disk fixtures emit ZERO authority-widening changes, so a property
-    that only inspects widening changes passed no matter how they were labelled.
+    This must be satisfied by a REAL on-disk fixture, not only by the
+    constructed `declared-suggest-autonomy` input: a corpus where only the
+    hand-built entry produced a widening change would still leave
+    `test_planned_changes_are_never_both_widening_and_auto_applicable` unable to
+    say anything about what AF2's real inspect -> adopt path actually produces.
     If this assertion ever fails, the property test has gone vacuous again.
     """
     widening = {
@@ -374,9 +394,20 @@ def test_planner_corpus_actually_produces_an_authority_widening_change() -> None
         "test_planned_changes_are_never_both_widening_and_auto_applicable asserts nothing. "
         f"targets per input: {widening}"
     )
+
+    real_fixture_names = {name for name, _ in _real_fixture_inputs()}
+    covered_real_fixtures = covered.keys() & real_fixture_names
+    assert covered_real_fixtures, (
+        "no on-disk fixture produces an authority-widening change; the corpus is "
+        "exercising only the constructed `declared-suggest-autonomy` input, not a "
+        f"real fixture. targets per input: {widening}"
+    )
     assert "execution.autonomy" in {
-        target for targets in covered.values() for target in targets
-    }, f"expected an execution.autonomy widening change, got {covered}"
+        target for name in covered_real_fixtures for target in covered[name]
+    }, (
+        "expected at least one on-disk fixture to produce an execution.autonomy "
+        f"widening change, got {covered}"
+    )
 
 
 def test_planned_changes_are_never_both_widening_and_auto_applicable() -> None:
@@ -415,6 +446,47 @@ def test_planned_changes_are_never_both_widening_and_auto_applicable() -> None:
     assert offenders == [], (
         f"authority-widening changes labelled as needing no authority or as "
         f"auto-applicable: {offenders}"
+    )
+
+
+def test_real_fixture_autonomy_widening_is_correctly_classified() -> None:
+    """The widening change produced by inspecting `brownfield-sample` on disk —
+    with no constructed `ClassificationFinding` — is recognised as
+    authority-bearing on the `execution.autonomy` axis and is never
+    auto-applicable.
+
+    This isolates the real-fixture proof the corpus-wide sweep above depends
+    on: if `authority_axis_for_target` ever stopped recognising
+    `execution.autonomy`, or the planner ever marked this change
+    auto-applicable, this test fails directly rather than only as a side
+    effect of the corpus loop.
+    """
+    intake = inspect_project(BROWNFIELD)
+    result = plan_adoption(intake)
+    assert result.manifest.execution.autonomy == Autonomy.SUGGEST
+
+    autonomy_changes = [
+        change for change in result.change_set.changes if change.target == "execution.autonomy"
+    ]
+    assert autonomy_changes, "brownfield-sample should propose an execution.autonomy change"
+    change = autonomy_changes[0]
+
+    assert authority_axis_for_target(change.target) is not None, (
+        "execution.autonomy must be recognised as an authority-bearing axis"
+    )
+    widening = change_widens_authority(
+        change,
+        current_autonomy=result.manifest.execution.autonomy,
+        proposed_autonomy=proposed_autonomy_for_change(change),
+        current_external_effect=result.manifest.impact.external_effect,
+        proposed_external_effect=proposed_external_effect_for_change(change),
+    )
+    assert widening, "expected the real-fixture autonomy proposal to be classified as widening"
+    assert change.authority_requirement != AuthorityRequirement.NONE, (
+        f"widening change must require authority, got {change.authority_requirement}"
+    )
+    assert change.status != AdoptionChangeStatus.AUTO_APPLICABLE, (
+        f"widening change must never be auto-applicable, got {change.status}"
     )
 
 
