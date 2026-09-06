@@ -87,7 +87,7 @@ shows where its reading failed.
   `inspection-completeness` finding. Blockers stay at 0 on both sides: the branch
   reports how completely it looked and does not turn that report into a gate.
 * **Three dimensions stopped being UNKNOWN, all in the one repository whose walk was
-  not exhaustive** (this one, which has three source files over the 64 KB read
+  not exhaustive** (this one, which has four source files over the 64 KB read
   limit). `operating.deploy-surface`, `integration.config-surface` and
   `testability.config-schema` are decided by filenames on the entry list; a file
   skipped for *size* is still an entry with a known name, so its content cannot
@@ -95,9 +95,11 @@ shows where its reading failed.
   (`testability.ci-entrypoint`, `testability.lint-type-entrypoint`) stay UNKNOWN
   because their subject sets are fed by Makefile *content*, which an unread file
   genuinely could hide. The gate narrowed to what it can justify; it did not open.
-* **The +3 total attributions, +2 OBSERVED and +3 carrying a confidence are those
-  same three dimensions**, each contributing one `none-observed` attribution where
-  it previously contributed none.
+* **The +3 total attributions and +3 carrying a confidence are those same three
+  dimensions**, each contributing one `none-observed` attribution where it
+  previously contributed none. **+2 OBSERVED is a net**: those three arrive as
+  OBSERVED (+3) and `greenfield-minimal`'s conventions attribution leaves OBSERVED
+  for DECLARED (−1), which is the next bullet.
 * **The +1 DECLARED is `greenfield-minimal`'s conventions dimension**, which moved
   **OBSERVED → DECLARED**: it read `no-conventions-observed` and now reads
   `test-invocation (declared 0.80)`, because the new
@@ -136,6 +138,22 @@ That draft also said "one attribution moved from INFERRED to DECLARED". No
 conventions dimension moved INFERRED → DECLARED anywhere. The +1 is
 `greenfield-minimal` moving OBSERVED → DECLARED, caused by the new detector, not by
 the provenance fix it was credited to.
+
+### A cost this branch added to the thing it measures
+
+The four oversized files above were **three** on `origin/main`. The fourth,
+`tests/test_profile_synthesis.py`, crossed the 64 KB read limit *because of this
+branch* — the tests written to prove the profile is honest are what pushed the
+repository's own inspection further from exhaustive.
+
+Nothing in the table above is affected: the survey holds targets constant, so both
+snapshots see the same four files, and content holes gate only content-derived
+dimensions. But it is a real cost in the direction this work item cares about, and
+it compounds: every round of evidence added here makes Foundry's self-inspection
+slightly less complete. Worth watching rather than filing away — the read limit is
+`DEFAULT_MAX_FILE_BYTES`, and a test file is exactly the kind of thing that grows
+without anyone deciding it should.
+
 
 ## Honesty about the sample
 
