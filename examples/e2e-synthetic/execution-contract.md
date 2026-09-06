@@ -80,6 +80,6 @@ Apply the planned adoption change set so agent execution in this repository is b
 - convention/git-policy: convention selected because its evidence shares tokens with the work item objective (selection score=0.05)
 - convention/test-invocation: convention selected because its subject shares tokens with the work item title (selection score=0.04)
 - convention/test-invocation: convention selected because its subject, pattern shares tokens with the work item scope, title (selection score=0.08)
-- convention/test-runner: convention selected because its subject, pattern, evidence shares tokens with the work item objective, title (selection score=0.03)
-- convention/test-runner: convention selected because its subject, pattern, evidence shares tokens with the work item objective, title (selection score=0.03)
+- convention/test-runner: convention selected because its subject, evidence shares tokens with the work item objective, title (selection score=0.02)
+- convention/test-runner: convention selected because its subject, evidence shares tokens with the work item objective, title (selection score=0.02)
 - ... and 26 further selection record(s); the ExecutionBundle `provenance` field carries all of them

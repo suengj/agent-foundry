@@ -25,6 +25,8 @@ import pytest
 
 from agent_foundry.inspect import inspect_project
 from agent_foundry.inspect.conventions import (
+    DEMOTED_MENTION_CONFIDENCE,
+    MENTION_CONFIDENCE,
     STRUCTURED_CONFIDENCE,
     TEST_INVOCATION_SUBJECT,
     TEST_RUNNER_SUBJECT,
@@ -74,9 +76,12 @@ def test_structured_and_mention_together_precedence_holds_and_is_stated(
             "a mention must never be equal or stronger evidence than a structured "
             "declaration of the same fact"
         )
-        # Machine-readable, not prose: the pattern text itself differs from the
-        # baseline mention pattern used when nothing structured is known.
-        assert "structured test-invocation declaration" in convention.pattern
+        # Machine-readable, not prose, and typed rather than written into free
+        # text: the demotion shows up as a lower `confidence`, and `pattern` stays
+        # a report about the project. See
+        # `test_a_demoted_mention_pattern_carries_no_foundry_commentary`.
+        assert convention.confidence == DEMOTED_MENTION_CONFIDENCE
+        assert convention.pattern == "instruction surface mentions pytest"
 
 
 def test_structured_only_yields_a_structured_convention(tmp_path: Path) -> None:
@@ -109,6 +114,155 @@ def test_mention_only_still_yields_an_undemoted_mention(tmp_path: Path) -> None:
     assert mentions[0].confidence == 0.5
     assert mentions[0].pattern == "instruction surface mentions pytest"
     assert "structured" not in mentions[0].pattern
+
+
+def test_a_jest_declaration_does_not_demote_a_pytest_mention(tmp_path: Path) -> None:
+    """Cross-runner: the declaration and the mention are about different runners.
+
+    `package.json` declares `"test": "jest"` -- a real DECLARED `test-invocation`
+    fact, and one this module deliberately refuses to read as naming *any* runner.
+    AGENTS.md separately mentions pytest. Demotion means "a stronger fact about
+    this same thing is already known"; nothing stronger about pytest is known
+    here, so the pytest mention must keep its baseline confidence. Lowering it
+    would spend a jest declaration's authority on a pytest claim -- a confidence
+    not earned by evidence about that subject -- and would rank the repository's
+    only pytest evidence 3.3x lower for every `relevance x confidence` consumer
+    (`compile/context.py`).
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "package.json").write_text(
+        '{\n  "name": "demo",\n  "scripts": {\n    "test": "jest"\n  }\n}\n',
+        encoding="utf-8",
+    )
+    (repo / "AGENTS.md").write_text("Run pytest before submitting.\n", encoding="utf-8")
+    intake = inspect_project(repo)
+
+    structured = _conventions(intake, TEST_INVOCATION_SUBJECT)
+    mentions = _conventions(intake, TEST_RUNNER_SUBJECT)
+    assert len(structured) == 1
+    assert structured[0].pattern == 'package.json \'test\' script is "jest"'
+    assert len(mentions) == 1
+    assert mentions[0].confidence == MENTION_CONFIDENCE, (
+        "a declaration about jest must not lower the confidence of pytest evidence"
+    )
+    assert mentions[0].pattern == "instruction surface mentions pytest"
+
+
+def test_a_pytest_naming_package_json_declaration_does_demote_a_mention(
+    tmp_path: Path,
+) -> None:
+    """The other half of the same rule: when the `scripts.test` command really
+    does invoke pytest, the declaration *is* about pytest and the demotion is
+    earned. Without this, scoping the demotion could be satisfied by never
+    demoting at all."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "package.json").write_text(
+        '{\n  "name": "demo",\n  "scripts": {\n    "test": "pytest -q"\n  }\n}\n',
+        encoding="utf-8",
+    )
+    (repo / "AGENTS.md").write_text("Run pytest before submitting.\n", encoding="utf-8")
+    intake = inspect_project(repo)
+
+    mentions = _conventions(intake, TEST_RUNNER_SUBJECT)
+    assert len(mentions) == 1
+    assert mentions[0].confidence == DEMOTED_MENTION_CONFIDENCE
+
+
+def test_a_demoted_mention_pattern_carries_no_foundry_commentary(
+    tmp_path: Path,
+) -> None:
+    """`pattern` reports the project, not Foundry's opinion of the project.
+
+    `compile/context.py` relevance-matches a work item's text against a
+    convention's `subject`, `pattern` and `evidence`. Words written into
+    `pattern` by Foundry ("structured", "declaration", "precedence", ...) are
+    therefore tokens a work item can match on, and `_relevance_score` can only
+    ever be *raised* by extra words -- so a work item titled "Document the
+    structured declaration precedence" would select a pytest mention with the
+    rationale that its pattern shares tokens with the title, where the shared
+    tokens are Foundry commentary and not project text. The demoted pattern must
+    be byte-identical to the undemoted one; only `confidence` moves.
+    """
+    demoted_repo = tmp_path / "demoted"
+    demoted_repo.mkdir()
+    (demoted_repo / "pytest.ini").write_text(
+        "[pytest]\ntestpaths = tests\n", encoding="utf-8"
+    )
+    (demoted_repo / "AGENTS.md").write_text("Run pytest first.\n", encoding="utf-8")
+
+    plain_repo = tmp_path / "plain"
+    plain_repo.mkdir()
+    (plain_repo / "AGENTS.md").write_text("Run pytest first.\n", encoding="utf-8")
+
+    demoted = _conventions(inspect_project(demoted_repo), TEST_RUNNER_SUBJECT)
+    plain = _conventions(inspect_project(plain_repo), TEST_RUNNER_SUBJECT)
+    assert len(demoted) == 1 and len(plain) == 1
+    assert demoted[0].confidence == DEMOTED_MENTION_CONFIDENCE
+    assert plain[0].confidence == MENTION_CONFIDENCE
+    assert demoted[0].pattern == plain[0].pattern
+    for word in ("structured", "declaration", "precedence", "supersed", "takes"):
+        assert word not in demoted[0].pattern.lower()
+
+
+def test_minified_package_json_still_yields_the_declaration(tmp_path: Path) -> None:
+    """A whole-file property, not an exotic escape: a generated `package.json`
+    is commonly one physical line. Requiring the `"test"` key to *start* its line
+    made the entire declaration vanish -- a real DECLARED fact silently lost. The
+    single line is the verbatim source text carrying the declaration, so it is
+    quoted in full as the evidence."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    minified = '{"name":"demo","scripts":{"build":"tsc","test":"pytest -q"}}'
+    (repo / "package.json").write_text(minified, encoding="utf-8")
+    intake = inspect_project(repo)
+
+    found = _conventions(intake, TEST_INVOCATION_SUBJECT)
+    assert len(found) == 1
+    assert found[0].provenance.kind is ProvenanceKind.DECLARED
+    assert found[0].confidence == STRUCTURED_CONFIDENCE
+    assert found[0].pattern == "package.json 'test' script invokes pytest"
+    assert found[0].evidence == minified
+
+
+def test_minified_package_json_naming_another_runner_is_quoted_not_guessed(
+    tmp_path: Path,
+) -> None:
+    """The minified path inherits the same restraint as the multi-line one: the
+    command is quoted verbatim and no runner is claimed."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "package.json").write_text(
+        '{"name":"demo","scripts":{"test":"jest --ci"}}', encoding="utf-8"
+    )
+    intake = inspect_project(repo)
+    found = _conventions(intake, TEST_INVOCATION_SUBJECT)
+    assert len(found) == 1
+    assert found[0].pattern == 'package.json \'test\' script is "jest --ci"'
+    assert "pytest" not in found[0].pattern
+
+
+def test_a_longer_key_is_not_mistaken_for_the_test_key(tmp_path: Path) -> None:
+    """Loosening the line match to "anywhere on the line" must not let a
+    different key masquerade as `scripts.test`. Here `scripts.test` genuinely
+    exists, and the recovered line must be the one carrying the `"test"` key
+    itself, not the `"testMatch"` line that also contains the same value."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "package.json").write_text(
+        "{\n"
+        '  "testMatch": "pytest -q",\n'
+        '  "scripts": {\n'
+        '    "test": "pytest -q"\n'
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    intake = inspect_project(repo)
+    found = _conventions(intake, TEST_INVOCATION_SUBJECT)
+    assert len(found) == 1
+    assert found[0].evidence == '"test": "pytest -q"'
 
 
 # --- false positive: a name-drop must not read as structured --------------------

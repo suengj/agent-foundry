@@ -472,12 +472,20 @@ def test_entropy_tier_false_positives_are_measured_not_assumed_absent(
     carrying one. The noise is smaller, not gone, and it is still not a secret.
 
     SUE-580 raised it from 16 to 17: convention discovery now also reads
-    `pyproject.toml [tool.pytest.ini_options]` as a structured declaration, and every
-    textual pytest mention in this fixture is demoted accordingly — one more long,
-    punctuated `project_fact` string (the demoted mention's pattern, spelling out
-    that a structured declaration takes precedence) crosses the entropy rule's
-    threshold. Still ordinary prose, still not a secret, still worth re-measuring
-    rather than assuming away.
+    `pyproject.toml [tool.pytest.ini_options]` as a structured declaration, so this
+    fixture carries one more convention, and compile records one more selection
+    rationale for it. The hits are those rationales — `project_fact` strings that
+    begin "matching ..." — plus a receipt `reason`, which is why the count tracks the
+    number of selected facts rather than anything about their wording. Still ordinary
+    prose, still not a secret, still worth re-measuring rather than assuming away.
+
+    An earlier revision of this docstring attributed the extra hit to the demoted
+    mention's own pattern text, which "spelled out that a structured declaration takes
+    precedence". That was wrong twice over: the hits are selection rationales, not
+    convention patterns, and the pattern no longer says that at all — the precedence
+    annotation was removed from `ConventionSpec.pattern` precisely because that field
+    is scored by `compile/context.py`, and Foundry's own commentary was matching
+    against work-item titles as though it were project text.
     """
     tier_b = [
         finding

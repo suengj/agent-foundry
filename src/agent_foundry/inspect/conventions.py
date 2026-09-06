@@ -7,13 +7,24 @@ this module never lets them look equal. A structured fact is parsed with a real
 parser (``tomllib``/``configparser``/``json``) and lands as a ``test-invocation``
 convention at :data:`STRUCTURED_CONFIDENCE` with ``provenance.kind == DECLARED``. A
 mention lands as a ``test-runner`` convention at :data:`MENTION_CONFIDENCE` (or lower,
-see :data:`DEMOTED_MENTION_CONFIDENCE`) with ``provenance.kind == INFERRED``. Whenever
-at least one structured declaration exists anywhere in the repository, every mention
-convention is demoted — confidence lowered and its pattern text marked superseded —
-rather than dropped: readiness's cross-surface reconciliation check
-(``unreconciled-subject-mentions``) still needs every mention to see when instruction
-surfaces disagree, even after a structured fact is known. Suppressing the mention
-would hide that disagreement instead of ranking it.
+see :data:`DEMOTED_MENTION_CONFIDENCE`) with ``provenance.kind == INFERRED``.
+
+Demotion is subject-scoped, not repo-scoped. A mention is lowered only when a
+structured declaration exists that concerns *the same runner the mention names* —
+a ``package.json`` whose ``scripts.test`` is ``"jest"`` is a real declaration, but
+it says nothing about pytest and so must not lower the confidence of a pytest
+mention. Confidence has to be earned, and lost, on evidence about that subject.
+
+A demoted mention is lowered, never dropped: readiness's cross-surface
+reconciliation check (``unreconciled-subject-mentions``) still needs every mention
+to see when instruction surfaces disagree, even after a structured fact is known.
+Suppressing the mention would hide that disagreement instead of ranking it.
+
+The demotion is carried by ``confidence`` alone. ``pattern`` states what was found
+in the project and nothing else: it is one of the fields relevance-matched against a
+work item's text downstream (``compile/context.py``), so any Foundry commentary
+written into it becomes tokens a work item can match on, manufacturing relevance out
+of Foundry's own words rather than the project's.
 """
 
 from __future__ import annotations
@@ -46,16 +57,16 @@ DEMOTED_MENTION_CONFIDENCE = 0.15
 STRUCTURED_CONFIDENCE = 0.8
 
 _MENTION_PATTERN = "instruction surface mentions pytest"
-_MENTION_PATTERN_SUPERSEDED = (
-    "instruction surface mentions pytest (a structured test-invocation declaration "
-    "also exists and takes precedence)"
-)
 
 # A convention's evidence must be the text that actually produced the claim. These
 # patterns are applied per line so the quoted line and the match are the same line.
 _COMMIT_CONSTRAINT_PATTERN = re.compile(
     r"\bcommit\b.*\bnot\b|\bdo not commit\b", re.IGNORECASE
 )
+# The literal ``"test"`` key of a JSON object, with its colon — anywhere on the line,
+# so a minified single-line document is still quotable. The colon is required so a
+# longer key such as ``"testMatch"`` cannot be mistaken for it.
+_TEST_KEY_PATTERN = re.compile(r'"test"\s*:')
 _CHECKOUT_ACTION = "actions/checkout"
 _MAKEFILE_TEST_TARGET = "test"
 _PYTEST_COMMAND = "pytest"
@@ -72,10 +83,12 @@ def lines_mentioning_subject(content: str, subject: str) -> list[str]:
 
 def _mention_convention(source_ref: str, quoted_line: str, *, demoted: bool) -> ConventionSpec:
     confidence = DEMOTED_MENTION_CONFIDENCE if demoted else MENTION_CONFIDENCE
-    pattern = _MENTION_PATTERN_SUPERSEDED if demoted else _MENTION_PATTERN
+    # The pattern is identical either way: it reports what the project's text says,
+    # and demotion is not something the project's text says. Only the confidence
+    # (and, through it, every confidence-ordered consumer) moves.
     return ConventionSpec(
         subject=TEST_RUNNER_SUBJECT,
-        pattern=pattern,
+        pattern=_MENTION_PATTERN,
         source_ref=source_ref,
         evidence=quoted_line,
         confidence=confidence,
@@ -177,10 +190,18 @@ def _package_json_test_script(content: str) -> tuple[str, str] | None:
     """The declared ``scripts.test`` command and its literal source line, if any.
 
     ``json`` alone decides whether ``scripts.test`` exists and what its value is.
-    The raw text is consulted only afterward, to recover that key's own line, and
-    only a line whose value round-trips through ``json.dumps`` to the exact parsed
-    string counts as that line — anything else (unusual escaping, a value split
-    across lines) yields nothing rather than a guess.
+    The raw text is consulted only afterward, to recover that key's own line: the
+    line must carry the literal ``"test"`` key followed by its colon *and* the value
+    round-tripped through ``json.dumps`` to the exact parsed string. Anything else
+    (unusual escaping, a value split across lines) yields nothing rather than a guess.
+
+    The key need not begin the line. A minified ``package.json`` — the common shape
+    for a generated file — puts the whole document on one physical line, and that
+    line is the verbatim source text carrying the declaration, so it is quotable
+    evidence like any other. Requiring the key to *start* the line silently dropped
+    a real ``DECLARED`` fact for every such file. The cost is that the quoted line is
+    then the whole document; it is not truncated, because a shortened quote would no
+    longer be the source text it claims to be.
 
     This does not judge *which* runner the command invokes, or whether it is a
     real test suite versus a stub — a ``scripts.test`` entry is a declared fact
@@ -204,7 +225,7 @@ def _package_json_test_script(content: str) -> tuple[str, str] | None:
     expected_value = json.dumps(test_script)
     for line in content.splitlines():
         stripped = line.strip()
-        if stripped.startswith('"test"') and expected_value in stripped:
+        if _TEST_KEY_PATTERN.search(stripped) and expected_value in stripped:
             return test_script, stripped
     return None
 
@@ -234,14 +255,21 @@ def _structured_test_invocation_conventions(
     root: Path,
     *,
     max_file_bytes: int,
-) -> list[ConventionSpec]:
-    """Structured (non-Makefile) declarations that the project's tests run on pytest.
+) -> tuple[list[ConventionSpec], bool]:
+    """Structured (non-Makefile) ``test-invocation`` declarations, and whether any
+    of them actually names pytest.
 
     Every format here is read with the parser built for it — never regex applied to
     prose — and a file that parser cannot make sense of contributes nothing, on the
     same fail-closed footing as every other detector in this module.
+
+    The second element is the only thing entitled to demote a pytest *mention*.
+    Not every ``test-invocation`` declaration concerns pytest: a ``package.json``
+    ``scripts.test`` of ``"jest"`` is a genuine declaration this returns, and it is
+    evidence about jest, so it is reported as ``False`` here.
     """
     conventions: list[ConventionSpec] = []
+    names_pytest = False
 
     def _read(rel: str) -> str | None:
         entry = entry_by_path.get(rel)
@@ -253,6 +281,7 @@ def _structured_test_invocation_conventions(
     if pyproject:
         line = _pyproject_pytest_ini_options_line(pyproject)
         if line is not None:
+            names_pytest = True
             conventions.append(
                 _structured_convention(
                     "pyproject.toml declares [tool.pytest.ini_options]",
@@ -271,6 +300,7 @@ def _structured_test_invocation_conventions(
             continue
         line = _ini_section_header_line(content, section)
         if line is not None:
+            names_pytest = True
             conventions.append(_structured_convention(label, rel, line))
 
     package_json = _read("package.json")
@@ -279,6 +309,7 @@ def _structured_test_invocation_conventions(
         if found is not None:
             test_script, line = found
             if _script_invokes_pytest(test_script):
+                names_pytest = True
                 pattern = "package.json 'test' script invokes pytest"
             else:
                 # The declaration is real and directly parsed, but naming which
@@ -291,7 +322,7 @@ def _structured_test_invocation_conventions(
                 _structured_convention(pattern, "package.json", line)
             )
 
-    return conventions
+    return conventions, names_pytest
 
 
 def discover_conventions(
@@ -303,6 +334,9 @@ def discover_conventions(
 ) -> list[ConventionSpec]:
     conventions: list[ConventionSpec] = []
     entry_by_path = {entry.relative_path: entry for entry in file_entries(entries)}
+    # Set only by a declaration that names pytest itself. See the demotion comment
+    # below: this is what a pytest mention is ranked against, and nothing else.
+    pytest_declared = False
 
     makefile_entry = entry_by_path.get("Makefile")
     if makefile_entry is not None:
@@ -311,6 +345,7 @@ def discover_conventions(
             for quoted_line in recipe_lines_invoking(
                 content, _MAKEFILE_TEST_TARGET, _PYTEST_COMMAND
             ):
+                pytest_declared = True
                 conventions.append(
                     _structured_convention(
                         "Makefile 'test' target recipe invokes pytest",
@@ -319,18 +354,18 @@ def discover_conventions(
                     )
                 )
 
-    conventions.extend(
-        _structured_test_invocation_conventions(
-            entry_by_path, root, max_file_bytes=max_file_bytes
-        )
+    structured, structured_names_pytest = _structured_test_invocation_conventions(
+        entry_by_path, root, max_file_bytes=max_file_bytes
     )
-
-    # A mention is demoted the moment any structured declaration exists anywhere in
-    # the repository — precedence is a repo-wide fact about what is already known,
-    # not something scoped to the one file the mention happens to live in.
-    structured_pytest_declared = any(
-        conv.subject == TEST_INVOCATION_SUBJECT for conv in conventions
-    )
+    conventions.extend(structured)
+    # A pytest mention is demoted the moment a structured declaration *about pytest*
+    # exists anywhere in the repository — precedence is a repo-wide fact about what
+    # is already known, not something scoped to the one file the mention happens to
+    # live in. It is not, however, subject-blind: testing merely for the presence of
+    # some `test-invocation` convention would let a `package.json` declaring
+    # `"test": "jest"` lower the confidence of the only pytest evidence in the
+    # repository, which is a claim about pytest earned from evidence about jest.
+    pytest_declared = pytest_declared or structured_names_pytest
 
     agent_paths = sorted(
         {
@@ -348,7 +383,7 @@ def discover_conventions(
             continue
         for quoted_line in lines_mentioning_subject(content, "pytest"):
             conventions.append(
-                _mention_convention(rel, quoted_line, demoted=structured_pytest_declared)
+                _mention_convention(rel, quoted_line, demoted=pytest_declared)
             )
 
         for quoted_line in lines_matching(content, _COMMIT_CONSTRAINT_PATTERN):
