@@ -275,6 +275,12 @@ class ProfileDimension(FoundryModel):
                     "requires at least two distinct attributed values, got "
                     f"{len(distinct_values)}"
                 )
+        else:
+            raise ValueError(
+                f"ProfileDimension {self.dimension!r}: unhandled ProfileResolution "
+                f"member {self.resolution!r} — this validator must be updated to "
+                "cover every resolution before it can be trusted"
+            )
         return self
 
 
@@ -294,3 +300,23 @@ class ProjectProfile(VersionedContract):
     project_name: str | None = None
     dimensions: list[ProfileDimension] = Field(default_factory=list)
     source_intake_ref: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_dimension_names_are_unique(self) -> Self:
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for dim in self.dimensions:
+            if dim.dimension in seen:
+                duplicates.add(dim.dimension)
+            seen.add(dim.dimension)
+        if duplicates:
+            names = ", ".join(repr(name) for name in sorted(duplicates))
+            raise ValueError(
+                "ProjectProfile: duplicate ProfileDimension name(s) are not "
+                f"allowed within one profile: {names}. A profile-name consumer "
+                "must be able to resolve a dimension by name without silently "
+                "picking whichever entry it hits first; a genuine disagreement "
+                "belongs inside one dimension as CONFLICTED, not as two "
+                "same-named dimensions."
+            )
+        return self
