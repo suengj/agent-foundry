@@ -7,7 +7,11 @@ from pathlib import Path
 import yaml
 
 from agent_foundry.models.common import IntakeMode, Provenance, ProvenanceKind
-from agent_foundry.models.project import ClassificationFinding, ProjectObservation
+from agent_foundry.models.project import (
+    ClassificationFinding,
+    ProjectObservation,
+    TraversalStats,
+)
 from agent_foundry.inspect.traversal import FOUNDRY_DIR_PREFIX, RepoEntry, file_path_set, read_entry_text
 
 
@@ -111,6 +115,36 @@ def reason_is_absence_enumeration(reason: str | None) -> bool:
     if not reason:
         return False
     return reason.startswith(ABSENCE_ENUMERATION_REASON_PREFIXES)
+
+
+def traversal_supports_absence_enumeration(
+    stats: TraversalStats, *, unread_file_count: int = 0
+) -> bool:
+    """True when the walk covered enough ground for an absence enumeration to mean anything.
+
+    The producer of an absence-derived finding (above) cannot answer this: it is
+    handed a list of entries and has no idea whether that list is the repository
+    or the first three things a truncated walk happened to reach. Every consumer
+    that promotes such a finding must ask this question, and they must all ask it
+    the same way — ``profile.synth`` (which publishes it as a descriptive
+    dimension) and ``adopt.manifest`` (which promotes it to a manifest field
+    downstream compilation trusts) had drifted apart on exactly this, so the rule
+    lives here, beside the prefixes it belongs to, rather than being restated per
+    consumer.
+
+    A depth or entry limit, an unobservable path, or a containment refusal each
+    means the enumerated signals may sit precisely in the region the walk never
+    looked at. A file skipped for exceeding the read-size limit counts too: the
+    signal list is checked against evidence the collectors derive from file
+    content as well as filenames, so unread bytes can hide one.
+    """
+    return (
+        not stats.depth_limit_reached
+        and not stats.entry_limit_reached
+        and stats.entries_unobservable == 0
+        and stats.entries_skipped_refused == 0
+        and unread_file_count == 0
+    )
 
 
 # One weak signal must not read like several. Confidence tracks how many independent

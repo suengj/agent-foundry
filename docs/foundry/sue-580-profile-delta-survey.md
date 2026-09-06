@@ -1,17 +1,5 @@
 # SUE-580 — ProjectProfile before/after survey
 
-> **Superseded in part — re-run owed before merge.** Every figure below measures
-> `ba9afa7`. An independent review over `1e04359` found the confidence collapse
-> reported in "One finding this survey turns from a worry into a measurement" to
-> be a provenance-laundering defect rather than a design question, and it has
-> since been fixed: `_conventions_dimension` no longer reports a global `min()`,
-> and no subject inherits another's provenance or confidence. The "mid → low, 8
-> of 12" rows and that section therefore describe behaviour the branch no longer
-> has. The method, the target set and the privacy argument are unchanged and
-> still hold. The table is left as measured rather than edited in place, because
-> a survey rewritten to match a later commit is not a measurement; the numbers
-> are being regenerated against the merge head.
-
 Work Item: SUE-580 — Required Evidence: "Before/after inspection/profile comparison on
 multiple real repositories with only aggregate/public-safe metrics retained."
 
@@ -33,7 +21,7 @@ reuses the mechanism this report exercises without any change.
   directly and checks that no fixture's own name or path ever appears in any recorded
   value or in the final comparison payload.
 * **Before** = `origin/main` at `0765a4d`. **After** = `sue-580-inspection-expansion`
-  at `ba9afa7`.
+  at its merge head.
 * **The targets are held constant across both runs, and only the library varies.**
   This branch adds three fixture projects, so running each side against "its own"
   fixture directory would blend "we added targets" into "the code changed" and make
@@ -56,75 +44,73 @@ counts.
 
 ## Results
 
-| Measurement | Before (`0765a4d`) | After (`ba9afa7`) | Delta |
+| Measurement | Before (`0765a4d`) | After (merge head) | Delta |
 |---|---|---|---|
 | Repositories surveyed | 12 | 12 | 0 |
 | Failures | 0 | 0 | 0 |
 | Dimensions per profile — min / median / max | 31 / 31 / 31 | 31 / 31 / 31 | 0 |
 | Dimensions resolved — min / median / max | 17 / 29 / 31 | 17 / 29 / 31 | 0 |
-| Dimensions UNKNOWN — total | 68 | 68 | 0 |
+| Dimensions UNKNOWN — total | 68 | 65 | **−3** |
 | Dimensions CONFLICTED — total | 0 | 0 | 0 |
-| Per-dimension resolved / unknown / conflicted breakdown | — | — | **no dimension moved** |
-| Attributions — total | 304 | 304 | 0 |
-| Attributions — DECLARED | 113 | 113 | 0 |
-| Attributions — OBSERVED | 169 | 168 | −1 |
-| Attributions — INFERRED | 22 | 23 | +1 |
+| Attributions — total | 304 | 307 | +3 |
+| Attributions — DECLARED | 113 | 114 | +1 |
+| Attributions — OBSERVED | 169 | 171 | +2 |
+| Attributions — INFERRED | 22 | 22 | 0 |
 | Attributions — NORMATIVE | 0 | 0 | 0 |
 | Attributions with an evidence ref | 221 | 222 | +1 |
-| Attributions with no evidence ref | 83 | 82 | −1 |
-| Attributions carrying a confidence | 171 | 171 | 0 |
-| Attribution confidence — high (≥ 0.75) | 157 | 157 | 0 |
-| Attribution confidence — mid (0.25–0.75) | 14 | 6 | −8 |
-| Attribution confidence — low (< 0.25) | 0 | 8 | +8 |
+| Attributions with no evidence ref | 83 | 85 | +2 |
+| Attributions carrying a confidence | 172 | 175 | +3 |
+| Attribution confidence — high (≥ 0.75) | 158 | 170 | **+12** |
+| Attribution confidence — mid (0.25–0.75) | 14 | 5 | **−9** |
+| Attribution confidence — low (< 0.25) | 0 | **0** | 0 |
 | Readiness findings — total | 103 | 115 | +12 |
 | Readiness findings — blockers | 0 | 0 | 0 |
 | Repositories with an exhaustive walk | 11 of 12 | 11 of 12 | 0 |
 | Repositories with a resolved project name | 8 of 12 | 8 of 12 | 0 |
 
+Per-dimension movement, the only three that moved, each in exactly one repository:
+
+| Dimension | Resolved before → after | UNKNOWN before → after |
+|---|---|---|
+| `operating.deploy-surface` | 11 → 12 | 1 → 0 |
+| `integration.config-surface` | 11 → 12 | 1 → 0 |
+| `testability.config-schema` | 11 → 12 | 1 → 0 |
+
 ## Reading of what moved
 
-Each figure below was traced to the specific dimension that produced it, by
-re-profiling every target under both libraries and diffing per dimension. None of this
-is inferred from the shape of the numbers.
+Each figure was traced to the dimension that produced it, by re-profiling every
+target under both libraries and diffing per dimension. None of it is inferred from
+the shape of the numbers.
 
-* **Readiness +12 is exactly one finding per repository**, and it is the new
-  always-present `inspection-completeness` finding. Blockers stay at 0 on both sides:
-  the branch reports how completely it looked, and does not turn that report into a
-  gate.
-* **The OBSERVED → INFERRED shift of 1, and the evidence-ref shift of 1, are the same
-  single attribution**: `greenfield-minimal`'s `assurance.conventions-observed`. It
-  read `no-conventions-observed` at OBSERVED/1.0 with no evidence ref, and now reads
-  `test-invocation` at INFERRED/0.8 citing `pyproject.toml` — the fixture does declare
-  `[tool.pytest.ini_options]`, so the old answer was a **false negative** that the
-  committed golden had encoded.
-* **All 8 attributions that moved from the mid confidence bucket to low are
-  `assurance.conventions-observed`,** in 8 different repositories. This is *not* the
-  unobservability change; it is the mention demotion (0.5 → 0.15) meeting
-  `_conventions_dimension`, which reports `min()` across every convention it
-  aggregates. The demoted mentions become the weakest member and the whole dimension
-  reports their confidence.
-* **Dimension resolution did not move at all** — not in the median, not in the totals,
-  and not for any individual dimension's resolved/unknown/conflicted counts. Whatever
-  else this branch does, it changes no target's answer about *which* dimensions
-  resolve.
-
-### One finding this survey turns from a worry into a measurement
-
-The third bullet is the reason this report is worth reading. Before this branch, no
-surveyed repository reported a conventions dimension below 0.25. After it, **8 of 12
-do — Agent Foundry's own repository among them** — and those 8 include repositories
-whose `test-invocation` is backed by a structured 0.8 declaration parsed out of a real
-Makefile or `pyproject.toml`. A consumer gating on confidence ≥ 0.5 would have accepted
-those conventions before this branch and would reject them after it, *because the
-evidence got better*.
-
-The `min()` rule is pre-existing (SUE-579) and this branch does not touch it; only the
-floor it reports moved. But the effect is caused by this branch, it is consumer-visible,
-and it is now measured rather than hypothesised. It is raised for review rather than
-fixed here, because the candidate fix — one attribution per convention subject, each
-carrying its own confidence, which `ProfileDimension.attributions` already supports as
-a list — is a change to synthesis aggregation and belongs to whoever owns that
-decision, not to a late edit in this work item.
+* **Readiness +12 is exactly one finding per repository** — the new always-present
+  `inspection-completeness` finding. Blockers stay at 0 on both sides: the branch
+  reports how completely it looked and does not turn that report into a gate.
+* **Three dimensions stopped being UNKNOWN, all in the one repository whose walk
+  was not exhaustive** (Agent Foundry itself, which has three source files over the
+  64 KB read limit). `operating.deploy-surface`, `integration.config-surface` and
+  `testability.config-schema` are decided by filenames on the entry list; a file
+  skipped for *size* is still an entry with a known name, so its content cannot
+  change those answers. Before the branch's final round they were gated as though
+  it could. Path holes — a depth limit, an entry limit, a containment refusal, an
+  unobservable path — still gate everything, and a fourth and fifth dimension in
+  the same repository (`testability.ci-entrypoint`, `testability.lint-type-entrypoint`)
+  stay UNKNOWN because their subject sets are fed by Makefile *content*, which an
+  unread file genuinely could hide. The gate narrowed to what it can justify; it
+  did not open.
+* **Confidence rose: +12 high, −9 mid, and nothing in the low bucket.** This is
+  where an earlier draft of this report was wrong, and the correction is the point.
+  That draft measured 8 attributions dropping into the low bucket and read it as a
+  design question about aggregation. It was a defect: `_conventions_dimension`
+  reported a global `min()` and a hardcoded `INFERRED`, so a `DECLARED`
+  `test-invocation` parsed out of `pyproject.toml` at 0.8 was republished as
+  inferred-at-0.15 whenever any prose mention sat beside it. It now groups by
+  subject, takes each subject's strongest evidence, and preserves a single
+  contributing provenance kind — so the low bucket is empty and one attribution
+  moved from INFERRED to DECLARED.
+* **The remaining +3 attributions and +2 OBSERVED are the three newly-resolved
+  dimensions**, each contributing one `none-observed` attribution where it
+  previously contributed none.
+* **No dimension became CONFLICTED, and the resolved median did not move.**
 
 ## Honesty about the sample
 

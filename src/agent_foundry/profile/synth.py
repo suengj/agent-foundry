@@ -60,16 +60,30 @@ container manifest and source tree simply sat past the walk's entry limit.
 
 The one exception is a small family of purely structural "is file/marker X
 present anywhere in the walked tree" dimensions (test harness markers, CI
-workflow files, deploy hints, and so on): here, and only when the traversal was *exhaustive* (see
-``_traversal_exhaustive``), "no such marker was observed" is itself a directly
-observed fact — not a claim about safety, risk, or authority, and not drawn from
-a walk that hit a depth/entry limit, left a path unobservable, refused a
-containment escape, or skipped a file for exceeding the read-size limit (all
-genuine holes — the last one because a content-derived observation, such as a
-Makefile target, could never have been emitted for a file the walk never read —
-so these dimensions fall back to ``UNKNOWN`` exactly like every other one when
-any of them occurred). A
-*deliberately skipped* directory (``.git``, ``node_modules``, and the rest of
+workflow files, deploy hints, and so on): here, and only when the traversal left
+no hole that could hide the marker, "no such marker was observed" is itself a
+directly observed fact — not a claim about safety, risk, or authority, and not
+drawn from a walk that hit a depth/entry limit, left a path unobservable, or
+refused a containment escape. Those three are *path* holes: ground the walk
+never saw, so it does not know even the names of what is there, and they gate
+every dimension without exception (``_path_traversal_exhaustive``).
+
+A file skipped for exceeding the read-size limit is a hole of a different kind,
+and the two must not be conflated. The walk *saw* that file and recorded its
+name; only its bytes went unread. So it gates exactly those dimensions whose
+absence claim depends on file content — a Makefile target, an owner declaration
+inside ``.foundry/project.yaml``, a convention parsed out of prose
+(``_traversal_exhaustive``, which takes the unread count) — and must not gate a
+dimension decided purely by filenames on the entry list, because three oversized
+Python source files cannot change whether a ``Dockerfile`` exists. Reporting
+``operating.deploy-surface`` as UNKNOWN because an unrelated source file was too
+large launders a hole in one dimension's evidence into a hole in another's,
+which is its own form of absence-as-evidence. Each call site declares which case
+it is via ``_SubjectDerivation``; the per-call comments cite the collector in
+``inspect/collectors.py`` that settles it. ``inspect/readiness.py`` draws the
+same line between ``_path_hole_descriptions`` and ``_content_hole_descriptions``.
+
+A *deliberately skipped* directory (``.git``, ``node_modules``, and the rest of
 ``SKIP_DIR_NAMES`` — true of nearly every real repository) is not such a hole,
 so it does not force ``UNKNOWN``; instead the resolved value says explicitly
 that directories were skipped (``_scope_none_observed``), rather than reading as
@@ -87,6 +101,8 @@ proof (test B) and the direct byte-identity proof (test A).
 
 from __future__ import annotations
 
+from enum import Enum, auto
+
 from agent_foundry.models.base import FOUNDRY_SCHEMA_VERSION
 from agent_foundry.models.common import Provenance, ProvenanceKind
 from agent_foundry.models.common import ProfileResolution
@@ -103,6 +119,7 @@ from agent_foundry.models.project import (
 from agent_foundry.inspect.classification import (
     CLASSIFICATION_DIMENSIONS,
     reason_is_absence_enumeration,
+    traversal_supports_absence_enumeration,
 )
 
 # `authority.write_scope` is deliberately never echoed into a profile dimension.
@@ -173,25 +190,49 @@ def _dimension(name: str, attributions: list[ProfileAttribution]) -> ProfileDime
     return ProfileDimension(dimension=name, resolution=resolution, attributions=deduped)
 
 
-def _traversal_exhaustive(stats: TraversalStats, *, unread_file_count: int = 0) -> bool:
-    """True only when the walk left no genuine hole in the ground it covered.
+class _SubjectDerivation(Enum):
+    """How an aggregate dimension's subject set is decided to be *empty*.
 
-    A depth/entry limit, an unobservable path, a containment refusal (a
-    symlink resolving outside the root), or a file skipped for exceeding the
-    read-size limit are all genuine holes: the unexamined content might hold
-    anything a content-derived observation (a Makefile target, say) would have
-    reported, so "no marker of kind X was found" must fall back to UNKNOWN
-    rather than be reported as resolved. This gate is deliberately coarse — a
-    read-skipped file anywhere in the intake forces every exhaustive-absence
-    dimension to UNKNOWN, even one that would not itself have depended on that
-    file's content — because the alternative (mapping each dimension to the
-    specific files whose content could affect it) would silently need updating
-    every time a new observation subject started reading a new file, and a
-    stale mapping there fails open exactly where this module must fail closed.
+    ``NAME`` -- every observation in the subject set is emitted by a pure
+    filename/path matcher over the walked entry list (a marker filename, a path
+    prefix, a suffix). Whether the set is empty is therefore settled by the
+    entry names alone, and a file whose *bytes* went unread for exceeding the
+    read-size limit cannot change the answer: the walk recorded that file's
+    name either way.
+
+    ``CONTENT`` -- at least one observation in the subject set is emitted only
+    after some file's content was parsed (a ``Makefile`` target, an owner
+    declaration inside ``.foundry/project.yaml``, a revision string). An unread
+    file genuinely could hide such an observation, so emptiness there is not an
+    observed fact and the content hole must gate it.
+
+    The distinction is stated per call site rather than guessed, because it is a
+    property of the *collector* that produces the subjects (see
+    ``inspect/collectors.py``), not of the profile dimension's name -- and a new
+    caller must choose it explicitly rather than inherit a default that fails
+    open.
+    """
+
+    # `auto()` rather than string values on purpose: test H in
+    # `tests/test_profile_synthesis.py` scans this module for quoted string
+    # literals that could be a project-category branch, and these members are
+    # only ever compared by identity, so they need no value of their own.
+    NAME = auto()
+    CONTENT = auto()
+
+
+def _path_traversal_exhaustive(stats: TraversalStats) -> bool:
+    """True only when the walk left no genuine *path* hole in the ground it covered.
+
+    A depth/entry limit, an unobservable path, or a containment refusal (a
+    symlink resolving outside the root) are path holes: ground the walk never
+    saw at all, so it does not know even the *names* of what is there. Every
+    absence claim -- name-derived and content-derived alike -- is unsound over
+    such a hole, so this gate always applies.
 
     A *deliberately ignored* directory (``.git``, ``node_modules``, ``vendor``,
-    ``build``, and the rest of ``SKIP_DIR_NAMES``) is different in kind — it is
-    a documented, bounded exclusion, not an unknown hole — so it does not gate
+    ``build``, and the rest of ``SKIP_DIR_NAMES``) is different in kind -- it is
+    a documented, bounded exclusion, not an unknown hole -- so it does not gate
     this check at all. It still must not be swallowed silently: callers that
     report a resolved "not observed" fact scope that claim to say a skip
     happened, rather than asserting it holds over ground the walk knowingly
@@ -202,8 +243,32 @@ def _traversal_exhaustive(stats: TraversalStats, *, unread_file_count: int = 0) 
         and not stats.entry_limit_reached
         and stats.entries_unobservable == 0
         and stats.entries_skipped_refused == 0
-        and unread_file_count == 0
     )
+
+
+def _traversal_exhaustive(stats: TraversalStats, *, unread_file_count: int = 0) -> bool:
+    """True only when the walk left no genuine hole -- path *or* content.
+
+    This is the gate for a *content-derived* absence: a file skipped for
+    exceeding the read-size limit is a genuine hole for any claim whose truth
+    depends on what is inside a file, because the unexamined content might hold
+    exactly the thing (a ``Makefile`` target, say) whose absence is being
+    reported. It is deliberately coarse -- a read-skipped file anywhere in the
+    intake forces every content-derived exhaustive-absence dimension to
+    UNKNOWN, even one that would not itself have depended on that file's
+    content -- because the alternative (mapping each dimension to the specific
+    files whose content could affect it) would silently need updating every
+    time a new observation subject started reading a new file, and a stale
+    mapping there fails open exactly where this module must fail closed.
+
+    A *name-derived* absence must not use this gate. "No file named
+    ``Dockerfile`` was observed" is settled by the entry list; three oversized
+    Python source files cannot make it unknown, and reporting it as unknown
+    launders a hole in one dimension's evidence into a hole in another's. Such
+    callers use ``_path_traversal_exhaustive`` instead -- which still gates on
+    every path hole, since a truncated walk may never have seen the name.
+    """
+    return _path_traversal_exhaustive(stats) and unread_file_count == 0
 
 
 def _scope_none_observed(value: str, stats: TraversalStats) -> str:
@@ -278,12 +343,27 @@ def _aggregate_observation_dimension(
     subjects: frozenset[str],
     *,
     stats: TraversalStats,
+    derivation: _SubjectDerivation,
     none_observed_value: str = _NONE_OBSERVED_DEFAULT,
 ) -> ProfileDimension:
+    """Join every observation in ``subjects`` into one dimension.
+
+    ``derivation`` says what kind of evidence decides that ``subjects`` is
+    *empty*, and so which hole can make that emptiness unknown. This function is
+    generic over ``subjects``, so it cannot work that out for itself: whether a
+    subject is emitted by a filename matcher or by parsing a file's bytes is a
+    fact about the collector upstream, and every call site must state it (see
+    ``_SubjectDerivation``). A path hole gates both kinds; only a
+    ``CONTENT`` dimension is additionally gated on the content hole.
+    """
     matches = [obs for obs in observations if obs.subject in subjects]
     if not matches:
-        unread_file_count = sum(1 for obs in observations if obs.subject == "file-read-skipped")
-        if not _traversal_exhaustive(stats, unread_file_count=unread_file_count):
+        if derivation is _SubjectDerivation.CONTENT:
+            unread_file_count = sum(1 for obs in observations if obs.subject == "file-read-skipped")
+            exhaustive = _traversal_exhaustive(stats, unread_file_count=unread_file_count)
+        else:
+            exhaustive = _path_traversal_exhaustive(stats)
+        if not exhaustive:
             return ProfileDimension(dimension=name, resolution=ProfileResolution.UNKNOWN, attributions=[])
         provenance = Provenance(kind=ProvenanceKind.OBSERVED, confidence=1.0, source_ref=".")
         value = _scope_none_observed(none_observed_value, stats)
@@ -319,10 +399,13 @@ def _repository_structure_dimension(
     # are two co-existing facts about the same tree, not competing alternatives,
     # so they must never be read as CONFLICTED.
     return _aggregate_observation_dimension(
+        # NAME: `collect_structure_observations` counts entries and lists top-level
+        # names straight off the walked entry list; no file is opened.
         "repository.structure",
         observations,
         frozenset({"repository-structure"}),
         stats=stats,
+        derivation=_SubjectDerivation.NAME,
     )
 
 
@@ -330,10 +413,13 @@ def _repository_revision_dimension(
     observations: list[ProjectObservation], *, stats: TraversalStats
 ) -> ProfileDimension:
     return _aggregate_observation_dimension(
+        # CONTENT: `collect_revision_observation` publishes a revision string that
+        # was read out of the repository's HEAD file, not a name off the entry list.
         "repository.revision",
         observations,
         frozenset({"repository-revision"}),
         stats=stats,
+        derivation=_SubjectDerivation.CONTENT,
     )
 
 
@@ -345,6 +431,13 @@ def _conventions_dimension(
 ) -> ProfileDimension:
     name = "assurance.conventions-observed"
     if not conventions:
+        # Content-derived, and deliberately so: conventions are discovered by
+        # parsing Makefile recipes, `pyproject.toml` tables and prose in
+        # instruction files (`inspect/conventions.py`), never by matching a
+        # filename. A file the walk declined to read could hold a convention
+        # this dimension would have reported, so "none observed" over an unread
+        # file is not an observed fact. The content gate here is correct and
+        # stays -- unlike the filename-derived aggregates above.
         unread_file_count = sum(1 for obs in observations if obs.subject == "file-read-skipped")
         if not _traversal_exhaustive(stats, unread_file_count=unread_file_count):
             return ProfileDimension(dimension=name, resolution=ProfileResolution.UNKNOWN, attributions=[])
@@ -492,7 +585,12 @@ def synthesize_project_profile(intake: ProjectIntake) -> ProjectProfile:
     unread_file_count = sum(
         1 for obs in intake.observations if obs.subject == "file-read-skipped"
     )
-    exhaustive = _traversal_exhaustive(stats, unread_file_count=unread_file_count)
+    # The shared definition, owned by the module that produces absence-enumerated
+    # reasons, so this consumer and `adopt.manifest` cannot drift apart on what
+    # counts as enough ground for such a finding to mean anything.
+    exhaustive = traversal_supports_absence_enumeration(
+        stats, unread_file_count=unread_file_count
+    )
 
     dimensions: list[ProfileDimension] = []
     for classification_dimension in CLASSIFICATION_DIMENSIONS:
@@ -510,39 +608,59 @@ def synthesize_project_profile(intake: ProjectIntake) -> ProjectProfile:
     dimensions.append(_repository_revision_dimension(intake.observations, stats=stats))
     dimensions.append(
         _aggregate_observation_dimension(
+            # NAME: `collect_metadata_observations` matches `Path(rel).name` against
+            # PACKAGE_METADATA_FILES. A pyproject.toml too large to read is still named.
             "repository.package-metadata",
             intake.observations,
             frozenset({"package-metadata"}),
             stats=stats,
+            derivation=_SubjectDerivation.NAME,
         )
     )
     dimensions.append(
         _aggregate_observation_dimension(
+            # CONTENT: nested boundaries come from `resolve_nested_project_boundaries`,
+            # whose owner-declared additions are parsed out of `.foundry/project.yaml`
+            # under the same read-size bound (`load_nested_project_overrides`). An
+            # unread declaration file hides a boundary, so 'none observed' is not safe.
             "repository.ownership-boundaries",
             intake.observations,
             frozenset({"nested-project"}),
             stats=stats,
+            derivation=_SubjectDerivation.CONTENT,
             none_observed_value="no-nested-project-boundaries-observed",
         )
     )
     dimensions.append(
         _aggregate_observation_dimension(
+            # NAME: `foundry-artifact` is a `.foundry/` path-prefix match, and the
+            # content-derived `foundry-declaration` is only ever emitted for a path that
+            # already produced a `foundry-artifact` -- so whether this union is *empty*
+            # is settled by paths alone, which is the only question this gate asks.
             "repository.foundry-artifacts",
             intake.observations,
             frozenset({"foundry-artifact", "foundry-declaration"}),
             stats=stats,
+            derivation=_SubjectDerivation.NAME,
         )
     )
     dimensions.append(
         _aggregate_observation_dimension(
+            # CONTENT: besides the marker filenames, `test-entrypoint` is also emitted
+            # from a `test:` target parsed out of the Makefile's text
+            # (`_MAKEFILE_TARGET_SUBJECTS`), so an unread Makefile could hide one.
             "testability.test-entrypoint",
             intake.observations,
             frozenset({"test-entrypoint"}),
             stats=stats,
+            derivation=_SubjectDerivation.CONTENT,
         )
     )
     dimensions.append(
         _aggregate_observation_dimension(
+            # CONTENT: `lint-entrypoint`/`typecheck-entrypoint` are Makefile-target
+            # observations parsed from the Makefile's text, so an unread Makefile could
+            # hide a lint or typecheck entrypoint this dimension would have reported.
             "testability.lint-type-entrypoint",
             intake.observations,
             # `lint-type-entrypoint` covers filename markers (ruff.toml, mypy.ini,
@@ -552,42 +670,60 @@ def synthesize_project_profile(intake: ProjectIntake) -> ProjectProfile:
             # lint or type-check entrypoint present — so all three must feed it.
             frozenset({"lint-type-entrypoint", "lint-entrypoint", "typecheck-entrypoint"}),
             stats=stats,
+            derivation=_SubjectDerivation.CONTENT,
         )
     )
     dimensions.append(
         _aggregate_observation_dimension(
+            # CONTENT: the workflow-file half is a path-prefix match, but `ci-entrypoint`
+            # is also emitted from a `ci:` target parsed out of the Makefile's text, so
+            # emptiness of this subject is not settled by names alone.
             "testability.ci-entrypoint",
             intake.observations,
             frozenset({"ci-entrypoint"}),
             stats=stats,
+            derivation=_SubjectDerivation.CONTENT,
         )
     )
     dimensions.append(
         _aggregate_observation_dimension(
+            # NAME: `collect_config_schema_observations` matches `.schema.json` /
+            # `.schema.yaml` / `.schema.yml` suffixes on the entry path. Nothing is read.
             "testability.config-schema",
             intake.observations,
             frozenset({"config-schema"}),
             stats=stats,
+            derivation=_SubjectDerivation.NAME,
         )
     )
     dimensions.append(
         _aggregate_observation_dimension(
+            # NAME: `collect_runtime_deploy_observations` matches deploy marker filenames
+            # (Dockerfile, compose.yaml, Procfile, ...) and the `deploy/` prefix. Three
+            # unread Python source files cannot change whether a Dockerfile exists.
             "operating.deploy-surface",
             intake.observations,
             frozenset({"runtime-deploy-hint"}),
             stats=stats,
+            derivation=_SubjectDerivation.NAME,
         )
     )
     dimensions.append(
         _aggregate_observation_dimension(
+            # NAME: `collect_integration_observations` matches `.env.example` and the
+            # other integration marker filenames; the files' contents are never opened.
             "integration.config-surface",
             intake.observations,
             frozenset({"integration-config"}),
             stats=stats,
+            derivation=_SubjectDerivation.NAME,
         )
     )
     dimensions.append(
         _aggregate_observation_dimension(
+            # NAME: `agent-instruction-surface` is AGENT_RULE_RELATIVE_PATHS membership
+            # plus the `.cursor/rules` prefix, and `project-docs` is the `docs/ai/`
+            # prefix with a `.md` suffix -- all filename/path matches.
             "instruction.fragmentation",
             intake.observations,
             # `project-docs` (agent-facing docs under `docs/ai/`, collectors.py)
@@ -596,6 +732,7 @@ def synthesize_project_profile(intake: ProjectIntake) -> ProjectProfile:
             # purpose is measuring fragmentation must count both.
             frozenset({"agent-instruction-surface", "project-docs"}),
             stats=stats,
+            derivation=_SubjectDerivation.NAME,
             none_observed_value="no-agent-instruction-surface-observed",
         )
     )

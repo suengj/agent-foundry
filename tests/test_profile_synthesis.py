@@ -487,6 +487,101 @@ def test_c_a_file_skipped_for_size_forces_unknown_rather_than_none_observed(tmp_
     )
 
 
+def test_c_an_unread_file_does_not_make_a_filename_derived_absence_unknown(
+    tmp_path: Path,
+) -> None:
+    """R1 regression. The counterpart to the test directly above: there, the
+    unread file was the *only* place the answer could have been. Here the unread
+    file is an oversized Python source file, and the dimensions under test are
+    decided purely by filenames on the walked entry list — `Dockerfile` and the
+    other deploy markers, `.env.example` and the other integration markers,
+    `*.schema.json`. The walk saw and recorded every name in this tree; an
+    unread *body* of one of those files cannot change whether a file named
+    `Dockerfile` is among them.
+
+    Reporting those dimensions as UNKNOWN because some unrelated file was too
+    large is absence-as-evidence in its own right: it launders a hole in one
+    dimension's evidence into a hole in another's, and the profile then says
+    "unknown" about something it directly observed.
+    """
+    (tmp_path / "app.py").write_text("x = 1\n" + ("# " + "y" * 70_000 + "\n"))
+    (tmp_path / "README.md").write_text("# sample\n")
+
+    intake = inspect_project(tmp_path)
+    unread = [obs for obs in intake.observations if obs.subject == "file-read-skipped"]
+    assert unread, "the fixture file must actually exceed the read-size limit"
+    stats = intake.traversal_stats
+    assert not stats.depth_limit_reached and not stats.entry_limit_reached
+    assert stats.entries_unobservable == 0 and stats.entries_skipped_refused == 0, (
+        "the fixture must leave a content hole and no path hole, or this test "
+        "proves nothing about the difference between the two"
+    )
+
+    by_name = {d.dimension: d for d in synthesize_project_profile(intake).dimensions}
+
+    for name in (
+        "operating.deploy-surface",
+        "integration.config-surface",
+        "testability.config-schema",
+        "repository.package-metadata",
+        "instruction.fragmentation",
+    ):
+        dim = by_name[name]
+        assert dim.resolution is ProfileResolution.RESOLVED, (
+            f"{name} is decided by filenames on the entry list, but resolved to "
+            f"{dim.resolution} because an unrelated oversized file went unread"
+        )
+        assert "none-observed" in dim.attributions[0].value or dim.attributions[0].value
+
+    # The content-derived half of the same profile must NOT have moved: an unread
+    # file could genuinely hide a Makefile target or a parsed convention.
+    for name in ("testability.test-entrypoint", "assurance.conventions-observed"):
+        assert by_name[name].resolution is ProfileResolution.UNKNOWN, (
+            f"{name} is derived from file content; an unread file must keep it UNKNOWN"
+        )
+
+
+def test_c_a_path_hole_still_gates_filename_derived_absence(tmp_path: Path) -> None:
+    """R1's guard rail. Splitting the content hole out of the exhaustiveness gate
+    must not weaken the *path* holes: a depth limit, an entry limit, a
+    containment refusal or an unobservable path means the walk never saw the
+    ground at all — not even the filenames — so a filename-derived absence is
+    exactly as unsound there as a content-derived one."""
+    limits = TraversalLimits(
+        max_depth=1, max_entries=1, max_file_bytes=1024, skipped_dir_names=[]
+    )
+    name_derived = (
+        "operating.deploy-surface",
+        "integration.config-surface",
+        "testability.config-schema",
+        "repository.package-metadata",
+        "instruction.fragmentation",
+    )
+    holes = {
+        "depth limit": dict(depth_limit_reached=True),
+        "entry limit": dict(entry_limit_reached=True),
+        "containment refusal": dict(entries_skipped_refused=1),
+        "unobservable path": dict(entries_unobservable=1),
+    }
+    for label, hole in holes.items():
+        fields = dict(
+            entries_visited=1,
+            entries_skipped=0,
+            depth_limit_reached=False,
+            entry_limit_reached=False,
+            limits=limits,
+        )
+        fields.update(hole)
+        stats = TraversalStats(**fields)
+        profile = synthesize_project_profile(_minimal_intake(traversal_stats=stats))
+        by_name = {d.dimension: d for d in profile.dimensions}
+        for name in name_derived:
+            assert by_name[name].resolution is ProfileResolution.UNKNOWN, (
+                f"{name} published a filename-derived absence over a {label} — "
+                "the walk never saw those filenames at all"
+            )
+
+
 # ---------------------------------------------------------------------------
 # D. Conflict — one CONFLICTED dimension, attributions preserved
 # ---------------------------------------------------------------------------
