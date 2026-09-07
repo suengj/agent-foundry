@@ -160,3 +160,70 @@ def test_every_declarable_dimension_states_whether_it_has_a_vocabulary(dimension
     """
     free_form = {"project.name", "authority.write_scope"}
     assert (dimension in DECLARED_VOCABULARIES) is (dimension not in free_form)
+
+
+def test_the_vocabulary_drift_guard_actually_fires() -> None:
+    """`_assert_vocabulary_matches` must fail when the two definitions disagree.
+
+    The guard exists because `adopt.manifest` names each enum at its call site (it
+    needs the static return type) while `profile.synth` and `inspect.readiness` read
+    the same correspondence out of `DECLARED_VOCABULARIES`. Two copies of one fact
+    drift, and the drift's shape is exactly the defect this was added alongside: a
+    manifest refusing a value the profile happily published.
+
+    An independent review found the guard was called for every vocabulary dimension
+    and did fire on real drift — but that deleting it broke no test. A guard nothing
+    proves is a guard nobody can rely on, so this proves it directly rather than
+    inferring it from the fact that the suite is green.
+    """
+    from agent_foundry.adopt.manifest import _assert_vocabulary_matches
+    from agent_foundry.inspect.classification import DECLARED_VOCABULARIES
+    from agent_foundry.models.common import Autonomy, Reversibility
+
+    dimension = "impact.reversibility"
+    assert DECLARED_VOCABULARIES[dimension] is Reversibility
+
+    # Agreement is silent.
+    _assert_vocabulary_matches(dimension, Reversibility)
+
+    # Disagreement is loud, and names both sides so the reader can tell which moved.
+    with pytest.raises(AssertionError) as caught:
+        _assert_vocabulary_matches(dimension, Autonomy)
+    message = str(caught.value)
+    assert dimension in message
+    assert "Reversibility" in message and "Autonomy" in message
+
+
+def test_every_vocabulary_dimension_is_actually_guarded(monkeypatch) -> None:
+    """The guard covering 13 of 14 dimensions would be worth nothing on the 14th.
+
+    `DECLARED_VOCABULARIES` is the shared definition and `adopt.manifest` holds the
+    copy; every entry must be checked, or the unchecked one drifts silently, which is
+    the whole failure mode.
+
+    This spies the guard during a real `synthesize_manifest` over a fully-declared
+    project rather than scanning source, because the call sites pass `dimension` as a
+    variable from two helpers — there is no literal to grep for, and a source scan
+    would silently pass while proving nothing.
+    """
+    from agent_foundry.adopt import manifest as manifest_module
+    from agent_foundry.inspect import inspect_project
+    from agent_foundry.inspect.classification import DECLARED_VOCABULARIES
+
+    seen: set[str] = set()
+    original = manifest_module._assert_vocabulary_matches
+
+    def spy(dimension: str, enum_type: type) -> None:
+        seen.add(dimension)
+        original(dimension, enum_type)
+
+    monkeypatch.setattr(manifest_module, "_assert_vocabulary_matches", spy)
+
+    fixture = Path(__file__).resolve().parent / "fixtures" / "projects" / "e2e-synthetic"
+    manifest_module.synthesize_manifest(inspect_project(fixture))
+
+    unguarded = sorted(set(DECLARED_VOCABULARIES) - seen)
+    assert unguarded == [], (
+        f"these dimensions have a shared vocabulary that `adopt.manifest` never checks "
+        f"its own enum against, so the two can drift silently: {unguarded}"
+    )

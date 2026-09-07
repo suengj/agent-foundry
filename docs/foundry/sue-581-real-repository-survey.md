@@ -22,9 +22,9 @@ project category:
 | `chalk/chalk` | Node package, `package.json`, 35 files |
 | `spf13/cobra` | Go library, `go.mod` + Makefile |
 | `BurntSushi/ripgrep` | Rust, `Cargo.toml` |
-| `cncf/foundation` | governance/docs — no build markers at all |
+| `cncf/foundation` | governance/docs — no test or package manifest; carries `netlify.toml` |
 | `github/opensource.guide` | editorial static site — Gemfile, `_config.yml`, package.json |
-| `norvig/pytudes` | research notebooks, 258 MB |
+| `norvig/pytudes` | research notebooks, 258 MB, `requirements.txt` |
 | Agent Foundry | Python, `.foundry/project.yaml` owner declaration |
 | adversarial | three files, constructed — see below |
 
@@ -84,7 +84,8 @@ dimension unknown; `conventions_inferred_total = 46` against
 For the eight undeclared repositories the profile adds 13–15 structural dimensions each
 — deploy surface, package metadata, CI and test entrypoints, config schema, integration
 surface, instruction fragmentation, ownership boundaries, traversal accounting — carrying
-109 attributions with evidence refs across the corpus. Under V0.1 those repositories
+**65 attributions with evidence refs** between them (109 across the whole ten-target
+corpus, counting the two declared ones). Under V0.1 those repositories
 produced a manifest with one populated field and nothing else. **Undeclared brownfield
 state went from almost entirely illegible to substantially described, with evidence.**
 
@@ -116,8 +117,8 @@ Measured against the reference facts. Every row is checkable in the repository i
 | github/opensource.guide | `scripts.test = "script/test"` | DECLARED 0.8, quoted verbatim | correct |
 | **spf13/cobra** | **Makefile `test:` → `go test -v …`** | **no `test-invocation`** | **false negative** |
 | BurntSushi/ripgrep | nothing Foundry parses | none | correct — missing is the right answer |
-| cncf/foundation | no build markers at all | none | correct |
-| norvig/pytudes | no markers; 104 files unread | none, and absence not asserted | correct |
+| cncf/foundation | no test or package manifest (`netlify.toml` only) | none | correct |
+| norvig/pytudes | `requirements.txt`, no test declaration; 104 files unread | none | correct |
 | agent-foundry | `.foundry/project.yaml` | declared values preserved as DECLARED | correct |
 
 **False positives: 0 of 9.** No convention was claimed that the repository does not
@@ -206,6 +207,7 @@ for r in pallets/click benoitc/gunicorn chalk/chalk spf13/cobra \
   git clone --depth 1 "https://github.com/$r.git" "$(echo $r | tr '/' '_')"
 done
 
+cd /path/to/agent-foundry   # the survey runs from the repo root, not the corpus
 PYTHONPATH="src:." python -m tests.e2e.real_repository_survey \
     --public-labels --under /tmp/corpus --label agent-foundry=. \
     --adversarial /tmp/adversarial
@@ -213,3 +215,42 @@ PYTHONPATH="src:." python -m tests.e2e.real_repository_survey \
 
 Print `agent_foundry.__file__` and check it before trusting the result: an import that
 silently resolves to another checkout produces a clean, plausible, meaningless survey.
+
+## M1 readiness disposition
+
+**BOUNDED-FOLLOWUP.**
+
+Not PASS, and the two reasons are specific rather than cautionary.
+
+1. **One measurement in this work item's own scope was not performed.** SUE-581 lists
+   "correction rate after human review" among the things to measure. No human review pass
+   took place. What is reported instead is agreement against each repository's own
+   declared configuration — weaker in that it can only catch disagreements about facts a
+   repository declares, stronger in that it cannot drift, because the reference is the
+   repository rather than a judgement. It is not a human-reviewed correction rate and is
+   not offered as one.
+
+2. **One heuristic is bounded rather than fixed.** SUE-641: a Makefile `test:` target is
+   captured as a `test-invocation` convention only when its recipe invokes pytest, so
+   cobra's `go test` yields nothing. It is bounded, not merely deferred — it fails in the
+   safe direction (a missing convention, never a false one), the *existence* of a test
+   surface is still captured, and the issue states what M2 must not assume from it.
+
+**What is not blocking, and why.** No M1 invariant is violated on the evidence here.
+Absence never became confident truth — `ripgrep` resolves `testability.test-entrypoint`
+to UNKNOWN under seven unread files, on a real repository. Owner declarations outrank
+heuristics, including the case where an owner excludes a markerless directory the
+heuristic would never have excluded. No provenance is laundered: an out-of-vocabulary
+declared value now yields UNKNOWN plus a `declared-value-invalid` finding rather than a
+confident RESOLVED at a token the schema rejects. There is no named-project-type
+classifier in the harness or in production. Inspection is bounded, deterministic and
+read-only, proved against a real repository's tree including mode and mtime. And
+`ProjectProfile` reaches no authority decision — it is imported by `cli.py` alone.
+
+**The finding a reader should carry into M2.** The profile improves legibility and does
+not improve operating readiness at all. For the eight undeclared repositories the manifest
+stays at 1 of 16 fields and the toolkit at zero roles. Any M2 work that assumes richer
+profiles will populate an `OperatingModel` is assuming something this survey measured and
+did not find. The wiring that would make profile evidence reach a downstream consumer does
+not exist yet, and building it is an M2 decision with its own authority consequences —
+descriptive truth becoming normative input is exactly the boundary M1 was built to keep.
