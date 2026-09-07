@@ -80,6 +80,61 @@ NESTED_PROJECT_MARKERS: frozenset[str] = frozenset(
 )
 
 
+#: How a nested-project boundary was detected. ``MANIFEST`` means a file named by
+#: :data:`NESTED_PROJECT_MARKERS` was actually seen inside the directory during the
+#: walk; ``GIT_DIRECTORY`` means the directory was found to contain its own ``.git``
+#: and no such manifest was observed. The two are *different observed facts*, and a
+#: reader is told which — describing a bare vendored clone as one that "declares its
+#: own project manifest" states something the walk never saw.
+NESTED_BOUNDARY_MARKER_MANIFEST = "manifest"
+NESTED_BOUNDARY_MARKER_GIT_DIRECTORY = "git-directory"
+
+
+def nested_project_boundary_markers(root: Path, entries: list[RepoEntry]) -> dict[str, str]:
+    """Every outermost nested-project boundary, mapped to *how* it was detected.
+
+    Same computation as :func:`nested_project_roots` (which delegates here); the
+    only addition is that the evidence for each boundary is carried out with it
+    instead of being thrown away. A manifest sighting and a ``.git`` probe are not
+    interchangeable justifications, and only the caller that reports the exclusion
+    to a human can tell them apart if this does not.
+
+    A directory carrying both is reported as ``MANIFEST``: the manifest is the
+    stronger, owner-authored fact, and it was directly observed in the walk.
+    """
+    markers: dict[str, str] = {}
+    for entry in entries:
+        if entry.is_dir:
+            continue
+        parent, _, name = entry.relative_path.rpartition("/")
+        if not parent:
+            # A marker at the repository root describes the target itself.
+            continue
+        if name in NESTED_PROJECT_MARKERS:
+            markers[parent] = NESTED_BOUNDARY_MARKER_MANIFEST
+    # A `.git` entry never appears in the walk at all — `.git` is a skipped directory
+    # name, so nothing inside it and nothing named it is ever recorded. A separate
+    # repository is the least ambiguous nested project there is, so each visited
+    # directory is probed for one directly. One stat per directory, bounded by the same
+    # traversal limits as everything else.
+    for entry in entries:
+        if not entry.is_dir:
+            continue
+        try:
+            if (root / entry.relative_path / ".git").exists():
+                markers.setdefault(
+                    entry.relative_path, NESTED_BOUNDARY_MARKER_GIT_DIRECTORY
+                )
+        except OSError:
+            continue
+
+    return {
+        candidate: marker
+        for candidate, marker in sorted(markers.items())
+        if not any(_is_within(candidate, other) for other in markers if other != candidate)
+    }
+
+
 def nested_project_roots(root: Path, entries: list[RepoEntry]) -> list[str]:
     """Directories below the root that declare themselves separate projects.
 
@@ -95,37 +150,12 @@ def nested_project_roots(root: Path, entries: list[RepoEntry]) -> list[str]:
     The repository root is never a nested project: it is the target. Only the outermost
     boundary is returned for any path, so a project inside a project inside the target
     is excluded once rather than twice.
-    """
-    boundaries: set[str] = set()
-    for entry in entries:
-        if entry.is_dir:
-            continue
-        parent, _, name = entry.relative_path.rpartition("/")
-        if not parent:
-            # A marker at the repository root describes the target itself.
-            continue
-        if name in NESTED_PROJECT_MARKERS:
-            boundaries.add(parent)
-    # A `.git` entry never appears in the walk at all — `.git` is a skipped directory
-    # name, so nothing inside it and nothing named it is ever recorded. A separate
-    # repository is the least ambiguous nested project there is, so each visited
-    # directory is probed for one directly. One stat per directory, bounded by the same
-    # traversal limits as everything else.
-    for entry in entries:
-        if not entry.is_dir:
-            continue
-        try:
-            if (root / entry.relative_path / ".git").exists():
-                boundaries.add(entry.relative_path)
-        except OSError:
-            continue
 
-    outermost: list[str] = []
-    for candidate in sorted(boundaries):
-        if any(_is_within(candidate, other) for other in boundaries if other != candidate):
-            continue
-        outermost.append(candidate)
-    return outermost
+    Callers that have to *explain* an exclusion want
+    :func:`nested_project_boundary_markers` instead: it is the same set, with how
+    each boundary was detected still attached.
+    """
+    return list(nested_project_boundary_markers(root, entries))
 
 
 def _is_within(path: str, bound: str) -> bool:
@@ -343,6 +373,7 @@ def resolve_nested_project_boundaries(
     overrides: NestedProjectOverrides,
     *,
     walk_truncated: bool = False,
+    boundary_markers: dict[str, str] | None = None,
 ) -> tuple[list[str], list[NestedProjectOverrideDecision]]:
     """Apply an owner override to the default heuristic, one decision per entry.
 
@@ -353,13 +384,26 @@ def resolve_nested_project_boundaries(
     produces no decisions at all — there is nothing to make visible when
     nothing was declared.
 
-    `walk_truncated` says whether `entries` (and therefore `dir_paths`, below)
-    came from a walk that hit its depth or entry limit before finishing. When
-    it did, a path absent from `dir_paths` was not confirmed absent — it may
-    simply lie past where the walk stopped — so "does not exist" must not be
-    reported as a settled, full-confidence fact.
+    `walk_truncated` says whether `entries` — and therefore both `dir_paths` and
+    `default_boundaries`, which are derived from it — came from a walk that hit
+    its depth or entry limit before finishing. When it did, a path absent from
+    either was not confirmed absent: it may simply lie past where the walk
+    stopped. So neither "does not exist" (an `exclude` that found no directory)
+    nor "override has no effect" (an `include` that found no covering boundary)
+    may be reported as a settled, full-confidence fact; both are marked
+    `uncertain` instead. The two are the same claim about the same incomplete
+    evidence, and treating only one of them as provisional would leave the other
+    publishing a confident falsehood.
+    `boundary_markers` lets a caller that already computed
+    `nested_project_boundary_markers` hand the result in rather than have it
+    recomputed here. The computation stats every visited directory to probe for a
+    nested `.git`, so running it twice doubles that filesystem work in the one
+    module whose contract is a bounded walk. Omitted, it is computed here as
+    before, so no caller is required to know about it.
     """
-    default_boundaries = nested_project_roots(root, entries)
+    if boundary_markers is None:
+        boundary_markers = nested_project_boundary_markers(root, entries)
+    default_boundaries = list(boundary_markers)
 
     if overrides.malformed:
         reason = overrides.malformed_reason or "nested-project override could not be parsed"
@@ -384,14 +428,38 @@ def resolve_nested_project_boundaries(
             (bound for bound in default_boundaries if _is_within(path, bound)), None
         )
         if covering is None:
-            decisions.append(
-                NestedProjectOverrideDecision(
-                    path=path,
-                    action="include",
-                    applied=False,
-                    reason="not an excluded nested-project boundary; override has no effect",
+            # "Not a boundary" is decided against `default_boundaries`, which the
+            # walk populated — so a truncated walk can under-populate it for exactly
+            # the reason a truncated walk can lose a directory from `dir_paths`
+            # below: the marker file that would have made this path a boundary may
+            # simply lie past where the walk stopped. Reporting "override has no
+            # effect" as a settled, full-confidence fact would then publish, inside a
+            # DECLARED-1.0 attribution, a claim that is false on the complete tree.
+            # Absence is not evidence here any more than it is for `exclude`.
+            if walk_truncated:
+                decisions.append(
+                    NestedProjectOverrideDecision(
+                        path=path,
+                        action="include",
+                        applied=False,
+                        reason=(
+                            "no nested-project boundary covering this path was found in "
+                            "the walked tree, and the walk was incomplete (a depth or "
+                            "entry limit was reached) — whether the override has any "
+                            "effect could not be confirmed"
+                        ),
+                        uncertain=True,
+                    )
                 )
-            )
+            else:
+                decisions.append(
+                    NestedProjectOverrideDecision(
+                        path=path,
+                        action="include",
+                        applied=False,
+                        reason="not an excluded nested-project boundary; override has no effect",
+                    )
+                )
             continue
         boundaries.discard(covering)
         if covering == path:

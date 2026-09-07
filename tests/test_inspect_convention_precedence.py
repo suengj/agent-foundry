@@ -209,9 +209,24 @@ def test_a_demoted_mention_pattern_carries_no_foundry_commentary(
 def test_minified_package_json_still_yields_the_declaration(tmp_path: Path) -> None:
     """A whole-file property, not an exotic escape: a generated `package.json`
     is commonly one physical line. Requiring the `"test"` key to *start* its line
-    made the entire declaration vanish -- a real DECLARED fact silently lost. The
-    single line is the verbatim source text carrying the declaration, so it is
-    quoted in full as the evidence."""
+    made the entire declaration vanish -- a real DECLARED fact silently lost.
+
+    This test previously asserted `evidence == minified`, i.e. that the whole
+    document is quoted. **That assertion was wrong and is replaced here.** It
+    reasoned only about quotation fidelity ("a shortened quote would no longer be
+    the source text it claims to be") and never considered that `evidence` is a
+    *scored* field: `compile/context.py` tokenises it and relevance-matches a work
+    item's text against it, and the same string is republished into
+    `ProjectManifest.observations` and `ExecutionBundle.provenance`. Quoting the
+    whole document therefore pulls every unrelated token in the file into the
+    scoring surface -- the identical defect that got Foundry's own commentary
+    removed from the sibling scored field `pattern`. See
+    `test_evidence_never_carries_unrelated_project_text` for the consequence.
+
+    The declaration span (`"test":"pytest -q"`) is still verbatim source text -- a
+    contiguous substring of the file, nothing paraphrased or invented -- so the
+    evidence remains true and checkable against `source_ref`, while carrying only
+    the declaration it is evidence for."""
     repo = tmp_path / "repo"
     repo.mkdir()
     minified = '{"name":"demo","scripts":{"build":"tsc","test":"pytest -q"}}'
@@ -223,7 +238,57 @@ def test_minified_package_json_still_yields_the_declaration(tmp_path: Path) -> N
     assert found[0].provenance.kind is ProvenanceKind.DECLARED
     assert found[0].confidence == STRUCTURED_CONFIDENCE
     assert found[0].pattern == "package.json 'test' script invokes pytest"
-    assert found[0].evidence == minified
+    # Verbatim: a contiguous substring of the file, not a reconstruction.
+    assert found[0].evidence == '"test":"pytest -q"'
+    assert found[0].evidence in minified
+    # ...and bounded to the declaration: the rest of the document is not evidence
+    # about test invocation and must not ride along in a scored field.
+    assert found[0].evidence != minified
+    assert "tsc" not in found[0].evidence
+    assert "demo" not in found[0].evidence
+
+
+def test_evidence_never_carries_unrelated_project_text(tmp_path: Path) -> None:
+    """`evidence` is scored, so unrelated bytes in it manufacture false relevance.
+
+    A minified `package.json` whose `description` and dependencies are about a
+    telemetry dashboard, and whose `scripts.test` is a pytest invocation. When the
+    whole document was quoted as evidence, a work item about a telemetry dashboard
+    matched the *test-invocation* convention on the field `evidence` -- relevance
+    earned from bytes that say nothing whatever about test invocation, published
+    with the rationale that "its evidence shares tokens with the work item".
+
+    The scoring helper is imported rather than re-implemented: this asserts the
+    real downstream behaviour, not a local model of it.
+    """
+    from agent_foundry.compile.context import _matching_fields
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    minified = (
+        '{"name":"demo","description":"kubernetes ingress dashboard telemetry",'
+        '"dependencies":{"webpack":"^5","grafana-client":"^1"},'
+        '"scripts":{"build":"tsc","test":"pytest -q"}}'
+    )
+    (repo / "package.json").write_text(minified, encoding="utf-8")
+    intake = inspect_project(repo)
+
+    found = _conventions(intake, TEST_INVOCATION_SUBJECT)
+    assert len(found) == 1, "the declaration itself must still be found"
+    convention = found[0]
+
+    work_item_tokens = {"telemetry", "dashboard"}
+    assert (
+        _matching_fields(
+            work_item_tokens,
+            subject=convention.subject,
+            pattern=convention.pattern,
+            evidence=convention.evidence,
+        )
+        == []
+    ), "a test-invocation convention must not match a work item on unrelated project text"
+    for stray in ("telemetry", "dashboard", "kubernetes", "grafana-client", "webpack"):
+        assert stray not in convention.evidence
 
 
 def test_minified_package_json_naming_another_runner_is_quoted_not_guessed(
@@ -411,12 +476,48 @@ def test_makefile_test_target_invoking_pytest_is_still_found(tmp_path: Path) -> 
 # --- evidence supports the claim, for every convention kind emitted -------------
 
 
-def _assert_evidence_is_a_literal_source_line(convention, source_text: str) -> None:
-    assert convention.evidence.strip()
-    assert convention.evidence in source_text
+def _assert_evidence_is_a_literal_source_span(convention, source_text: str) -> None:
+    """Evidence must be verbatim source text, on one line, and no wider than needed.
+
+    This replaces `_assert_evidence_is_a_literal_source_line`, which required the
+    evidence to equal a whole stripped physical line. Two things were wrong with
+    that. First, it is satisfied by containment -- quoting an entire minified
+    `package.json` passed, because the whole document *is* a physical line -- so the
+    check could not see unrelated project text riding into a field
+    `compile/context.py` scores. Second, "a whole line" was never the property that
+    mattered: what makes evidence honest is that it appears verbatim in the cited
+    source, and what keeps it clean is that it stops at the declaration.
+
+    So: verbatim (a contiguous substring of the source) and single-line (contained
+    within one physical line, so nothing was stitched together across lines). The
+    third property -- that the span stops at the declaration and does not drag
+    unrelated project text into a scored field -- is asserted by the caller with
+    `_assert_evidence_carries_no_unrelated_text`, because "unrelated" is a property
+    of the fixture, not of the string. (A file that is *only* the declaration, like
+    a `pytest.ini` containing just `[pytest]`, legitimately quotes its whole self.)
+    """
+    evidence = convention.evidence
+    assert evidence.strip()
+    assert evidence in source_text, "evidence must be verbatim text from the cited source"
     assert any(
-        line.strip() == convention.evidence.strip() for line in source_text.splitlines()
-    )
+        evidence in line for line in source_text.splitlines()
+    ), "evidence must lie within a single physical line of the source"
+
+
+#: Tokens planted in the fixture below that no convention's claim depends on. They
+#: exist so this test can see the whole-document quotation that the old
+#: "equals a stripped source line" check waved through: `evidence` is
+#: relevance-matched against a work item's text in `compile/context.py`, so any of
+#: these appearing in it is manufactured relevance.
+_UNRELATED_FIXTURE_TOKENS = ("telemetry", "dashboard", "kubernetes", "tsc")
+
+
+def _assert_evidence_carries_no_unrelated_text(convention) -> None:
+    for token in _UNRELATED_FIXTURE_TOKENS:
+        assert token not in convention.evidence.lower(), (
+            f"convention {convention.subject!r} quotes unrelated project text "
+            f"({token!r}) in the relevance-scored `evidence` field"
+        )
 
 
 def test_evidence_supports_claim_for_every_emitted_convention_kind(tmp_path: Path) -> None:
@@ -430,8 +531,12 @@ def test_evidence_supports_claim_for_every_emitted_convention_kind(tmp_path: Pat
     (repo / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     (repo / "tox.ini").write_text("[pytest]\n", encoding="utf-8")
     (repo / "setup.cfg").write_text("[tool:pytest]\n", encoding="utf-8")
+    # Minified on purpose: the shape a generated `package.json` actually takes, and
+    # the one whose whole-document quotation the old line-equality check accepted.
     (repo / "package.json").write_text(
-        '{"scripts": {"test": "pytest -q"}}\n', encoding="utf-8"
+        '{"name":"demo","description":"kubernetes ingress dashboard telemetry",'
+        '"scripts":{"build":"tsc","test":"pytest -q"}}\n',
+        encoding="utf-8",
     )
     (repo / "AGENTS.md").write_text(
         "Run pytest for changes.\nDo not commit secrets.\n", encoding="utf-8"
@@ -456,9 +561,10 @@ def test_evidence_supports_claim_for_every_emitted_convention_kind(tmp_path: Pat
     seen_subjects = set()
     for convention in intake.conventions:
         seen_subjects.add(convention.subject)
-        _assert_evidence_is_a_literal_source_line(
+        _assert_evidence_is_a_literal_source_span(
             convention, sources[convention.source_ref]
         )
+        _assert_evidence_carries_no_unrelated_text(convention)
         if convention.subject == TEST_RUNNER_SUBJECT:
             assert "pytest" in convention.evidence.lower()
         elif convention.subject == TEST_INVOCATION_SUBJECT:

@@ -63,10 +63,13 @@ _MENTION_PATTERN = "instruction surface mentions pytest"
 _COMMIT_CONSTRAINT_PATTERN = re.compile(
     r"\bcommit\b.*\bnot\b|\bdo not commit\b", re.IGNORECASE
 )
-# The literal ``"test"`` key of a JSON object, with its colon — anywhere on the line,
+# The literal ``"test"`` key of a JSON object with its colon — anywhere on the line,
 # so a minified single-line document is still quotable. The colon is required so a
-# longer key such as ``"testMatch"`` cannot be mistaken for it.
-_TEST_KEY_PATTERN = re.compile(r'"test"\s*:')
+# longer key such as ``"testMatch"`` cannot be mistaken for it. Only horizontal
+# whitespace is allowed around the colon: the key, the colon and the value must sit
+# on one physical line, so the recovered span is a real contiguous piece of source
+# text rather than something reassembled across lines.
+_TEST_KEY_PREFIX = r'"test"[ \t]*:[ \t]*'
 _CHECKOUT_ACTION = "actions/checkout"
 _MAKEFILE_TEST_TARGET = "test"
 _PYTEST_COMMAND = "pytest"
@@ -187,27 +190,47 @@ def _ini_section_header_line(content: str, section: str) -> str | None:
 
 
 def _package_json_test_script(content: str) -> tuple[str, str] | None:
-    """The declared ``scripts.test`` command and its literal source line, if any.
+    """The declared ``scripts.test`` command and the literal source span declaring it.
 
     ``json`` alone decides whether ``scripts.test`` exists and what its value is.
-    The raw text is consulted only afterward, to recover that key's own line: the
-    line must carry the literal ``"test"`` key followed by its colon *and* the value
-    round-tripped through ``json.dumps`` to the exact parsed string. Anything else
-    (unusual escaping, a value split across lines) yields nothing rather than a guess.
+    The raw text is consulted only afterward, to recover the declaration's own
+    source text: the literal ``"test"`` key, its colon, and — immediately after it
+    on the same physical line — the value round-tripped through ``json.dumps`` to
+    the exact parsed string. Anything else (unusual escaping, a value split across
+    lines) yields nothing rather than a guess.
 
-    The key need not begin the line. A minified ``package.json`` — the common shape
-    for a generated file — puts the whole document on one physical line, and that
-    line is the verbatim source text carrying the declaration, so it is quotable
-    evidence like any other. Requiring the key to *start* the line silently dropped
-    a real ``DECLARED`` fact for every such file. The cost is that the quoted line is
-    then the whole document; it is not truncated, because a shortened quote would no
-    longer be the source text it claims to be.
+    **The quoted span is the declaration, not the line that contains it.** The key
+    need not begin its line: a minified ``package.json`` — the common shape for a
+    generated file — puts the whole document on one physical line, and requiring the
+    key to *start* the line silently dropped a real ``DECLARED`` fact for every such
+    file. But quoting that whole line as evidence trades one defect for another.
+    ``ConventionSpec.evidence`` is not inert prose: ``compile/context.py`` tokenises
+    it and relevance-matches a work item's text against it (``_matching_fields``,
+    ``_convention_selection_score``), and the same string is republished into
+    ``ProjectManifest.observations`` and ``ExecutionBundle.provenance``. A
+    whole-document quote therefore drags every unrelated token in the file — a
+    ``description``, a dependency list, tens of KB of generated content — into a
+    scored field, so a work item about, say, a telemetry dashboard pulls in the
+    *test-invocation* convention on the stated rationale that "its evidence shares
+    tokens with the work item". That is relevance manufactured out of bytes that say
+    nothing about test invocation, which is the same failure that removed Foundry's
+    own commentary from the sibling scored field ``pattern``.
+
+    Quoting the ``"test": "..."`` span alone answers both problems at once. It is
+    still verbatim source text — a contiguous substring of the file, not a
+    paraphrase, an ellipsis, or a fabricated line — so the evidence remains true and
+    checkable against the cited ``source_ref``; and it carries nothing but the
+    declaration it is evidence *for*, whatever the file's layout. It also tightens
+    the match: the previous two-part test (key somewhere on the line, value somewhere
+    on the line) could be satisfied by two *different* occurrences on one minified
+    line, quoting a line whose ``"test"`` key and quoted command were unrelated.
+    Requiring adjacency makes the span prove exactly the pairing that is claimed.
 
     This does not judge *which* runner the command invokes, or whether it is a
     real test suite versus a stub — a ``scripts.test`` entry is a declared fact
     the owner wrote, full stop. Callers decide what (if anything) further to
     claim about its content; this function's only job is recovering the
-    verbatim declaration and the line that proves it.
+    verbatim declaration and the source span that proves it.
     """
     try:
         data = json.loads(content)
@@ -222,11 +245,11 @@ def _package_json_test_script(content: str) -> tuple[str, str] | None:
     if not isinstance(test_script, str) or not test_script.strip():
         return None
 
-    expected_value = json.dumps(test_script)
+    declaration = re.compile(_TEST_KEY_PREFIX + re.escape(json.dumps(test_script)))
     for line in content.splitlines():
-        stripped = line.strip()
-        if _TEST_KEY_PATTERN.search(stripped) and expected_value in stripped:
-            return test_script, stripped
+        match = declaration.search(line)
+        if match is not None:
+            return test_script, match.group(0)
     return None
 
 
@@ -307,7 +330,7 @@ def _structured_test_invocation_conventions(
     if package_json:
         found = _package_json_test_script(package_json)
         if found is not None:
-            test_script, line = found
+            test_script, declaration_span = found
             if _script_invokes_pytest(test_script):
                 names_pytest = True
                 pattern = "package.json 'test' script invokes pytest"
@@ -319,7 +342,7 @@ def _structured_test_invocation_conventions(
                 # guessing a runner (a false positive).
                 pattern = f"package.json 'test' script is {json.dumps(test_script)}"
             conventions.append(
-                _structured_convention(pattern, "package.json", line)
+                _structured_convention(pattern, "package.json", declaration_span)
             )
 
     return conventions, names_pytest

@@ -344,6 +344,7 @@ def collect_nested_project_observations(
     boundaries: list[str],
     *,
     owner_declared: frozenset[str] = frozenset(),
+    git_detected: frozenset[str] = frozenset(),
 ) -> list[ProjectObservation]:
     """Record every nested project boundary the walk found.
 
@@ -353,35 +354,61 @@ def collect_nested_project_observations(
     same confusion that made a truncated traversal report a repository as having no
     tests.
 
+    Each boundary is reported with the reason that is actually true of it. The
+    exclusion is equally real in all three cases; only its justification changes,
+    and the justification is a stated fact like any other.
+
     ``owner_declared`` names boundaries that exist because an owner declared them,
-    not because a project manifest was found there. Their reason has to differ:
-    saying such a subtree "declares its own project manifest" states something the
-    walk did not observe and, for an owner-excluded markerless directory, something
-    that is simply false. The exclusion is equally real either way; only its
-    justification changes.
+    not because a project manifest was found there. Saying such a subtree "declares
+    its own project manifest" states something the walk did not observe and, for an
+    owner-excluded markerless directory, something that is simply false.
+
+    ``git_detected`` names boundaries found by ``traversal``'s direct ``.git`` probe
+    — a directory holding its own git repository and no observed project manifest.
+    That is precisely the same defect one step further on: a vendored clone
+    containing nothing but ``.git/`` and a ``Dockerfile`` was published at
+    ``OBSERVED`` confidence 1.0 as one that "declares its own project manifest",
+    a fabricated fact about a file that does not exist. It gets the reason the walk
+    can actually support — a separate git repository lives here — which is, if
+    anything, the less ambiguous evidence of a distinct project.
     """
-    return [
-        (
-            _declared(
-                "nested-project",
-                (
-                    f"{NESTED_BOUNDARY_CONTENT_PREFIX}{boundary} is excluded by owner "
-                    "declaration; its contents are not evidence about this project"
-                ),
-                boundary,
+    observations: list[ProjectObservation] = []
+    for boundary in sorted(boundaries):
+        if boundary in owner_declared:
+            observations.append(
+                _declared(
+                    "nested-project",
+                    (
+                        f"{NESTED_BOUNDARY_CONTENT_PREFIX}{boundary} is excluded by owner "
+                        "declaration; its contents are not evidence about this project"
+                    ),
+                    boundary,
+                )
             )
-            if boundary in owner_declared
-            else _observed(
-                "nested-project",
-                (
-                    f"{NESTED_BOUNDARY_CONTENT_PREFIX}{boundary} declares its own project "
-                    "manifest; its contents are not evidence about this project"
-                ),
-                boundary,
+        elif boundary in git_detected:
+            observations.append(
+                _observed(
+                    "nested-project",
+                    (
+                        f"{NESTED_BOUNDARY_CONTENT_PREFIX}{boundary} contains its own .git "
+                        "directory (a separate git repository); its contents are not "
+                        "evidence about this project"
+                    ),
+                    boundary,
+                )
             )
-        )
-        for boundary in sorted(boundaries)
-    ]
+        else:
+            observations.append(
+                _observed(
+                    "nested-project",
+                    (
+                        f"{NESTED_BOUNDARY_CONTENT_PREFIX}{boundary} declares its own project "
+                        "manifest; its contents are not evidence about this project"
+                    ),
+                    boundary,
+                )
+            )
+    return observations
 
 
 def collect_unread_file_observations(

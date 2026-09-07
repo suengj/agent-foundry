@@ -28,10 +28,12 @@ from agent_foundry.inspect.traversal import (
     DEFAULT_MAX_DEPTH,
     DEFAULT_MAX_ENTRIES,
     DEFAULT_MAX_FILE_BYTES,
+    NESTED_BOUNDARY_MARKER_GIT_DIRECTORY,
     SKIP_DIR_NAMES,
     entries_outside,
     git_head_revision,
     load_nested_project_overrides,
+    nested_project_boundary_markers,
     resolve_nested_project_boundaries,
     walk_repository,
 )
@@ -130,11 +132,17 @@ def inspect_project(
         overrides = load_nested_project_overrides(
             root, traversal.entries, max_file_bytes=max_file_bytes
         )
+    # Computed once, here, and handed to both consumers: the resolver needs the
+    # boundary set, and the collector below needs to know *how* each was detected.
+    # The computation stats every visited directory probing for a nested `.git`, so
+    # letting each caller recompute it would double that work.
+    boundary_markers = nested_project_boundary_markers(root, traversal.entries)
     boundaries, override_decisions = resolve_nested_project_boundaries(
         root,
         traversal.entries,
         overrides,
         walk_truncated=traversal.depth_limit_reached or traversal.entry_limit_reached,
+        boundary_markers=boundary_markers,
     )
     owned = entries_outside(traversal.entries, boundaries)
 
@@ -158,9 +166,19 @@ def inspect_project(
         for decision in override_decisions
         if decision.action == "exclude" and decision.applied
     )
+    # The exclusion is explained with the fact that actually produced it: a directory
+    # found by the `.git` probe was never observed to carry a project manifest, and
+    # must not be reported as though it were.
+    git_detected_boundaries = frozenset(
+        path
+        for path, marker in boundary_markers.items()
+        if marker == NESTED_BOUNDARY_MARKER_GIT_DIRECTORY
+    )
     observations.extend(
         collect_nested_project_observations(
-            boundaries, owner_declared=owner_declared_boundaries
+            boundaries,
+            owner_declared=owner_declared_boundaries,
+            git_detected=git_detected_boundaries,
         )
     )
     observations.extend(_override_decision_observations(override_decisions))

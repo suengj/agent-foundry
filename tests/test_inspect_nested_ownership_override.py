@@ -24,9 +24,12 @@ import yaml
 from agent_foundry.inspect import inspect_project
 from agent_foundry.inspect.traversal import (
     DEFAULT_MAX_DEPTH,
+    NESTED_BOUNDARY_MARKER_GIT_DIRECTORY,
+    NESTED_BOUNDARY_MARKER_MANIFEST,
     NestedProjectOverrideDecision,
     NestedProjectOverrides,
     load_nested_project_overrides,
+    nested_project_boundary_markers,
     nested_project_roots,
     resolve_nested_project_boundaries,
     walk_repository,
@@ -465,6 +468,43 @@ def test_default_heuristic_pure_function_unaffected_by_import(tmp_path: Path) ->
     assert nested_project_roots(root, entries) == ["components/other-service"]
 
 
+def test_boundary_markers_record_how_each_boundary_was_detected(tmp_path: Path) -> None:
+    """`nested_project_boundary_markers` is the same set as `nested_project_roots`,
+    with the evidence for each boundary still attached — a manifest sighting and a
+    `.git` probe are different observed facts, and only a caller told which can
+    report the exclusion truthfully."""
+    root = _target_project(tmp_path / "project")
+    _plant_nested_project(root / "components", "other-service")
+    clone = root / "vendored-clone"
+    clone.mkdir()
+    (clone / ".git").mkdir()
+    (clone / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+    entries = walk_repository(root).entries
+    markers = nested_project_boundary_markers(root, entries)
+    assert markers == {
+        "components/other-service": NESTED_BOUNDARY_MARKER_MANIFEST,
+        "vendored-clone": NESTED_BOUNDARY_MARKER_GIT_DIRECTORY,
+    }
+    assert sorted(markers) == nested_project_roots(root, entries)
+
+
+def test_a_boundary_with_both_a_manifest_and_a_git_dir_reports_the_manifest(
+    tmp_path: Path,
+) -> None:
+    """Both facts are true; the manifest is the owner-authored one and was directly
+    observed in the walk, so it is the reason reported."""
+    root = _target_project(tmp_path / "project")
+    nested = _plant_nested_project(root, "both")
+    (nested / ".git").mkdir()
+    (nested / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+    entries = walk_repository(root).entries
+    assert nested_project_boundary_markers(root, entries) == {
+        "both": NESTED_BOUNDARY_MARKER_MANIFEST
+    }
+
+
 # ---------------------------------------------------------------------------
 # A truncated walk must not report a false, confident "does not exist"
 # ---------------------------------------------------------------------------
@@ -574,6 +614,110 @@ def test_resolve_nested_project_boundaries_truncated_flag_via_pure_resolver(
     assert "does not exist" in decision_not_truncated.reason
 
 
+def test_override_include_on_a_real_boundary_missed_by_a_truncated_walk_is_uncertain(
+    tmp_path: Path,
+) -> None:
+    """The `include` sibling of the truncated-walk guard above.
+
+    `include` decides "not an excluded nested-project boundary; override has no
+    effect" against `default_boundaries`, which the same bounded walk populates. A
+    truncated walk can under-populate it for exactly the reason it can lose a
+    directory from `dir_paths`: the marker that would have made the path a boundary
+    may lie past where the walk stopped. Here `zz-pkg/pyproject.toml` genuinely
+    exists and the full walk applies the override — so "has no effect" is false on
+    the complete tree, and publishing it as DECLARED at confidence 1.0 puts a
+    confident falsehood into `repository.ownership-boundaries`.
+    """
+    root = _target_project(tmp_path / "project")
+    _plant_nested_project(root, "zz-pkg")
+    _write_override(root, include=["zz-pkg"])
+
+    # On the complete tree the override genuinely applies.
+    full = inspect_project(root)
+    assert full.traversal_stats.entry_limit_reached is False
+    full_decision = next(
+        item
+        for item in full.observations
+        if item.subject == "nested-project" and item.content.startswith("override include")
+    )
+    assert "applied" in full_decision.content
+    assert "not applied" not in full_decision.content
+
+    # The bounded walk must never reach zz-pkg's manifest.
+    small_walk = walk_repository(root, max_entries=5)
+    assert small_walk.entry_limit_reached is True
+    assert not any(e.relative_path.startswith("zz-pkg") for e in small_walk.entries)
+
+    intake = inspect_project(root, max_entries=5)
+    assert intake.traversal_stats.entry_limit_reached is True
+    decisions = [
+        item
+        for item in intake.observations
+        if item.subject == "nested-project" and item.content.startswith("override include")
+    ]
+    assert len(decisions) == 1
+    decision = decisions[0]
+    assert "not applied" in decision.content
+    # Must not assert the confident falsehood.
+    assert "override has no effect" not in decision.content
+    # Must say the walk was incomplete, distinguishing "not found" from "confirmed absent".
+    assert "walk was incomplete" in decision.content
+    assert decision.provenance.confidence is not None
+    assert decision.provenance.confidence < 1.0
+
+
+def test_override_include_on_a_genuinely_unrelated_path_stays_confident(
+    tmp_path: Path,
+) -> None:
+    """The distinction the `include` guard must preserve: a complete walk that
+    finds no covering boundary is entitled to say so at full confidence."""
+    root = _target_project(tmp_path / "project")
+    _plant_markerless_subtree(root, "quiet-vendor")
+    _write_override(root, include=["quiet-vendor"])
+
+    intake = inspect_project(root)
+    assert intake.traversal_stats.entry_limit_reached is False
+    assert intake.traversal_stats.depth_limit_reached is False
+
+    decisions = [
+        item
+        for item in intake.observations
+        if item.subject == "nested-project" and item.content.startswith("override include")
+    ]
+    assert len(decisions) == 1
+    assert "override has no effect" in decisions[0].content
+    assert "walk was incomplete" not in decisions[0].content
+    assert decisions[0].provenance.confidence == 1.0
+
+
+def test_resolve_include_truncated_flag_via_pure_resolver(tmp_path: Path) -> None:
+    """Direct unit coverage of `walk_truncated` on the `include` branch."""
+    root = _target_project(tmp_path / "project")
+    _plant_nested_project(root, "zz-pkg")
+
+    entries = walk_repository(root).entries
+    truncated_entries = [e for e in entries if not e.relative_path.startswith("zz-pkg")]
+    assert not any(e.relative_path.startswith("zz-pkg") for e in truncated_entries)
+
+    overrides = NestedProjectOverrides(include=("zz-pkg",))
+    _, decisions = resolve_nested_project_boundaries(
+        root, truncated_entries, overrides, walk_truncated=True
+    )
+    decision = next(d for d in decisions if d.path == "zz-pkg")
+    assert decision.applied is False
+    assert decision.uncertain is True
+    assert "override has no effect" not in decision.reason
+    assert "walk was incomplete" in decision.reason
+
+    # Same missing boundary, walk NOT reported as truncated: confident phrasing kept.
+    _, decisions_not_truncated = resolve_nested_project_boundaries(
+        root, truncated_entries, overrides, walk_truncated=False
+    )
+    decision_not_truncated = next(d for d in decisions_not_truncated if d.path == "zz-pkg")
+    assert decision_not_truncated.uncertain is False
+    assert "override has no effect" in decision_not_truncated.reason
+
+
 # ---------------------------------------------------------------------------
 # An owner-declared boundary is DECLARED provenance, never OBSERVED
 # ---------------------------------------------------------------------------
@@ -608,6 +752,79 @@ def test_owner_declared_nested_project_boundary_is_declared_not_observed(
     manifest_detected = boundary_observations["components/other-service"]
     assert manifest_detected.provenance.kind.value == "observed"
     assert "declares its own project manifest" in manifest_detected.content
+
+
+def test_git_detected_boundary_is_not_described_as_declaring_a_manifest(
+    tmp_path: Path,
+) -> None:
+    """A vendored clone carries no manifest; saying it declares one is fabricated.
+
+    `traversal` detects a nested boundary two different ways: a project manifest
+    seen in the walk, and a direct probe for a nested `.git` directory (`.git` is a
+    skipped directory name, so it never appears in the walk at all). The exclusion
+    is right either way, but the *stated reason* was the manifest sentence in both
+    cases — so a directory holding nothing but `.git/` and a `Dockerfile` was
+    published at OBSERVED confidence 1.0 as one that "declares its own project
+    manifest", a fact about a file that does not exist. Same defect as the
+    owner-declared case above, one detection path further on.
+    """
+    root = _target_project(tmp_path / "project")
+    clone = root / "vendored-clone"
+    clone.mkdir()
+    (clone / ".git").mkdir()
+    (clone / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (clone / "Dockerfile").write_text("FROM python:3.11-slim\n", encoding="utf-8")
+    _plant_nested_project(root / "components", "other-service")
+
+    assert not (clone / "pyproject.toml").exists()
+    assert not (clone / "package.json").exists()
+
+    intake = inspect_project(root)
+    boundary_observations = {
+        item.provenance.source_ref: item
+        for item in intake.observations
+        if item.subject == "nested-project" and item.content.startswith("nested project boundary")
+    }
+    assert set(boundary_observations) == {"vendored-clone", "components/other-service"}
+
+    git_detected = boundary_observations["vendored-clone"]
+    # The exclusion is still real, still OBSERVED, still full confidence...
+    assert git_detected.provenance.kind.value == "observed"
+    assert git_detected.provenance.confidence == 1.0
+    assert "not evidence about this project" in git_detected.content
+    # ...but justified by what the probe actually found.
+    assert "declares its own project manifest" not in git_detected.content
+    assert ".git" in git_detected.content
+    # The exclusion still takes effect: the clone's Dockerfile is not the target's.
+    assert not any(
+        (item.provenance.source_ref or "").startswith("vendored-clone/")
+        for item in intake.observations
+    )
+
+    # A genuine manifest-detected boundary keeps the manifest reason.
+    assert (
+        "declares its own project manifest"
+        in boundary_observations["components/other-service"].content
+    )
+
+
+def test_git_detected_boundary_still_produces_a_readiness_scope_note(
+    tmp_path: Path,
+) -> None:
+    """`readiness` finds boundary records by `NESTED_BOUNDARY_CONTENT_PREFIX`, not by
+    the reason that follows it — rewording the `.git` case must not drop the scope
+    note that keeps a "none observed" claim honest."""
+    from agent_foundry.inspect.readiness import nested_boundary_refs
+
+    root = _target_project(tmp_path / "project")
+    clone = root / "vendored-clone"
+    clone.mkdir()
+    (clone / ".git").mkdir()
+    (clone / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (clone / "Dockerfile").write_text("FROM python:3.11-slim\n", encoding="utf-8")
+
+    intake = inspect_project(root)
+    assert nested_boundary_refs(list(intake.observations)) == ["vendored-clone"]
 
 
 # ---------------------------------------------------------------------------
