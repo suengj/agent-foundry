@@ -487,6 +487,360 @@ def test_c_a_file_skipped_for_size_forces_unknown_rather_than_none_observed(tmp_
     )
 
 
+def test_c_an_unread_file_does_not_make_a_filename_derived_absence_unknown(
+    tmp_path: Path,
+) -> None:
+    """R1 regression. The counterpart to the test directly above: there, the
+    unread file was the *only* place the answer could have been. Here the unread
+    file is an oversized Python source file, and the dimensions under test are
+    decided purely by filenames on the walked entry list — `Dockerfile` and the
+    other deploy markers, `.env.example` and the other integration markers,
+    `*.schema.json`. The walk saw and recorded every name in this tree; an
+    unread *body* of one of those files cannot change whether a file named
+    `Dockerfile` is among them.
+
+    Reporting those dimensions as UNKNOWN because some unrelated file was too
+    large is absence-as-evidence in its own right: it launders a hole in one
+    dimension's evidence into a hole in another's, and the profile then says
+    "unknown" about something it directly observed.
+    """
+    (tmp_path / "app.py").write_text("x = 1\n" + ("# " + "y" * 70_000 + "\n"))
+    (tmp_path / "README.md").write_text("# sample\n")
+
+    intake = inspect_project(tmp_path)
+    unread = [obs for obs in intake.observations if obs.subject == "file-read-skipped"]
+    assert unread, "the fixture file must actually exceed the read-size limit"
+    stats = intake.traversal_stats
+    assert not stats.depth_limit_reached and not stats.entry_limit_reached
+    assert stats.entries_unobservable == 0 and stats.entries_skipped_refused == 0, (
+        "the fixture must leave a content hole and no path hole, or this test "
+        "proves nothing about the difference between the two"
+    )
+
+    by_name = {d.dimension: d for d in synthesize_project_profile(intake).dimensions}
+
+    # SUE-580 S5: the previous version of this loop asserted
+    #     "none-observed" in value or value
+    # whose right operand is a non-empty string, so the whole disjunction was
+    # always truthy and the assertion could never fail — the exact failure mode
+    # this suite exists to prevent. Each dimension's own none-observed value is
+    # spelled out instead, so a dimension that silently started publishing some
+    # other value goes red.
+    for name, expected in {
+        "operating.deploy-surface": "none-observed",
+        "integration.config-surface": "none-observed",
+        "testability.config-schema": "none-observed",
+        "repository.package-metadata": "none-observed",
+        "instruction.fragmentation": "no-agent-instruction-surface-observed",
+    }.items():
+        dim = by_name[name]
+        assert dim.resolution is ProfileResolution.RESOLVED, (
+            f"{name} is decided by filenames on the entry list, but resolved to "
+            f"{dim.resolution} because an unrelated oversized file went unread"
+        )
+        assert len(dim.attributions) == 1, name
+        # startswith, not equality: `_scope_none_observed` may append an
+        # "outside ..." qualifier, which is a scope on the same claim, not a
+        # different claim.
+        assert dim.attributions[0].value.startswith(expected), (
+            f"{name} published {dim.attributions[0].value!r}, expected the "
+            f"none-observed value {expected!r}"
+        )
+
+    # The content-derived half of the same profile must NOT have moved: an unread
+    # file could genuinely hide a Makefile target, a nested-project override or a
+    # parsed convention.
+    #
+    # SUE-580 S1: this list covers EVERY content-derived dimension whose
+    # none-observed branch this fixture can reach, not just the two it used to
+    # name. `_SubjectDerivation` is a hand-maintained per-call-site judgement and
+    # only the safe direction was guarded: mismarking a CONTENT subject as NAME
+    # publishes an absence claim over ground the walk could not read, and the
+    # suite stayed green through a three-way flip of
+    # `repository.ownership-boundaries`, `testability.lint-type-entrypoint` and
+    # `testability.ci-entrypoint`. Flipping any one of these to NAME now fails
+    # here. (`repository.revision` is the sixth CONTENT call site; its
+    # none-observed branch is unreachable from a real walk, so it is covered at
+    # unit level by the table test below.)
+    for name in (
+        "repository.ownership-boundaries",
+        "testability.test-entrypoint",
+        "testability.lint-type-entrypoint",
+        "testability.ci-entrypoint",
+        "assurance.conventions-observed",
+    ):
+        assert by_name[name].resolution is ProfileResolution.UNKNOWN, (
+            f"{name} is derived from file content; an unread file must keep it "
+            f"UNKNOWN, got {by_name[name].resolution} "
+            f"{[a.value for a in by_name[name].attributions]}"
+        )
+
+
+#: Every ``_SubjectDerivation.CONTENT`` call site in ``profile/synth.py``, and
+#: every ``NAME`` one. A dimension moving between these tables is a deliberate
+#: re-classification of what evidence decides its emptiness, and must be made
+#: here as well as at the call site.
+#:
+#: These are not a second copy of the call sites that must be kept in step by
+#: hand: ``test_c_the_derivation_tables_are_bound_to_the_actual_call_sites``
+#: instruments the two functions that take a ``_SubjectDerivation`` and requires
+#: the union of these tables to be exactly the set of call sites that ran, each
+#: with the derivation the code passed. Add a dimension and forget to classify it
+#: here, or classify it here differently from how the call site marks it, and that
+#: test names the dimension — before the goldens are regenerated, which is what
+#: made the earlier hand-maintained version of these tables unable to see a
+#: fourteenth call site at all.
+_CONTENT_DERIVED_DIMENSIONS = (
+    "repository.revision",
+    "repository.ownership-boundaries",
+    "testability.test-entrypoint",
+    "testability.lint-type-entrypoint",
+    "testability.ci-entrypoint",
+    "assurance.conventions-observed",
+)
+
+_NAME_DERIVED_DIMENSIONS = (
+    "repository.structure",
+    "repository.package-metadata",
+    "repository.foundry-artifacts",
+    "testability.config-schema",
+    "operating.deploy-surface",
+    "integration.config-surface",
+    "instruction.fragmentation",
+)
+
+
+def test_c_every_content_derived_dimension_is_gated_on_the_content_hole() -> None:
+    """SUE-580 S1. The unguarded direction of the `_SubjectDerivation` judgement.
+
+    The classification is correct today, but only its *safe* direction had a
+    test: marking a NAME subject as CONTENT costs a little precision and was
+    caught, while marking a CONTENT subject as NAME publishes a confident
+    absence over bytes the walk never read and was caught by nothing. A probe
+    flipping three CONTENT call sites to NAME in one patch left the entire suite
+    green.
+
+    Every content-derived dimension must therefore be UNKNOWN over a
+    ``file-read-skipped`` observation, and — so this cannot be satisfied by
+    over-gating everything — every name-derived dimension must stay RESOLVED
+    over the same evidence.
+    """
+    unread = ProjectObservation(
+        subject="file-read-skipped",
+        content="file exceeds read limit (99999 > 10 bytes): big.py",
+        provenance=Provenance(kind=ProvenanceKind.OBSERVED, confidence=1.0, source_ref="big.py"),
+    )
+    by_name = {
+        d.dimension: d
+        for d in synthesize_project_profile(_minimal_intake(observations=[unread])).dimensions
+    }
+
+    for name in _CONTENT_DERIVED_DIMENSIONS:
+        assert by_name[name].resolution is ProfileResolution.UNKNOWN, (
+            f"{name} is classified CONTENT but published an absence over an "
+            f"unread file: {by_name[name].resolution} "
+            f"{[a.value for a in by_name[name].attributions]}"
+        )
+
+    for name in _NAME_DERIVED_DIMENSIONS:
+        assert by_name[name].resolution is ProfileResolution.RESOLVED, (
+            f"{name} is classified NAME and is settled by the entry list, but an "
+            f"unrelated unread file made it {by_name[name].resolution}"
+        )
+
+
+def _derivations_the_code_actually_stated(
+    monkeypatch: pytest.MonkeyPatch, intake: ProjectIntake
+) -> tuple[dict[str, object], set[str]]:
+    """Synthesize ``intake`` with every derivation-taking helper instrumented.
+
+    Returns ``({dimension: _SubjectDerivation}, {dimensions emitted})`` read off
+    the running synthesis, so the caller compares its tables against what the
+    code did rather than against a transcription of it. Both helpers that accept
+    a ``_SubjectDerivation`` are wrapped: the aggregate (recorded on every call,
+    whichever branch it then takes) and the shared emptiness gate (which is also
+    reached by ``_conventions_dimension``, the one derivation call site that is
+    not an aggregate).
+    """
+    recorded: dict[str, object] = {}
+
+    def _record(name: str, derivation: object) -> None:
+        previous = recorded.setdefault(name, derivation)
+        assert previous is derivation, (
+            f"{name} was synthesized through call sites that disagree about its "
+            f"derivation: {previous} then {derivation}"
+        )
+
+    real_aggregate = profile_synth._aggregate_observation_dimension
+    real_gate = profile_synth._none_observed_dimension
+
+    def spy_aggregate(name, observations, subjects, *, stats, derivation, **kwargs):  # type: ignore[no-untyped-def]
+        _record(name, derivation)
+        return real_aggregate(
+            name, observations, subjects, stats=stats, derivation=derivation, **kwargs
+        )
+
+    def spy_gate(name, none_observed_value, observations, *, stats, derivation):  # type: ignore[no-untyped-def]
+        _record(name, derivation)
+        return real_gate(
+            name, none_observed_value, observations, stats=stats, derivation=derivation
+        )
+
+    monkeypatch.setattr(profile_synth, "_aggregate_observation_dimension", spy_aggregate)
+    monkeypatch.setattr(profile_synth, "_none_observed_dimension", spy_gate)
+    profile = synthesize_project_profile(intake)
+    return recorded, {d.dimension for d in profile.dimensions}
+
+
+def test_c_the_derivation_tables_are_bound_to_the_actual_call_sites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SUE-580 S3. The guard must close over *new* call sites, not just existing ones.
+
+    ``test_c_every_content_derived_dimension_is_gated_on_the_content_hole`` bites
+    per-site — flipping any dimension it names goes red — but it could only ever
+    check the dimensions it was told to check. Adding a fourteenth
+    ``_aggregate_observation_dimension`` call marked ``NAME`` over a
+    content-derived subject left that test green; the only red was the two golden
+    snapshots, and goldens are regenerated as a matter of course when a dimension
+    is added, so the mistake shipped.
+
+    So the tables are bound to the call sites themselves rather than to a
+    hand-kept list: whatever derivation the code passes, for whatever dimension it
+    passes it for, must appear in exactly one table with exactly that
+    classification. A new call site that nobody classified is named here by
+    dimension; a call site whose marking contradicts its table is named here too.
+    """
+    content = profile_synth._SubjectDerivation.CONTENT
+    name_derived = profile_synth._SubjectDerivation.NAME
+
+    overlap = set(_CONTENT_DERIVED_DIMENSIONS) & set(_NAME_DERIVED_DIMENSIONS)
+    assert not overlap, f"a dimension cannot be both CONTENT- and NAME-derived: {overlap}"
+    tables: dict[str, object] = {n: content for n in _CONTENT_DERIVED_DIMENSIONS}
+    tables.update({n: name_derived for n in _NAME_DERIVED_DIMENSIONS})
+
+    unread = ProjectObservation(
+        subject="file-read-skipped",
+        content="file exceeds read limit (99999 > 10 bytes): big.py",
+        provenance=Provenance(kind=ProvenanceKind.OBSERVED, confidence=1.0, source_ref="big.py"),
+    )
+    recorded, emitted = _derivations_the_code_actually_stated(
+        monkeypatch, _minimal_intake(observations=[unread])
+    )
+
+    # Sanity: the instrumentation observed something, and everything it observed
+    # is a dimension the profile really publishes — a recorded name that never
+    # reached the output would mean the spies had drifted off the real path.
+    assert recorded, "no derivation call site was observed; the spies are not on the real path"
+    assert set(recorded) <= emitted, (
+        f"recorded call sites absent from the emitted profile: {sorted(set(recorded) - emitted)}"
+    )
+
+    unclassified = sorted(set(recorded) - set(tables))
+    assert not unclassified, (
+        "these dimensions are decided by a `_SubjectDerivation` at their call site "
+        "but appear in neither derivation table, so nothing checks that their "
+        f"emptiness is gated on the right kind of hole: {unclassified}"
+    )
+    stale = sorted(set(tables) - set(recorded))
+    assert not stale, (
+        "these dimensions are classified in a derivation table but no call site "
+        f"passed a derivation for them; the table has gone stale: {stale}"
+    )
+
+    mismarked = {
+        dimension: (tables[dimension], derivation)
+        for dimension, derivation in recorded.items()
+        if derivation is not tables[dimension]
+    }
+    assert not mismarked, (
+        "the call site and the derivation table disagree (table, call site): "
+        f"{ {k: (t, c) for k, (t, c) in sorted(mismarked.items())} }"
+    )
+
+
+def test_c_nested_project_boundary_scopes_the_none_observed_claims_it_creates(
+    tmp_path: Path,
+) -> None:
+    """SUE-580 S3. An owner-declared exclusion must scope its own absences.
+
+    ``_scope_none_observed`` already scopes a "none observed" claim when
+    ``SKIP_DIR_NAMES`` caused a skip, on the stated reasoning that such a claim
+    "must not read as universal". A nested-project boundary excludes ground for
+    a different reason with the identical effect — and, on this branch, an owner
+    may apply it to an arbitrary *markerless* directory. Without scoping, a
+    reader of ``operating.deploy-surface`` alone is told at OBSERVED 1.0 that no
+    deploy surface exists in a repository that contains a Dockerfile.
+    """
+    (tmp_path / ".foundry").mkdir()
+    (tmp_path / ".foundry" / "project.yaml").write_text(
+        "inspection:\n"
+        "  nested_project_overrides:\n"
+        "    exclude:\n"
+        "      - src\n"
+    )
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "Dockerfile").write_text("FROM python:3.12\n")
+    (tmp_path / "README.md").write_text("# sample\n")
+
+    intake = inspect_project(tmp_path)
+    assert any(
+        obs.subject == "nested-project" and obs.provenance.source_ref == "src"
+        for obs in intake.observations
+    ), "the fixture's owner-declared exclusion must actually apply"
+
+    by_name = {d.dimension: d for d in synthesize_project_profile(intake).dimensions}
+    deploy = by_name["operating.deploy-surface"]
+    assert deploy.resolution is ProfileResolution.RESOLVED
+    value = deploy.attributions[0].value
+    assert value.startswith("none-observed"), value
+    assert "nested project boundaries" in value and "src" in value, (
+        "a 'none observed' claim created by an owner-declared exclusion must name "
+        f"that exclusion rather than read as universal, got {value!r}"
+    )
+
+
+def test_c_a_path_hole_still_gates_filename_derived_absence(tmp_path: Path) -> None:
+    """R1's guard rail. Splitting the content hole out of the exhaustiveness gate
+    must not weaken the *path* holes: a depth limit, an entry limit, a
+    containment refusal or an unobservable path means the walk never saw the
+    ground at all — not even the filenames — so a filename-derived absence is
+    exactly as unsound there as a content-derived one."""
+    limits = TraversalLimits(
+        max_depth=1, max_entries=1, max_file_bytes=1024, skipped_dir_names=[]
+    )
+    name_derived = (
+        "operating.deploy-surface",
+        "integration.config-surface",
+        "testability.config-schema",
+        "repository.package-metadata",
+        "instruction.fragmentation",
+    )
+    holes = {
+        "depth limit": dict(depth_limit_reached=True),
+        "entry limit": dict(entry_limit_reached=True),
+        "containment refusal": dict(entries_skipped_refused=1),
+        "unobservable path": dict(entries_unobservable=1),
+    }
+    for label, hole in holes.items():
+        fields = dict(
+            entries_visited=1,
+            entries_skipped=0,
+            depth_limit_reached=False,
+            entry_limit_reached=False,
+            limits=limits,
+        )
+        fields.update(hole)
+        stats = TraversalStats(**fields)
+        profile = synthesize_project_profile(_minimal_intake(traversal_stats=stats))
+        by_name = {d.dimension: d for d in profile.dimensions}
+        for name in name_derived:
+            assert by_name[name].resolution is ProfileResolution.UNKNOWN, (
+                f"{name} published a filename-derived absence over a {label} — "
+                "the walk never saw those filenames at all"
+            )
+
+
 # ---------------------------------------------------------------------------
 # D. Conflict — one CONFLICTED dimension, attributions preserved
 # ---------------------------------------------------------------------------
@@ -952,3 +1306,296 @@ def test_k_profile_loads_without_invoking_contract_migration() -> None:
     restored = load_json(ProjectProfile, payload)
     assert restored.schema_version == "0.2"
     assert dump_json(restored) == payload
+
+
+# ---------------------------------------------------------------------------
+# L. Aggregate dimensions must not launder the provenance they aggregate
+#    (SUE-580 review blocker B1)
+# ---------------------------------------------------------------------------
+
+
+def _convention(
+    subject: str, *, confidence: float, kind: ProvenanceKind, source_ref: str
+) -> ConventionSpec:
+    return ConventionSpec(
+        subject=subject,
+        pattern=f"{subject} pattern",
+        source_ref=source_ref,
+        evidence=f"{subject} evidence",
+        confidence=confidence,
+        provenance=Provenance(kind=kind, confidence=confidence, source_ref=source_ref),
+    )
+
+
+def _conventions_dimension_of(*conventions: ConventionSpec):
+    profile = synthesize_project_profile(_minimal_intake(conventions=list(conventions)))
+    return next(
+        d for d in profile.dimensions if d.dimension == "assurance.conventions-observed"
+    )
+
+
+def test_l_a_declared_convention_is_not_republished_as_inferred() -> None:
+    """A dimension aggregating nothing but DECLARED facts must say DECLARED.
+
+    The `test-invocation` fact here is parsed out of a build config by `tomllib`;
+    reporting it as INFERRED is provenance laundering in the shipped artifact.
+    """
+    dim = _conventions_dimension_of(
+        _convention(
+            "test-invocation",
+            confidence=0.8,
+            kind=ProvenanceKind.DECLARED,
+            source_ref="pyproject.toml",
+        )
+    )
+    assert dim.resolution is ProfileResolution.RESOLVED
+    attribution = dim.attributions[0]
+    assert attribution.provenance.kind is ProvenanceKind.DECLARED
+    assert attribution.provenance.confidence == 0.8
+
+
+def test_l_a_prose_mention_does_not_drag_a_declared_fact_down_to_its_confidence() -> None:
+    """Two conventions with *different subjects* are not competing claims.
+
+    A DECLARED build-config fact (0.8) aggregated with a demoted prose mention of
+    another subject (0.15) must not be *republished* at 0.15 — that was the real
+    complaint, and it is a complaint about the published **value**. The per-subject
+    annotation answers it directly: the declaration appears, verbatim and at its own
+    strength, as `test-invocation (declared 0.80)`, whoever reads the composite's
+    single number.
+
+    SUE-580 S1: this test previously also asserted the composite's own confidence
+    was 0.8, which is what the `max()` over-correction produced. That assertion
+    encoded the defect. One number over a value asserting *every* listed subject
+    can only be read as confidence in the conjunction, and 0.8 was a confidence no
+    inference under this INFERRED aggregate had earned. The floor is asserted by
+    `test_l_the_composite_confidence_is_the_weakest_subject_not_the_strongest`;
+    what this test now pins is that flooring the number costs the declaration
+    nothing, because the value still carries it.
+    """
+    dim = _conventions_dimension_of(
+        _convention(
+            "test-invocation",
+            confidence=0.8,
+            kind=ProvenanceKind.DECLARED,
+            source_ref="pyproject.toml",
+        ),
+        _convention(
+            "test-runner",
+            confidence=0.15,
+            kind=ProvenanceKind.INFERRED,
+            source_ref="AGENTS.md",
+        ),
+    )
+    # Co-existing conventions stay ONE composite fact — never CONFLICTED, which is
+    # what one-attribution-per-subject would have produced.
+    assert dim.resolution is ProfileResolution.RESOLVED
+    assert len(dim.attributions) == 1
+    attribution = dim.attributions[0]
+    # Heterogeneous provenance is a derivation, so the aggregate kind is INFERRED —
+    # but the per-subject truth is stated, not collapsed.
+    assert attribution.provenance.kind is ProvenanceKind.INFERRED
+    assert "test-invocation (declared 0.80)" in attribution.value
+    assert "test-runner (inferred 0.15)" in attribution.value
+    assert sorted(attribution.evidence_refs) == ["AGENTS.md", "pyproject.toml"]
+
+
+def test_l_the_composite_confidence_is_the_weakest_subject_not_the_strongest() -> None:
+    """SUE-580 S1. The composite must not carry a confidence nothing under it earned.
+
+    ``assurance.conventions-observed`` publishes ONE attribution whose value asserts
+    every discovered subject at once, so its single confidence is the confidence in
+    that conjunction — and a conjunction is no better supported than its
+    worst-supported term. Taking the strongest subject instead made Agent Foundry
+    publish, about itself, an INFERRED composite at 0.8 over members topping out at
+    an INFERRED 0.15: principle 4's second half, an inference reporting a confidence
+    no inference produced.
+
+    The rule is stated here directly, rather than being pinned only by a golden
+    snapshot: before this test, mutating the aggregate back to ``max()`` failed
+    exactly one test in the suite, and it failed as a byte-diff against a
+    regenerated JSON file rather than as a named claim about provenance.
+
+    This is the same join, and the same rule, as
+    ``_aggregate_observation_dimension`` applies to observations.
+    """
+    dim = _conventions_dimension_of(
+        _convention(
+            "test-invocation",
+            confidence=0.8,
+            kind=ProvenanceKind.DECLARED,
+            source_ref="pyproject.toml",
+        ),
+        _convention(
+            "git-policy", confidence=0.2, kind=ProvenanceKind.INFERRED, source_ref="AGENTS.md"
+        ),
+        _convention(
+            "ci-checkout", confidence=0.5, kind=ProvenanceKind.INFERRED, source_ref="ci.yml"
+        ),
+    )
+    attribution = dim.attributions[0]
+    subject_strengths = [0.8, 0.2, 0.5]
+    assert attribution.provenance.confidence == min(subject_strengths), (
+        "the composite reported "
+        f"{attribution.provenance.confidence}, which is not the weakest subject "
+        "strength it aggregates"
+    )
+    # Stated as an inequality too, so the intent survives a change of fixture: no
+    # listed subject may be weaker than the number the composite publishes.
+    assert attribution.provenance.confidence is not None
+    assert all(attribution.provenance.confidence <= s for s in subject_strengths)
+    # ...and the flooring costs the strong declaration nothing, because the value
+    # states each subject's own evidence.
+    assert attribution.value == (
+        "ci-checkout (inferred 0.50), git-policy (inferred 0.20), "
+        "test-invocation (declared 0.80)"
+    )
+    assert attribution.provenance.kind is ProvenanceKind.INFERRED
+
+
+def test_l_the_strongest_evidence_for_one_subject_wins_over_a_weaker_duplicate() -> None:
+    """Within a single subject, a demoted mention co-existing with the structured
+    declaration it was demoted *because of* must not become the reported strength."""
+    dim = _conventions_dimension_of(
+        _convention(
+            "test-invocation",
+            confidence=0.8,
+            kind=ProvenanceKind.DECLARED,
+            source_ref="Makefile",
+        ),
+        _convention(
+            "test-invocation",
+            confidence=0.15,
+            kind=ProvenanceKind.INFERRED,
+            source_ref="CLAUDE.md",
+        ),
+    )
+    attribution = dim.attributions[0]
+    assert attribution.value == "test-invocation (declared 0.80)"
+    assert attribution.provenance.kind is ProvenanceKind.DECLARED
+    assert attribution.provenance.confidence == 0.8
+
+
+def test_l_no_subject_is_published_above_the_evidence_that_backs_it() -> None:
+    """The other direction of the same rule: aggregating a strong fact must never
+    lend its confidence to a weakly-evidenced subject. Every listed subject
+    carries its own strength, so nothing gains confidence it did not earn."""
+    dim = _conventions_dimension_of(
+        _convention(
+            "ci-checkout", confidence=1.0, kind=ProvenanceKind.OBSERVED, source_ref="ci.yml"
+        ),
+        _convention(
+            "git-policy", confidence=0.5, kind=ProvenanceKind.INFERRED, source_ref="AGENTS.md"
+        ),
+    )
+    value = dim.attributions[0].value
+    assert "ci-checkout (observed 1.00)" in value
+    assert "git-policy (inferred 0.50)" in value
+
+
+# ---------------------------------------------------------------------------
+# M. A classification finding derived from absence is gated by the same
+#    exhaustiveness rule as a structural "none observed" (SUE-580 blocker B2)
+# ---------------------------------------------------------------------------
+
+
+def _entry_limited_stats() -> TraversalStats:
+    limits = TraversalLimits(max_depth=8, max_entries=60, max_file_bytes=65536, skipped_dir_names=[])
+    return TraversalStats(
+        entries_visited=60,
+        entries_skipped=0,
+        depth_limit_reached=False,
+        entry_limit_reached=True,
+        limits=limits,
+    )
+
+
+def _greenfield_from_silence_finding() -> ClassificationFinding:
+    from agent_foundry.inspect.classification import ABSENCE_ENUMERATION_REASON_PREFIXES
+
+    return ClassificationFinding(
+        dimension="intake_mode",
+        value="greenfield",
+        reason=ABSENCE_ENUMERATION_REASON_PREFIXES[0] + "CI workflow definitions",
+        provenance=Provenance(kind=ProvenanceKind.INFERRED, confidence=0.55, source_ref="."),
+        evidence_refs=[],
+    )
+
+
+def test_m_absence_derived_classification_finding_is_unknown_under_a_truncated_walk() -> None:
+    """`intake_mode = greenfield` is chosen because a list of brownfield signals was
+    checked and none seen. Under an entry-limited walk the signals may sit in the
+    region never reached, so the profile must say UNKNOWN rather than publish the
+    most confident possible phrasing of a fact it never observed."""
+    intake = _minimal_intake(
+        traversal_stats=_entry_limited_stats(),
+        classification_findings=[_greenfield_from_silence_finding()],
+    )
+    dim = next(
+        d
+        for d in synthesize_project_profile(intake).dimensions
+        if d.dimension == "intake_mode"
+    )
+    assert dim.resolution is ProfileResolution.UNKNOWN, (
+        "an absence-enumerated intake_mode resolved from a walk that stopped at its "
+        "entry limit — absence over unwalked ground is not evidence"
+    )
+    assert dim.attributions == []
+
+
+def test_m_absence_derived_classification_finding_still_resolves_when_walk_exhaustive() -> None:
+    """The counterpart: over a complete walk, "checked, none found" is a real
+    observation and stays resolved."""
+    intake = _minimal_intake(classification_findings=[_greenfield_from_silence_finding()])
+    dim = next(
+        d
+        for d in synthesize_project_profile(intake).dimensions
+        if d.dimension == "intake_mode"
+    )
+    assert dim.resolution is ProfileResolution.RESOLVED
+    assert dim.attributions[0].value == "greenfield"
+
+
+def test_m_a_positively_evidenced_finding_survives_a_truncated_walk() -> None:
+    """Only absence-derived findings are gated: a truncated walk does not un-see
+    what it did see, so a brownfield finding backed by signals it actually found
+    still resolves."""
+    finding = ClassificationFinding(
+        dimension="intake_mode",
+        value="brownfield",
+        reason="4 of 5 brownfield signals present: CI workflow definitions",
+        provenance=Provenance(kind=ProvenanceKind.INFERRED, confidence=0.8, source_ref="."),
+        evidence_refs=[".github/workflows/ci.yml"],
+    )
+    intake = _minimal_intake(
+        traversal_stats=_entry_limited_stats(), classification_findings=[finding]
+    )
+    dim = next(
+        d
+        for d in synthesize_project_profile(intake).dimensions
+        if d.dimension == "intake_mode"
+    )
+    assert dim.resolution is ProfileResolution.RESOLVED
+    assert dim.attributions[0].value == "brownfield"
+
+
+def test_m_declared_intake_mode_is_not_gated_by_a_truncated_walk() -> None:
+    """An owner's declaration is evidence the walk read, not a claim about ground
+    it missed."""
+    declared = ClassificationFinding(
+        dimension="intake_mode",
+        value="brownfield",
+        reason="declared in .foundry/project.yaml",
+        provenance=Provenance(kind=ProvenanceKind.DECLARED, source_ref=".foundry/project.yaml"),
+        evidence_refs=[".foundry/project.yaml"],
+    )
+    intake = _minimal_intake(
+        traversal_stats=_entry_limited_stats(), classification_findings=[declared]
+    )
+    dim = next(
+        d
+        for d in synthesize_project_profile(intake).dimensions
+        if d.dimension == "intake_mode"
+    )
+    assert dim.resolution is ProfileResolution.RESOLVED
+    assert dim.attributions[0].provenance.kind is ProvenanceKind.DECLARED

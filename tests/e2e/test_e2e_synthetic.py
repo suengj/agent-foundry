@@ -470,6 +470,39 @@ def test_entropy_tier_false_positives_are_measured_not_assumed_absent(
     the measurement working: `WorkClass` wire tokens moved from `ADOPTION` to
     `adoption`, which removed the mixed-case signal from every provenance string
     carrying one. The noise is smaller, not gone, and it is still not a secret.
+
+    SUE-580 raised it from 16 to 17: convention discovery now also reads
+    `pyproject.toml [tool.pytest.ini_options]` as a structured declaration, so this
+    fixture carries one more convention and compile records one more `project_fact`
+    for it.
+
+    What the 17 actually are, enumerated rather than characterised — this docstring
+    has now been wrong twice about its own number, both times by describing the hits
+    from memory instead of listing them:
+
+    * 12 `project_fact` selection rationales, `matching_fields=[...];
+      work_item_fields=[...]; selection_score=0.10` — long, punctuated, mixed-case.
+    * 2 `project_fact` *rejection* summaries, `unlisted_scored=0; unscored=6;
+      sample=[ci-entrypoint, ...]` — records of facts that were **not** selected.
+    * 2 more `project_fact` strings that are neither: `authority.write_scope includes
+      'Makefile'` and `task_toolkit.budget_profile_ids[0]='default'`.
+    * 1 receipt `limitations[].reason`.
+
+    So the count tracks how many long, punctuated provenance strings the bundle
+    carries — not the number of selected facts. Two of the 17 are explicitly about
+    facts that were rejected, which is the opposite. Every one is prose a human wrote
+    to explain a decision; none is a credential position.
+
+    Two earlier revisions of this docstring were wrong. The first attributed the extra
+    hit to the demoted mention's own pattern text "spelling out that a structured
+    declaration takes precedence" — but the hits are provenance strings, not convention
+    patterns, and the pattern no longer says that at all: the precedence annotation was
+    removed from `ConventionSpec.pattern` because that field is scored by
+    `compile/context.py`, so Foundry's own commentary was matching against work-item
+    titles as though it were project text. The second said every hit was a "matching
+    ..." rationale and that the count tracked selected facts; the list above is why
+    that is false. Both are recorded because a comment that misexplains a pinned
+    measurement is how the next person mis-diagnoses a real change in it.
     """
     tier_b = [
         finding
@@ -489,7 +522,7 @@ def test_entropy_tier_false_positives_are_measured_not_assumed_absent(
     # Pinned to what was measured, not to a floor the measurement clears by a mile.
     # A drift in either direction is a change to the heuristic or to the artifacts,
     # and either is worth looking at.
-    assert len(tier_b) == 16, (
+    assert len(tier_b) == 17, (
         "measured Tier B false-positive count changed; the heuristic or the artifacts "
         "moved, and which one is worth knowing"
     )

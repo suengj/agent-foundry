@@ -84,19 +84,85 @@ def _plant_nested_project(parent: Path, name: str) -> Path:
     return nested
 
 
+_BOUNDARY_SCOPE = "nested project boundaries: components/other-service"
+
+
+def _with_boundary_scope(message: str) -> str:
+    """The one edit a planted boundary may make to a readiness message.
+
+    ``_scope_absence`` builds a single ``(outside ...)`` clause joining every
+    exclusion with ``and``, so a message that already names the skipped
+    directories gains the boundary inside that clause rather than a second one.
+    Spelling both shapes out here keeps the assertion exact: anything else the
+    message does is a failure, not a formatting variant.
+    """
+    if message.endswith(")") and " (outside " in message:
+        return f"{message[:-1]} and {_BOUNDARY_SCOPE})"
+    return f"{message} (outside {_BOUNDARY_SCOPE})"
+
+
 def test_planting_a_whole_project_inside_the_target_changes_no_evidence_about_it(
     tmp_path: Path,
 ) -> None:
-    """The mutation. Every claim about what the target contains must be unchanged."""
+    """The mutation. Every claim about what the target *contains* must be unchanged.
+
+    This test used to assert byte-identical readiness messages as well, and in
+    doing so it pinned a defect: it plants a ``Dockerfile`` and then required
+    "No deploy/runtime surfaces observed in repository inventory" to come back
+    word for word, unscoped. The assertion is narrowed here rather than deleted,
+    because the thing it was protecting is still protected — see below.
+
+    Two kinds of fact are exempt from "nothing changes", and they are the same
+    kind twice over:
+
+    * ``repository-structure`` — a new directory existing *is* a fact about the
+      target. Already carved out of ``_diagnosis``, and asserted directly by
+      ``test_the_structure_observation_notices_the_directory_and_nothing_in_it``.
+    * a **scope note** on a resolved "none observed" claim — that the diagnosis
+      no longer covers ground it previously covered. ``_scope_absence``
+      *enumerates* the exclusions that shaped a claim, so a reader takes the
+      list it prints for the complete list; printing ``.git`` while suppressing
+      a nested boundary is worse than printing neither.
+
+    What must still not change, and is still asserted below: no observation,
+    convention or classification about the target moves; no readiness dimension
+    appears or disappears; no blocker flips; and no readiness message changes in
+    any way *other* than gaining the boundary scope suffix. The nested project's
+    ``Dockerfile``, ``env.example``, ``AGENTS.md`` and ``Makefile`` must never
+    turn an absence into a presence — that is the boundary this file exists for,
+    and the suffix is the opposite of leaking that evidence in: it says the
+    ground was excluded.
+    """
     root = _target_project(tmp_path / "project")
     before = _diagnosis(root)
 
     _plant_nested_project(root / "components", "other-service")
     after = _diagnosis(root)
 
-    assert after == before, {
-        key: (before[key], after[key]) for key in before if before[key] != after[key]
-    }
+    for key in ("observations", "conventions", "classification"):
+        assert after[key] == before[key], (key, before[key], after[key])
+
+    before_readiness = {(dim, blocker): msg for dim, msg, blocker in before["readiness"]}
+    after_readiness = {(dim, blocker): msg for dim, msg, blocker in after["readiness"]}
+    assert after_readiness.keys() == before_readiness.keys(), (
+        "planting a project must not add, remove or re-flag a readiness dimension"
+    )
+
+    scoped: list[str] = []
+    for key, before_msg in before_readiness.items():
+        after_msg = after_readiness[key]
+        if after_msg == before_msg:
+            continue
+        assert after_msg == _with_boundary_scope(before_msg), (
+            "the only permitted change to a readiness message is the boundary "
+            f"scope suffix: {key} went {before_msg!r} -> {after_msg!r}"
+        )
+        scoped.append(key[0])
+
+    # The claims the planted evidence would have falsified are exactly the ones
+    # that now say which ground they do not cover.
+    assert "runtime-isolation" in scoped, scoped
+    assert "credential-permission-isolation" in scoped, scoped
 
 
 def test_the_structure_observation_notices_the_directory_and_nothing_in_it(

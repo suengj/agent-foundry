@@ -1,0 +1,23 @@
+schema_version: "0.2"
+project:
+  name: sample-runtime-service
+  intake_mode: brownfield
+  work_modes:
+    primary: operate
+    secondary: []
+state:
+  persistence: persistent-shared-external
+  temporal_mode: continuous
+impact:
+  external_effect: runtime-mutation
+  reversibility: rollback-required
+  consequence: high
+execution:
+  autonomy: bounded-external-write
+  ambiguity: bounded-judgment
+  concurrency: coordinated-graph
+assurance:
+  required:
+    - runtime-readback
+access:
+  sensitivity: confidential

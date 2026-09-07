@@ -20,3 +20,7 @@ htmlcov/
 .DS_Store
 .idea/
 .vscode/
+
+# Claude Code harness scratch (agent worktrees, session scaffolding).
+# Never repo content; without this a `git add -A` embeds whole checkouts.
+.claude/

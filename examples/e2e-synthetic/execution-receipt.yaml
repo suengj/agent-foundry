@@ -1,6 +1,6 @@
 adapter_versions: {}
 artifact_identities:
-- digest: 489fb9ce6e071f5542dca17fc0c932a207eda0bf02a997b2df77895de3c7528c
+- digest: 7af135dffeae7dfc272d90b229a07b3ce075bce69a4318950312ad700a7ae014
   kind: execution-bundle
   ref: wi-dcc714550913/RUN-EXAMPLE-001
   version: null

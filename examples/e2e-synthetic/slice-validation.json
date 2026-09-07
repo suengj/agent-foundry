@@ -109,7 +109,7 @@
       "findings": [
         {
           "evidence_refs": [],
-          "message": "0 provenance envelope(s) and 56 selection record(s) name a kind, a source, and a cause",
+          "message": "0 provenance envelope(s) and 57 selection record(s) name a kind, a source, and a cause",
           "outcome": "PASS",
           "subject": "wi-dcc714550913",
           "validator_id": "provenance-completeness"

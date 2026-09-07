@@ -7,7 +7,11 @@ from pathlib import Path
 import yaml
 
 from agent_foundry.models.common import IntakeMode, Provenance, ProvenanceKind
-from agent_foundry.models.project import ClassificationFinding, ProjectObservation
+from agent_foundry.models.project import (
+    ClassificationFinding,
+    ProjectObservation,
+    TraversalStats,
+)
 from agent_foundry.inspect.traversal import FOUNDRY_DIR_PREFIX, RepoEntry, file_path_set, read_entry_text
 
 
@@ -83,6 +87,63 @@ def _finding(
         reason=reason,
         provenance=Provenance(kind=kind, confidence=confidence, source_ref=source_ref),
         evidence_refs=sorted(evidence_refs or []),
+    )
+
+
+# Reason prefixes that mark a finding as *derived from absence*: its value was
+# chosen because a list of signals was checked and none of them was seen, not
+# because anything was observed. Such a finding is only as trustworthy as the
+# ground the walk actually covered — a walk that stopped at a depth/entry limit,
+# left a path unobservable, or refused a containment escape never looked at the
+# region that could hold the very signals the reason enumerates, so a consumer
+# that knows the traversal's own accounting (`profile.synth`, which holds
+# `TraversalStats`; this module only ever sees the entries it was handed) must
+# gate these exactly as it gates a "no marker observed" structural absence.
+#
+# This is a one-directional data coupling on purpose: the producer of an
+# absence-derived reason declares itself here, rather than the consumer
+# pattern-matching prose it does not own. A new absence-derived finding must add
+# its prefix to this tuple; `tests/test_inspect_classification_absence.py` pins
+# that the reason a producer emits actually starts with a prefix listed here.
+ABSENCE_ENUMERATION_REASON_PREFIXES: tuple[str, ...] = (
+    "no brownfield signals present; checked: ",
+)
+
+
+def reason_is_absence_enumeration(reason: str | None) -> bool:
+    """True when ``reason`` states that a list of signals was checked and none found."""
+    if not reason:
+        return False
+    return reason.startswith(ABSENCE_ENUMERATION_REASON_PREFIXES)
+
+
+def traversal_supports_absence_enumeration(
+    stats: TraversalStats, *, unread_file_count: int = 0
+) -> bool:
+    """True when the walk covered enough ground for an absence enumeration to mean anything.
+
+    The producer of an absence-derived finding (above) cannot answer this: it is
+    handed a list of entries and has no idea whether that list is the repository
+    or the first three things a truncated walk happened to reach. Every consumer
+    that promotes such a finding must ask this question, and they must all ask it
+    the same way — ``profile.synth`` (which publishes it as a descriptive
+    dimension) and ``adopt.manifest`` (which promotes it to a manifest field
+    downstream compilation trusts) had drifted apart on exactly this, so the rule
+    lives here, beside the prefixes it belongs to, rather than being restated per
+    consumer.
+
+    A depth or entry limit, an unobservable path, or a containment refusal each
+    means the enumerated signals may sit precisely in the region the walk never
+    looked at. A file skipped for exceeding the read-size limit counts too: the
+    signal list is checked against evidence the collectors derive from file
+    content as well as filenames, so unread bytes can hide one.
+    """
+    return (
+        not stats.depth_limit_reached
+        and not stats.entry_limit_reached
+        and stats.entries_unobservable == 0
+        and stats.entries_skipped_refused == 0
+        and unread_file_count == 0
     )
 
 
@@ -321,7 +382,7 @@ def propose_classification_findings(
                     source_ref=".",
                     confidence=0.55,
                     reason=(
-                        "no brownfield signals present; checked: "
+                        ABSENCE_ENUMERATION_REASON_PREFIXES[0]
                         + "; ".join(name for name, _ in signals)
                     ),
                 )

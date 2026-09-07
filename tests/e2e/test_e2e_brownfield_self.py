@@ -156,27 +156,44 @@ def test_repository_revision_is_unknown_in_a_git_worktree() -> None:
     assert revision_observations, "the absence must be recorded, not merely absent"
 
 
-def test_convention_discovery_covers_four_hardcoded_surfaces_only(
+def test_convention_discovery_covers_five_hardcoded_surfaces_only(
     result: PipelineResult,
 ) -> None:
     """AF8 measurement: what convention discovery can find, and what it cannot.
 
-    Discovery knows four patterns — a pytest mention in an instruction surface, a
-    commit constraint in one, a Makefile `test` recipe, and a CI checkout step. This
-    repository has the first two and neither of the last two, so it yields exactly the
-    conventions those patterns can see. The declared test runner in
-    `pyproject.toml [tool.pytest.ini_options]` — a stronger, declared fact — is not
-    among them, because nothing reads it.
+    Discovery knows five patterns — a pytest mention in an instruction surface, a
+    commit constraint in one, a Makefile `test` recipe, a structured
+    `pyproject.toml [tool.pytest.ini_options]` declaration, and a CI checkout step.
+    This repository has the first three and not the last one, so it yields exactly
+    the conventions those patterns can see. The structured `pyproject.toml`
+    declaration is now read, and it outranks the textual mentions: it is `DECLARED`
+    at a higher confidence, and every mention is demoted below its own baseline
+    confidence precisely because that stronger, structured fact is now known.
     """
     subjects = {convention.subject for convention in result.intake.conventions}
     assert subjects <= {"test-runner", "test-invocation", "ci-checkout", "git-policy"}
     assert "test-runner" in subjects
+    assert "test-invocation" in subjects, (
+        "pyproject.toml declares [tool.pytest.ini_options]; that structured fact "
+        "must now surface as a test-invocation convention"
+    )
     for convention in result.intake.conventions:
-        assert convention.provenance.kind is ProvenanceKind.INFERRED
-        assert convention.confidence <= 0.5, (
-            "every discoverable convention here is a textual mention, and a mention "
-            "is weaker evidence than the declaration in pyproject.toml that is not read"
-        )
+        if convention.subject == "test-invocation":
+            assert convention.provenance.kind is ProvenanceKind.DECLARED
+            assert convention.confidence > 0.5, (
+                "a structured declaration must outrank every textual mention"
+            )
+        else:
+            assert convention.provenance.kind is ProvenanceKind.INFERRED
+            assert convention.confidence <= 0.5, (
+                "every non-structured convention here is a textual mention, and a "
+                "mention is weaker evidence than the pyproject.toml declaration"
+            )
+            if convention.subject == "test-runner":
+                assert convention.confidence < 0.5, (
+                    "test-runner mentions must be demoted once pyproject.toml's "
+                    "structured declaration is known"
+                )
 
 
 def test_an_undeclared_copy_of_this_repository_resolves_no_toolkit(tmp_path) -> None:
@@ -332,11 +349,33 @@ def test_readiness_no_longer_reports_surfaces_this_repository_does_not_have(
     `credential-permission-isolation` said "Integration or credential declaration
     surfaces present". This repository has neither: both came entirely from nested
     fixture `Dockerfile`s and `env.example`s.
+
+    This repository's own tree also has a handful of source files that exceed the
+    read-size limit (SUE-580) — but that is a *content* hole, not a *path* hole:
+    the walk saw and named every such file. Both `runtime-isolation` and
+    `credential-permission-isolation` are filename/path matchers over the entry
+    list (`collect_runtime_deploy_observations`, `collect_integration_observations`
+    in `inspect/collectors.py`) — neither one's answer can possibly change based
+    on what is *inside* an oversized file, since neither reads file content at
+    all. Gating them on the read-size hole manufactured uncertainty where
+    coverage was in fact complete: on a real repository, virtually any oversized
+    lockfile would degrade the whole readiness report to "not confirmed" across
+    every filename-derived dimension, which defeats the purpose of the finding.
+    So both must confidently assert absence here, not read as "not confirmed" —
+    this repository really does have no deploy/runtime or integration/credential
+    surfaces of its own, and the walk's coverage of *those filenames* was
+    complete regardless of the unrelated oversized source files.
+
+    (An earlier version of this test asserted the opposite — that the read-size
+    hole degraded both findings to "not confirmed". That was the defect this
+    test now guards against: SUE-580 S2.)
     """
     by_dimension = {
         finding.dimension: finding for finding in result.intake.readiness_findings
     }
+    assert "not confirmed" not in by_dimension["runtime-isolation"].message
     assert "No deploy/runtime surfaces observed" in by_dimension["runtime-isolation"].message
+    assert "not confirmed" not in by_dimension["credential-permission-isolation"].message
     assert (
         "No integration declaration surfaces observed"
         in by_dimension["credential-permission-isolation"].message

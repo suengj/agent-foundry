@@ -23,6 +23,7 @@ from agent_foundry.adopt.authority import (
 )
 from agent_foundry.adopt.changes import proposed_autonomy_for_change, proposed_external_effect_for_change
 from agent_foundry.inspect import inspect_project
+from agent_foundry.inspect.classification import reason_is_absence_enumeration
 from agent_foundry.models import (
     AdoptionAction,
     AdoptionChangeItem,
@@ -981,4 +982,114 @@ def test_blocking_change_sorts_first_despite_zero_priority() -> None:
     assert changes, "expected changes"
     assert changes[0].target == "intake-mode", (
         f"BLOCK should sort first, got {[c.target for c in changes]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# R2. An absence-derived classification value must not reach the manifest over
+#     a walk that never covered the ground its absence claims to be about.
+# ---------------------------------------------------------------------------
+
+
+def _running_service_tree(root: Path) -> None:
+    """A tree nobody would call greenfield: CI, a container manifest, 30 modules.
+
+    Everything real sits two levels down, so a depth-limited walk reaches none
+    of it while a full walk sees all of it -- the difference between the two
+    runs is the traversal bound, nothing about the project.
+    """
+    app = root / "outer" / "app"
+    (app / ".github" / "workflows").mkdir(parents=True)
+    (app / ".github" / "workflows" / "ci.yml").write_text("name: ci\non: push\n")
+    (app / "Dockerfile").write_text("FROM python:3.11\n")
+    (app / "src").mkdir()
+    for index in range(30):
+        (app / "src" / f"mod_{index:02d}.py").write_text(f"VALUE = {index}\n")
+    (root / "README.md").write_text("# running service\n")
+
+
+def test_absence_derived_intake_mode_is_withheld_from_the_manifest_under_a_truncated_walk(
+    tmp_path: Path,
+) -> None:
+    """R2 regression. `adopt` promotes classification findings straight to manifest
+    fields, and `intake_mode = greenfield` is chosen *from silence*: the reason
+    enumerates brownfield signals that were checked and not found. Over a walk
+    that stopped early, that silence is the walk's, not the project's.
+
+    The manifest is what downstream compilation trusts, so the field must be left
+    genuinely unset rather than published -- and unset must not be silent: an
+    operator has to be able to tell "nothing was inferred" from "something was
+    inferred and was not trustworthy over this walk".
+    """
+    _running_service_tree(tmp_path)
+
+    full = inspect_project(str(tmp_path))
+    truncated = inspect_project(str(tmp_path), max_depth=1)
+
+    # The fixture must actually produce the two walks this test is about.
+    assert not full.traversal_stats.depth_limit_reached
+    assert truncated.traversal_stats.depth_limit_reached, (
+        "the fixture must actually truncate, or this test proves nothing"
+    )
+    truncated_finding = next(
+        f for f in truncated.classification_findings if f.dimension == "intake_mode"
+    )
+    assert truncated_finding.value == "greenfield"
+    assert reason_is_absence_enumeration(truncated_finding.reason), (
+        "the truncated walk must produce the absence-enumerated finding, "
+        f"got reason={truncated_finding.reason!r}"
+    )
+
+    # The full walk sees the project for what it is and is untouched by the gate.
+    assert plan_adoption(full).manifest.project.intake_mode is IntakeMode.BROWNFIELD
+
+    plan = plan_adoption(truncated)
+    assert plan.manifest.project.intake_mode is None, (
+        "a truncated walk published the greenfield-from-silence value into the "
+        f"manifest: {plan.manifest.project.intake_mode}"
+    )
+    # Unset, not substituted: withholding must not swap in the other member of
+    # the vocabulary either.
+    assert plan.change_set.intake_mode is None
+
+    withheld = [
+        f for f in plan.manifest.readiness_findings if f.dimension == "traversal-incomplete"
+    ]
+    assert withheld, (
+        "the withheld value left no trace; an unset field then reads as merely "
+        "undeclared rather than as evidence that was not trustworthy"
+    )
+    assert "intake_mode" in withheld[0].message and "greenfield" in withheld[0].message
+
+    # Withholding must not widen anything: `intake_mode=None` routes to the
+    # brownfield-retrofit path plus an explicit BLOCK, never to greenfield
+    # bootstrapping.
+    targets = [c.target for c in plan.change_set.changes]
+    assert "intake-mode" in targets
+    blocked = next(c for c in plan.change_set.changes if c.target == "intake-mode")
+    assert blocked.status is AdoptionChangeStatus.BLOCKED
+
+
+def test_a_positively_evidenced_finding_survives_a_truncated_walk(tmp_path: Path) -> None:
+    """The other half of R2: only findings chosen *from silence* are withheld. A
+    truncated walk does not un-see what it did see, so a finding backed by an
+    observed signal still reaches the manifest."""
+    _running_service_tree(tmp_path)
+    # A shallower tree: the depth limit still bites, but the walk reaches the
+    # container manifest, so intake_mode is inferred from a signal it observed.
+    (tmp_path / "Dockerfile").write_text("FROM python:3.11\n")
+
+    truncated = inspect_project(str(tmp_path), max_depth=1)
+    assert truncated.traversal_stats.depth_limit_reached
+    finding = next(
+        f for f in truncated.classification_findings if f.dimension == "intake_mode"
+    )
+    assert not reason_is_absence_enumeration(finding.reason), (
+        f"fixture must produce a positively-evidenced finding, got {finding.reason!r}"
+    )
+
+    manifest = plan_adoption(truncated).manifest
+    assert manifest.project.intake_mode is IntakeMode.BROWNFIELD, (
+        "a positively-evidenced finding was dropped along with the absence-derived "
+        "ones; a truncated walk does not un-see what it did see"
     )
