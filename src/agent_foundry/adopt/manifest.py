@@ -7,6 +7,8 @@ from typing import TypeVar
 
 from agent_foundry.inspect.classification import (
     DECLARED_LIST_SEPARATOR,
+    DECLARED_VOCABULARIES,
+    invalid_declaration_finding,
     reason_is_absence_enumeration,
     traversal_supports_absence_enumeration,
 )
@@ -198,12 +200,33 @@ def _parse_enum(value: str, enum_type: type[E]) -> E | None:
         return None
 
 
+def _assert_vocabulary_matches(dimension: str, enum_type: type[E]) -> None:
+    """Fail loudly when this module and `DECLARED_VOCABULARIES` disagree.
+
+    The call sites below name their enum explicitly because they need the static
+    type to return, but the *same* correspondence is also read by `profile.synth`
+    (to decide what it may publish) and by `inspect.readiness` (to decide what to
+    report). Two copies of one fact drift; this makes the drift a crash on the
+    first synthesis rather than a manifest that refuses a value the profile
+    happily published, which is the exact shape of the defect this guard was
+    added alongside.
+    """
+    declared = DECLARED_VOCABULARIES.get(dimension)
+    if declared is not None and declared is not enum_type:
+        raise AssertionError(
+            f"vocabulary drift for {dimension!r}: adopt.manifest promotes it as "
+            f"{enum_type.__name__} but inspect.classification.DECLARED_VOCABULARIES "
+            f"validates it as {declared.__name__}"
+        )
+
+
 def _manifest_value(
     grouped: dict[str, list[ClassificationFinding]],
     dimension: str,
     enum_type: type[E],
     synthesis_readiness: list[ReadinessFinding],
 ) -> E | None:
+    _assert_vocabulary_matches(dimension, enum_type)
     finding = _best_finding(grouped.get(dimension, []))
     if finding is None or finding.value is None:
         return None
@@ -226,24 +249,23 @@ def _record_invalid_declaration(
     The field stays unset rather than guessing: an owner who wrote a value Foundry
     does not recognise has said something, and dropping it silently would leave the
     manifest looking merely undeclared.
+
+    `inspect.readiness` raises the identical finding from the identical builder
+    whenever an intake is produced by `inspect_project`, so on the real pipeline
+    this is a duplicate that `synthesize_manifest` drops. It is kept because a
+    caller may hand this function an intake it assembled itself, whose readiness
+    findings were never derived from its classification findings; that manifest
+    must still say why the field it asked for is unset.
     """
     source_ref = finding.provenance.source_ref or (
         finding.evidence_refs[0] if finding.evidence_refs else "."
     )
     synthesis_readiness.append(
-        ReadinessFinding(
-            dimension="declared-value-invalid",
-            severity=ConsequenceClass.HIGH,
-            message=(
-                f"Declared {dimension} value {value!r} is not valid "
-                f"(source: {source_ref})"
-            ),
-            blocker=False,
-            provenance=Provenance(
-                kind=ProvenanceKind.DECLARED,
-                confidence=finding.provenance.confidence,
-                source_ref=source_ref,
-            ),
+        invalid_declaration_finding(
+            dimension,
+            value,
+            source_ref=source_ref,
+            confidence=finding.provenance.confidence,
         )
     )
 
@@ -260,6 +282,7 @@ def _manifest_list(
     beside it: the valid ones are kept and the invalid one raises a
     `declared-value-invalid` readiness finding, the same treatment a scalar gets.
     """
+    _assert_vocabulary_matches(dimension, enum_type)
     finding = _best_finding(grouped.get(dimension, []))
     if finding is None or finding.value is None:
         return []
@@ -413,8 +436,17 @@ def synthesize_manifest(intake: ProjectIntake) -> ProjectManifest:
         write_scope=_manifest_string_list(grouped, "authority.write_scope")
     )
 
+    # A synthesis finding the intake already carries verbatim is not repeated.
+    # `inspect.readiness` and this module raise `declared-value-invalid` from one
+    # shared builder, so the same declaration produces byte-identical findings on
+    # both paths; two copies would tell the owner about one typo twice and say
+    # nothing a single copy does not. Equality is exact (`ReadinessFinding` is a
+    # frozen model), so nothing that differs in any field is dropped.
     readiness_findings = sorted(
-        [*intake.readiness_findings, *synthesis_readiness],
+        [
+            *intake.readiness_findings,
+            *[f for f in synthesis_readiness if f not in intake.readiness_findings],
+        ],
         key=lambda finding: (finding.dimension, finding.message, finding.severity.value),
     )
 
