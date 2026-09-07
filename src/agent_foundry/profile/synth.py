@@ -145,6 +145,7 @@ from agent_foundry.inspect.classification import (
     CLASSIFICATION_DIMENSIONS,
     reason_is_absence_enumeration,
     traversal_supports_absence_enumeration,
+    usable_declared_value,
 )
 from agent_foundry.inspect.readiness import nested_boundary_refs
 
@@ -356,16 +357,50 @@ def _classification_dimension(
     than publishing a confident negative (``intake_mode = greenfield`` over a
     repository whose CI, Dockerfile and source tree were simply never reached).
 
-    Only the absence-derived findings are dropped: a declared or
+    Only the absence-derived findings are dropped for that reason: a declared or
     positively-evidenced finding for the same dimension still resolves it, since
     a truncated walk does not un-see what it did see.
+
+    A *second*, unrelated filter applies to every finding here: a value its
+    dimension's vocabulary does not contain is not published
+    (``usable_declared_value``). An owner who writes ``reversibility:
+    reversible`` has said something, and this profile used to echo it as
+    RESOLVED at ``declared`` provenance — while ``adopt.manifest``, asking the
+    same vocabulary, refused it and left the field unset. A dimension published
+    as RESOLVED at a value the schema rejects is not honestly resolved: it
+    counts a dimension as settled that no manifest can ever carry, and it makes
+    a typo look like an answer.
+
+    The dimension falls back to **UNKNOWN**, not CONFLICTED. CONFLICTED means
+    two sources attributed different values to the same dimension and the
+    disagreement is itself the finding; here there is exactly one source and no
+    disagreement — the single declaration is simply unusable. Publishing
+    CONFLICTED would require inventing a second attribution to disagree with,
+    which is precisely the fabrication this contract forbids (and the
+    ``ProfileDimension`` validator rejects a CONFLICTED dimension with fewer
+    than two distinct values, for the same reason). What distinguishes this
+    UNKNOWN from a dimension the owner never declared is not the resolution but
+    the ``declared-value-invalid`` readiness finding raised beside it on the
+    intake, which names the dimension, the rejected token and its source file.
+    Absence of a usable value is reported as absence; the fact that a value was
+    written is reported where facts are reported.
+
+    A list dimension keeps the members its vocabulary accepts and drops the
+    rest, exactly as ``adopt.manifest`` promotes them, so the profile and the
+    manifest describe the same declaration rather than two different ones.
     """
-    attributions = [
-        _make_attribution(finding.value, finding.provenance, finding.evidence_refs)
-        for finding in findings
-        if finding.value is not None
-        and not (reason_is_absence_enumeration(finding.reason) and not exhaustive)
-    ]
+    attributions = []
+    for finding in findings:
+        if finding.value is None:
+            continue
+        if reason_is_absence_enumeration(finding.reason) and not exhaustive:
+            continue
+        value = usable_declared_value(name, finding.value)
+        if value is None:
+            continue
+        attributions.append(
+            _make_attribution(value, finding.provenance, finding.evidence_refs)
+        )
     return _dimension(name, attributions)
 
 

@@ -2,14 +2,32 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from pathlib import Path
 
 import yaml
 
-from agent_foundry.models.common import IntakeMode, Provenance, ProvenanceKind
+from agent_foundry.models.common import (
+    AccessSensitivity,
+    Ambiguity,
+    AssuranceMode,
+    Autonomy,
+    Concurrency,
+    ConsequenceClass,
+    ExternalEffectClass,
+    IntakeMode,
+    PrimaryArtifactState,
+    PrimaryWorkMode,
+    Provenance,
+    ProvenanceKind,
+    Reversibility,
+    Statefulness,
+    TemporalMode,
+)
 from agent_foundry.models.project import (
     ClassificationFinding,
     ProjectObservation,
+    ReadinessFinding,
     TraversalStats,
 )
 from agent_foundry.inspect.traversal import FOUNDRY_DIR_PREFIX, RepoEntry, file_path_set, read_entry_text
@@ -69,6 +87,162 @@ _LIST_DIMENSIONS: frozenset[str] = frozenset(
 # joined — a ClassificationFinding holds a single string by contract, and AF8 is
 # not the place to widen that contract.
 DECLARED_LIST_SEPARATOR = ","
+
+
+# The vocabulary each declared dimension is answerable to. A dimension absent
+# here has no closed vocabulary at all -- `project.name` is a free-form
+# identifier and `authority.write_scope` is a list of repository paths, so there
+# is no member to reject, only a declaration to honour.
+#
+# This map is the *one* place the dimension-to-vocabulary correspondence is
+# stated, for the same reason `traversal_supports_absence_enumeration` lives
+# beside the reason prefixes it judges: `adopt.manifest` (which refuses an
+# invalid member) and `profile.synth` (which must not publish one as RESOLVED)
+# are two consumers of the same question, and two independent answers can drift
+# apart. `adopt.manifest` still names the enum at each call site because it needs
+# the static type to return; it checks that name against this map so the two
+# cannot disagree in silence.
+DECLARED_VOCABULARIES: dict[str, type[Enum]] = {
+    "intake_mode": IntakeMode,
+    "primary_work_mode": PrimaryWorkMode,
+    "secondary_work_modes": PrimaryWorkMode,
+    "primary_artifact": PrimaryArtifactState,
+    "state.persistence": Statefulness,
+    "state.temporal_mode": TemporalMode,
+    "impact.external_effect": ExternalEffectClass,
+    "impact.reversibility": Reversibility,
+    "impact.consequence": ConsequenceClass,
+    "execution.autonomy": Autonomy,
+    "execution.ambiguity": Ambiguity,
+    "execution.concurrency": Concurrency,
+    "assurance.required": AssuranceMode,
+    "access.sensitivity": AccessSensitivity,
+}
+
+
+def _declared_members(dimension: str, value: str) -> list[str]:
+    """Split a declared value into the members a vocabulary lookup will see.
+
+    A list dimension carries its members separator-joined in one finding (see
+    `DECLARED_LIST_SEPARATOR`); every other dimension is a single member. An
+    empty string on a list dimension is an empty list -- the owner declared no
+    members, which is not the same as declaring an unrecognised one -- so it
+    yields nothing to check rather than one empty member to reject.
+    """
+    if dimension in _LIST_DIMENSIONS:
+        return [item for item in value.split(DECLARED_LIST_SEPARATOR) if item != ""] if value else []
+    return [value]
+
+
+def invalid_declared_members(dimension: str, value: str) -> list[str]:
+    """The members of ``value`` that ``dimension``'s vocabulary does not contain.
+
+    Empty for a dimension with no closed vocabulary, and empty for a value whose
+    every member is a vocabulary member. The members are returned rather than a
+    bare boolean because the owner has to be told *which* token was rejected.
+    """
+    vocabulary = DECLARED_VOCABULARIES.get(dimension)
+    if vocabulary is None:
+        return []
+    accepted = {member.value for member in vocabulary}
+    return [member for member in _declared_members(dimension, value) if member not in accepted]
+
+
+def usable_declared_value(dimension: str, value: str) -> str | None:
+    """``value`` reduced to what its vocabulary accepts, or None when nothing is left.
+
+    This is the single definition of "how much of an owner's declared value can
+    actually be used", shared so that the descriptive profile and the manifest
+    cannot answer it differently for the same declaration. It mirrors what
+    `adopt.manifest` promotes: a scalar survives only if it is a vocabulary
+    member, and a list keeps its valid members and drops the rest.
+
+    None means the declaration is unusable *as a value* -- not that the owner
+    declared nothing. The difference is what the `declared-value-invalid`
+    readiness finding carries; a consumer that only reads the value must fall
+    back to unknown rather than publishing a token the schema rejects.
+    An already-empty list declaration returns ``""`` unchanged: the owner
+    declared an empty list and that is a usable, honest answer.
+    """
+    if dimension not in DECLARED_VOCABULARIES:
+        return value
+    if dimension in _LIST_DIMENSIONS:
+        if value == "":
+            return ""
+        invalid = set(invalid_declared_members(dimension, value))
+        kept = [
+            member
+            for member in _declared_members(dimension, value)
+            if member not in invalid
+        ]
+        return DECLARED_LIST_SEPARATOR.join(kept) if kept else None
+    return value if not invalid_declared_members(dimension, value) else None
+
+
+def invalid_declaration_finding(
+    dimension: str,
+    value: str,
+    *,
+    source_ref: str,
+    confidence: float | None = None,
+) -> ReadinessFinding:
+    """The readiness finding that tells an owner a declared value was not applied.
+
+    One builder, because two producers report this same fact: `inspect.readiness`
+    (so the finding exists on the inspection path, beside every other readiness
+    finding, for anyone reading an intake or a profile) and `adopt.manifest` (so
+    a caller that synthesizes a manifest from a hand-built intake still learns
+    that a field it asked for was refused). `adopt.manifest` merges the intake's
+    findings with its own and drops the exact duplicate, so the real pipeline
+    reports it once.
+
+    The finding is not a blocker: the field is simply left unset, which every
+    downstream consumer already treats as "not declared" and handles
+    conservatively. What it must not be is absent -- an owner who typed a value
+    Foundry does not recognise has said something, and a manifest field that
+    merely looks undeclared hides the typo from the only person who can fix it.
+    """
+    return ReadinessFinding(
+        dimension="declared-value-invalid",
+        severity=ConsequenceClass.HIGH,
+        message=(
+            f"Declared {dimension} value {value!r} is not valid "
+            f"(source: {source_ref})"
+        ),
+        blocker=False,
+        provenance=Provenance(
+            kind=ProvenanceKind.DECLARED,
+            confidence=confidence,
+            source_ref=source_ref,
+        ),
+    )
+
+
+def invalid_declaration_findings(
+    findings: list[ClassificationFinding],
+) -> list[ReadinessFinding]:
+    """Report every declared classification value its vocabulary rejects.
+
+    Only DECLARED findings are checked: a value an owner wrote is the only one
+    that can be a typo. An inferred or observed candidate is produced from a
+    vocabulary member in the first place, and reporting one here would tell the
+    owner to fix a file that does not contain the offending token.
+    """
+    reported: list[ReadinessFinding] = []
+    for finding in findings:
+        if finding.value is None or finding.provenance.kind != ProvenanceKind.DECLARED:
+            continue
+        for member in invalid_declared_members(finding.dimension, finding.value):
+            reported.append(
+                invalid_declaration_finding(
+                    finding.dimension,
+                    member,
+                    source_ref=finding.provenance.source_ref
+                    or (finding.evidence_refs[0] if finding.evidence_refs else "."),
+                    confidence=finding.provenance.confidence,
+                )
+            )
+    return reported
 
 
 def _finding(
@@ -263,8 +437,12 @@ def declared_classification_findings(
     declaration file exists, so a dimension the owner left out is recorded as
     declared-and-absent rather than silently missing. The value is not validated
     here: an unrecognised vocabulary member is carried through as a DECLARED
-    finding so that `adopt.manifest` can report it as an invalid declaration
-    instead of this layer discarding it without saying so.
+    finding so that it can be reported as an invalid declaration
+    (`invalid_declaration_findings`, raised on the inspection path by
+    `inspect.readiness` and on the adoption path by `adopt.manifest`) instead of
+    this layer discarding it without saying so. Carrying it does not mean any
+    consumer may *use* it: `usable_declared_value` is what says how much of a
+    declared value survives its vocabulary, and every consumer must ask.
     """
     rel, declaration = _read_declaration(root, entries, max_file_bytes=max_file_bytes)
     if rel is None:

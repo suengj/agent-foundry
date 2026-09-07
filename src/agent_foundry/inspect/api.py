@@ -246,7 +246,17 @@ def inspect_project(
     # observations (`path-unobservable`, `file-read-skipped`); a depth or entry limit
     # and a containment refusal are recorded nowhere else, so absence would read as
     # settled on a walk that never reached the evidence.
-    readiness_findings = assess_readiness(root, observations, conventions, stats=stats)
+    # `classification_findings` is passed for the same reason `stats` is: the
+    # owner declaration it carries is evidence that reaches readiness nowhere
+    # else, so a value the vocabulary rejects would otherwise be visible only to
+    # whoever went on to synthesize a manifest.
+    readiness_findings = assess_readiness(
+        root,
+        observations,
+        conventions,
+        stats=stats,
+        classification_findings=classification_findings,
+    )
 
     return ProjectIntake(
         schema_version=FOUNDRY_SCHEMA_VERSION,

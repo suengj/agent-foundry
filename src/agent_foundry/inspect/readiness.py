@@ -106,8 +106,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agent_foundry.inspect.classification import invalid_declaration_findings
 from agent_foundry.models.common import ConsequenceClass, Provenance, ProvenanceKind
 from agent_foundry.models.project import (
+    ClassificationFinding,
     ConventionSpec,
     ProjectObservation,
     ReadinessFinding,
@@ -413,9 +415,19 @@ def assess_readiness(
     conventions: list[ConventionSpec] | None = None,
     *,
     stats: TraversalStats | None = None,
+    classification_findings: list[ClassificationFinding] | None = None,
 ) -> list[ReadinessFinding]:
     findings: list[ReadinessFinding] = []
     conventions = conventions or []
+    # A declared value its vocabulary rejects is a fact about the repository the
+    # owner can act on, so it is reported here beside every other readiness
+    # finding rather than only on the adoption path. Without this, an owner's
+    # typo reached nobody who merely inspected the project or read its profile:
+    # the manifest refused the value correctly but only `plan_adoption` ever saw
+    # the refusal, and the profile published the rejected token as RESOLVED.
+    # The check makes no absence claim, so no traversal gate applies to it —
+    # the declaration was read, and what it says is not in doubt.
+    findings.extend(invalid_declaration_findings(classification_findings or []))
     subjects = {obs.subject for obs in observations}
     unread_file_count = sum(1 for obs in observations if obs.subject == "file-read-skipped")
     # Two gates, because this module publishes two kinds of absence claim. Most
