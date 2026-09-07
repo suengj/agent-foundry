@@ -505,6 +505,57 @@ def test_a_boundary_with_both_a_manifest_and_a_git_dir_reports_the_manifest(
     }
 
 
+def test_a_submodule_is_not_described_as_declaring_a_manifest(tmp_path: Path) -> None:
+    """A submodule carries `.git` as a *file*, so it is not skipped and does reach
+    the marker loop as an ordinary entry.
+
+    `.git` is a member of `NESTED_PROJECT_MARKERS`, so before this was separated out
+    the loop stamped the parent MANIFEST — asserting that a project manifest had been
+    seen in a directory that holds none. That is the same fabricated fact the
+    `.git`-directory branch exists to prevent, surviving on the one detection path
+    where `.git` is a file rather than a directory.
+    """
+    root = _target_project(tmp_path / "project")
+    submodule = root / "vendored-submodule"
+    submodule.mkdir()
+    # What git actually writes for a submodule: a pointer file, and no manifest.
+    (submodule / ".git").write_text("gitdir: ../.git/modules/vendored-submodule\n", encoding="utf-8")
+    (submodule / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+
+    entries = walk_repository(root).entries
+    assert nested_project_boundary_markers(root, entries) == {
+        "vendored-submodule": NESTED_BOUNDARY_MARKER_GIT_DIRECTORY
+    }
+
+    intake = inspect_project(root)
+    boundary = next(
+        obs
+        for obs in intake.observations
+        if obs.subject == "nested-project" and "vendored-submodule" in obs.content
+    )
+    assert "declares its own project manifest" not in boundary.content
+    assert ".git" in boundary.content
+
+
+def test_a_submodule_beside_a_real_manifest_still_reports_the_manifest(
+    tmp_path: Path,
+) -> None:
+    """Separating the `.git` file out must not cost the manifest its precedence.
+
+    Whichever entry the walk reaches first, a directory that genuinely carries a
+    manifest reports the manifest: it is the owner-authored fact and it was directly
+    observed.
+    """
+    root = _target_project(tmp_path / "project")
+    both = _plant_nested_project(root, "both")
+    (both / ".git").write_text("gitdir: ../.git/modules/both\n", encoding="utf-8")
+
+    entries = walk_repository(root).entries
+    assert nested_project_boundary_markers(root, entries) == {
+        "both": NESTED_BOUNDARY_MARKER_MANIFEST
+    }
+
+
 # ---------------------------------------------------------------------------
 # A truncated walk must not report a false, confident "does not exist"
 # ---------------------------------------------------------------------------

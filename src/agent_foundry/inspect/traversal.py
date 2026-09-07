@@ -110,9 +110,17 @@ def nested_project_boundary_markers(root: Path, entries: list[RepoEntry]) -> dic
         if not parent:
             # A marker at the repository root describes the target itself.
             continue
-        if name in NESTED_PROJECT_MARKERS:
+        if name == ".git":
+            # A submodule or linked worktree carries `.git` as a *file* holding a
+            # `gitdir:` pointer, not as a directory — so unlike a normal `.git` it is
+            # not skipped, and it arrives here as an ordinary entry. It is still a
+            # separate repository and not a manifest: recording it as MANIFEST would
+            # state that a manifest was seen in a directory that may hold none, which
+            # is the fabricated fact this whole marker map exists to avoid.
+            markers.setdefault(parent, NESTED_BOUNDARY_MARKER_GIT_DIRECTORY)
+        elif name in NESTED_PROJECT_MARKERS:
             markers[parent] = NESTED_BOUNDARY_MARKER_MANIFEST
-    # A `.git` entry never appears in the walk at all — `.git` is a skipped directory
+    # A `.git` *directory* never appears in the walk — `.git` is a skipped directory
     # name, so nothing inside it and nothing named it is ever recorded. A separate
     # repository is the least ambiguous nested project there is, so each visited
     # directory is probed for one directly. One stat per directory, bounded by the same
