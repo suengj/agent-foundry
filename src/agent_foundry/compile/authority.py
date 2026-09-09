@@ -6,7 +6,7 @@ import re
 
 from agent_foundry.models.common import ExternalEffectClass
 from agent_foundry.models.execution import CompiledAuthority
-from agent_foundry.models.policy import DecisionRights, PermissionProfile
+from agent_foundry.models.policy import PermissionProfile
 from agent_foundry.models.project import ProjectManifest
 from agent_foundry.models.registry import CapabilityRegistry, RoleContract
 from agent_foundry.models.toolkit import TaskToolkit
@@ -16,7 +16,6 @@ from agent_foundry.toolkit.ceiling import (
     capability_min_external_effect,
     effective_permission_ceiling,
     tighten_ceiling,
-    decision_rights_ceiling,
     unknown_external_effect,
 )
 
@@ -198,8 +197,6 @@ def compute_compiled_authority(
     role: RoleContract | None,
     permission_profile: PermissionProfile | None,
     registry: CapabilityRegistry,
-    *,
-    decision_rights: DecisionRights | None = None,
 ) -> CompiledAuthority:
     """Compute authority as intersection of work item, role, toolkit, and policy."""
     capabilities_by_id: dict[str, object] = {
@@ -219,11 +216,6 @@ def compute_compiled_authority(
     compiled_effect = manifest_ceiling
     for bound in (work_item_effect, toolkit_effect, role_effect):
         compiled_effect = tighten_ceiling(compiled_effect, bound)
-    if decision_rights is not None:
-        compiled_effect = tighten_ceiling(
-            compiled_effect,
-            decision_rights_ceiling(decision_rights, work_item.consequence_class),
-        )
 
     declared_bounds = write_authority_bounds(manifest, role)
     compiled_write_scope = list(work_item.scope)
@@ -255,8 +247,6 @@ def validate_execution_bundle_authority(
     role: RoleContract | None,
     permission_profile: PermissionProfile | None,
     registry: CapabilityRegistry,
-    *,
-    decision_rights: DecisionRights | None = None,
 ) -> None:
     """Validate finished bundle authority against every contributing bound.
 
@@ -295,7 +285,6 @@ def validate_execution_bundle_authority(
         role,
         permission_profile,
         registry,
-        decision_rights=decision_rights,
     )
     if authority.external_effect != expected.external_effect:
         raise CompileAuthorityError(
@@ -339,15 +328,6 @@ def validate_execution_bundle_authority(
         if EFFECT_RANK[authority.external_effect] > EFFECT_RANK[permission_profile.external_effect]:
             raise CompileAuthorityError(
                 f"bundle authority exceeds task toolkit profile {permission_profile.external_effect.value}"
-            )
-    if decision_rights is not None:
-        rights_ceiling = decision_rights_ceiling(
-            decision_rights,
-            work_item.consequence_class,
-        )
-        if EFFECT_RANK[authority.external_effect] > EFFECT_RANK[rights_ceiling]:
-            raise CompileAuthorityError(
-                f"bundle authority exceeds DecisionRights ceiling {rights_ceiling.value}"
             )
 
     capabilities_by_id = {item.id: item for item in registry.capabilities}

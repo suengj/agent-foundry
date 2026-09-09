@@ -108,6 +108,7 @@ from agent_foundry.models.io import (
 from agent_foundry.models.policy import (
     AssuranceProfile,
     AssuranceRequirement,
+    VerificationBudget,
     AuthorityCeiling,
     AuthorityDecision,
     BlastRadius,
@@ -383,6 +384,7 @@ __all__ = [
     "ValidationOutcome",
     "SliceValidation",
     "ValidationReport",
+    "VerificationBudget",
     "ValidatorNotRun",
     "ValidatorClaim",
     "ValidatorSpec",

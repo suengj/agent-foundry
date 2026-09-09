@@ -7,11 +7,17 @@ surface and may only narrow it.
 
 from __future__ import annotations
 
+from itertools import product
 from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
-from agent_foundry.models.base import FOUNDRY_SCHEMA_VERSION, FoundryModel, VersionedContract
+from agent_foundry.models.base import (
+    FOUNDRY_SCHEMA_VERSION,
+    FoundryModel,
+    SchemaCompatibilityError,
+    VersionedContract,
+)
 from agent_foundry.models.common import (
     Ambiguity,
     ApprovalClass,
@@ -173,12 +179,20 @@ class AuthorityDecision(FoundryModel):
 class DecisionRights(VersionedContract):
     """Owner-declared decision ceilings; absence never becomes permission."""
 
-    schema_version: str = FOUNDRY_SCHEMA_VERSION
+    __requires_current_schema__ = True
+    schema_version: str
     authority_ceilings: tuple[AuthorityCeiling, ...] = Field(default_factory=tuple)
     unknown_authority: ApprovalClass = ApprovalClass.REFUSED
 
     @model_validator(mode="after")
     def _validate_unique_consequences(self) -> Self:
+        if self.schema_version != FOUNDRY_SCHEMA_VERSION:
+            raise SchemaCompatibilityError(
+                "DecisionRights: schema_version "
+                f"{self.schema_version!r} is not supported; this contract was "
+                f"introduced in schema_version {FOUNDRY_SCHEMA_VERSION} and has no "
+                "legacy migration"
+            )
         consequences = [ceiling.consequence for ceiling in self.authority_ceilings]
         if len(consequences) != len(set(consequences)):
             raise ValueError("DecisionRights: one authority ceiling per consequence class")
@@ -317,14 +331,51 @@ class AssuranceRequirement(FoundryModel):
         return self
 
 
+class VerificationBudget(FoundryModel):
+    """A cap on verification resources that cannot waive required controls."""
+
+    max_checks: int | None = Field(default=None, ge=0)
+    max_evidence_items: int | None = Field(default=None, ge=0)
+    allowed_modes: tuple[AssuranceMode, ...] | None = None
+
+    def allocate(self, requirement: AssuranceRequirement) -> AssuranceRequirement:
+        """Validate capacity and return every required control unchanged."""
+        if self.allowed_modes is not None and not set(requirement.required_modes) <= set(
+            self.allowed_modes
+        ):
+            raise ValueError("VerificationBudget: required assurance mode is outside the budget")
+        if (
+            self.max_evidence_items is not None
+            and len(requirement.required_evidence) > self.max_evidence_items
+        ):
+            raise ValueError("VerificationBudget: required evidence exceeds the budget")
+        if self.max_checks is not None:
+            checks = len(requirement.required_modes) + len(requirement.required_evidence)
+            if checks > self.max_checks:
+                raise ValueError("VerificationBudget: required controls exceed the budget")
+        return requirement
+
+
 class AssuranceProfile(FoundryModel):
     """Blast-radius-indexed assurance floors with explicit relaxation evidence."""
 
     requirements: tuple[AssuranceRequirement, ...] = Field(default_factory=tuple)
     default_requirement: AssuranceRequirement | None = None
+    verification_budget: VerificationBudget | None = None
 
     @model_validator(mode="after")
     def _validate_monotonic_assurance(self) -> Self:
+        # Check the effective resolver over the closed dimension lattice, not just
+        # declared points that happen to dominate one another. This catches a rule
+        # switch where a higher uncertainty/coupling point would otherwise select a
+        # weaker incomparable covering point.
+        dimensions = (
+            tuple(ConsequenceClass),
+            tuple(Ambiguity),
+            tuple(Coupling),
+            tuple(Reversibility),
+            tuple(CorrectnessObservability),
+        )
         for left in self.requirements:
             for right in self.requirements:
                 if left is right or not left.blast_radius.dominates(right.blast_radius):
@@ -333,6 +384,35 @@ class AssuranceProfile(FoundryModel):
                     raise ValueError(
                         "AssuranceProfile: higher blast-radius requirement weakens "
                         "assurance without explicit relaxation_evidence_refs"
+                    )
+        for coordinates in product(*(range(len(values)) for values in dimensions)):
+            point = BlastRadius(
+                consequence=dimensions[0][coordinates[0]],
+                uncertainty=dimensions[1][coordinates[1]],
+                coupling=dimensions[2][coordinates[2]],
+                reversibility=dimensions[3][coordinates[3]],
+                observability=dimensions[4][coordinates[4]],
+            )
+            current = self._resolve_without_validation(point)
+            for dimension_index, values in enumerate(dimensions):
+                if coordinates[dimension_index] + 1 >= len(values):
+                    continue
+                higher_coordinates = list(coordinates)
+                higher_coordinates[dimension_index] += 1
+                higher = BlastRadius(
+                    consequence=dimensions[0][higher_coordinates[0]],
+                    uncertainty=dimensions[1][higher_coordinates[1]],
+                    coupling=dimensions[2][higher_coordinates[2]],
+                    reversibility=dimensions[3][higher_coordinates[3]],
+                    observability=dimensions[4][higher_coordinates[4]],
+                )
+                stronger = self._resolve_without_validation(higher)
+                if not self._at_least_as_strict(stronger, current) and not (
+                    stronger.relaxation_evidence_refs
+                ):
+                    raise ValueError(
+                        "AssuranceProfile: effective assurance weakens as blast radius "
+                        "increases without explicit relaxation_evidence_refs"
                     )
         return self
 
@@ -361,33 +441,105 @@ class AssuranceProfile(FoundryModel):
             and left.minimum_distinct_actors >= right.minimum_distinct_actors
         )
 
-    def for_blast_radius(self, blast_radius: BlastRadius) -> AssuranceRequirement | None:
-        """Choose the strictest declared floor that covers the requested radius."""
-        exact = [
-            requirement
-            for requirement in self.requirements
-            if requirement.blast_radius == blast_radius
-        ]
-        if exact:
-            return max(exact, key=self._strictness)
-        candidates = [
+    @staticmethod
+    def _fail_closed_requirement(blast_radius: BlastRadius) -> AssuranceRequirement:
+        return AssuranceRequirement(
+            blast_radius=blast_radius,
+            minimum_evidence_strength=EvidenceStrength.DECISIVE,
+            required_evidence=tuple(EvidenceClass),
+            required_modes=tuple(AssuranceMode),
+            independent_review=True,
+            human_required=True,
+            minimum_distinct_actors=2,
+        )
+
+    @classmethod
+    def _merge_requirements(
+        cls,
+        blast_radius: BlastRadius,
+        requirements: list[AssuranceRequirement],
+    ) -> AssuranceRequirement:
+        """Combine applicable floors so an incomparable point cannot remove controls."""
+        return AssuranceRequirement(
+            blast_radius=blast_radius,
+            minimum_evidence_strength=max(
+                requirements,
+                key=lambda item: _EVIDENCE_RANK[item.minimum_evidence_strength],
+            ).minimum_evidence_strength,
+            required_evidence=tuple(
+                sorted(
+                    {evidence for item in requirements for evidence in item.required_evidence},
+                    key=lambda item: item.value,
+                )
+            ),
+            required_modes=tuple(
+                sorted(
+                    {mode for item in requirements for mode in item.required_modes},
+                    key=lambda item: item.value,
+                )
+            ),
+            independent_review=any(item.independent_review for item in requirements),
+            human_required=any(item.human_required for item in requirements),
+            minimum_distinct_actors=max(item.minimum_distinct_actors for item in requirements),
+            relaxation_evidence_refs=tuple(
+                sorted(
+                    {
+                        ref
+                        for item in requirements
+                        for ref in item.relaxation_evidence_refs
+                    }
+                )
+            ),
+        )
+
+    def _resolve_without_validation(self, blast_radius: BlastRadius) -> AssuranceRequirement:
+        if (
+            blast_radius.coupling is Coupling.UNKNOWN
+            or blast_radius.observability is CorrectnessObservability.UNKNOWN
+        ):
+            return self._fail_closed_requirement(blast_radius)
+        upper = [
             requirement
             for requirement in self.requirements
             if requirement.blast_radius.dominates(blast_radius)
         ]
-        if not candidates:
-            return self.default_requirement
-        return min(
-            candidates,
-            key=lambda requirement: (
-                _CONSEQUENCE_RANK[requirement.blast_radius.consequence],
-                _AMBIGUITY_RANK[requirement.blast_radius.uncertainty],
-                _COUPLING_RANK[requirement.blast_radius.coupling],
-                _REVERSIBILITY_RANK[requirement.blast_radius.reversibility],
-                _OBSERVABILITY_RANK[requirement.blast_radius.observability],
-                tuple(-item for item in self._strictness(requirement)),
-            ),
-        )
+        minimal_upper = [
+            candidate
+            for candidate in upper
+            if not any(
+                other is not candidate
+                and other.blast_radius != candidate.blast_radius
+                and candidate.blast_radius.dominates(other.blast_radius)
+                for other in upper
+            )
+        ]
+        lower = [
+            requirement
+            for requirement in self.requirements
+            if blast_radius.dominates(requirement.blast_radius)
+            and requirement not in minimal_upper
+        ]
+        applicable = [*minimal_upper, *lower]
+        if applicable:
+            if not minimal_upper:
+                applicable.extend(
+                    requirement
+                    for requirement in self.requirements
+                    if requirement not in applicable
+                )
+                if self.default_requirement is not None:
+                    applicable.append(self.default_requirement)
+            return self._merge_requirements(blast_radius, applicable)
+        if self.default_requirement is not None:
+            return self.default_requirement.model_copy(update={"blast_radius": blast_radius})
+        return self._fail_closed_requirement(blast_radius)
+
+    def for_blast_radius(self, blast_radius: BlastRadius) -> AssuranceRequirement:
+        """Resolve the union of all applicable floors, failing closed when uncovered."""
+        requirement = self._resolve_without_validation(blast_radius)
+        if self.verification_budget is not None:
+            self.verification_budget.allocate(requirement)
+        return requirement
 
 
 class RoleSeparation(FoundryModel):
@@ -445,12 +597,15 @@ class ContextSkillPolicy(FoundryModel):
 
     @model_validator(mode="after")
     def _validate_precedence(self) -> Self:
-        if len(self.precedence) != len(set(self.precedence)):
-            raise ValueError("ContextSkillPolicy: precedence layers must be unique")
-        if self.precedence[:2] != (PolicySource.HUMAN, PolicySource.PROJECT):
-            raise ValueError("ContextSkillPolicy: human and project policy must be highest precedence")
-        if any(source not in self.precedence for source in self.non_overridable):
-            raise ValueError("ContextSkillPolicy: non-overridable source is absent from precedence")
+        canonical = tuple(PolicySource)
+        if self.precedence != canonical:
+            raise ValueError(
+                "ContextSkillPolicy: precedence must be the complete canonical order"
+            )
+        if set(self.non_overridable) != {PolicySource.HUMAN, PolicySource.PROJECT}:
+            raise ValueError(
+                "ContextSkillPolicy: human and project must be the complete non-overridable set"
+            )
         for rule in self.overrides:
             if rule.target in self.non_overridable:
                 raise ValueError("ContextSkillPolicy: human/project policy cannot be overridden")
@@ -536,13 +691,16 @@ class MutationObligation(FoundryModel):
 class OperatingModel(VersionedContract):
     """Composable project operating policy consumed by later compilation stages."""
 
-    schema_version: str = FOUNDRY_SCHEMA_VERSION
+    __requires_current_schema__ = True
+    schema_version: str
     id: str
     version: str = "1.0.0"
     description: str
     project_profile_ref: str | None = None
     constraints: OperatingConstraints = Field(default_factory=OperatingConstraints)
-    decision_rights: DecisionRights = Field(default_factory=DecisionRights)
+    decision_rights: DecisionRights = Field(
+        default_factory=lambda: DecisionRights(schema_version=FOUNDRY_SCHEMA_VERSION)
+    )
     assurance: AssuranceProfile = Field(default_factory=AssuranceProfile)
     role_separation: RoleSeparation = Field(default_factory=RoleSeparation)
     retry_policy: RetryPolicy = Field(default_factory=RetryPolicy)
@@ -554,6 +712,13 @@ class OperatingModel(VersionedContract):
 
     @model_validator(mode="after")
     def _decision_rights_fit_constraints(self) -> Self:
+        if self.schema_version != FOUNDRY_SCHEMA_VERSION:
+            raise SchemaCompatibilityError(
+                "OperatingModel: schema_version "
+                f"{self.schema_version!r} is not supported; this contract was "
+                f"introduced in schema_version {FOUNDRY_SCHEMA_VERSION} and has no "
+                "legacy migration"
+            )
         for ceiling in self.decision_rights.authority_ceilings:
             if _EFFECT_RANK[ceiling.max_external_effect] > _EFFECT_RANK[self.constraints.max_external_effect]:
                 raise ValueError(

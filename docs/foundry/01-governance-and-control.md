@@ -111,6 +111,49 @@ cannot grant authority. A missing required evidence result remains `NOT_RUN` or
 control. Restoration of a governed mutation targets the prior adopted policy version,
 never an implicit downgrade.
 
+#### 3.2 SUE-582 wire schema and closed vocabularies
+
+The following is the complete persisted SUE-582 surface. `required` means no default;
+`factory` means an immutable empty tuple or the canonical nested/default contract
+shown by the field name. These names and defaults are reciprocal with
+`agent_foundry.models.policy`; adding or removing one requires changing this table
+and its contract tests together.
+
+| Contract | Fields and defaults |
+|---|---|
+| `PermissionProfile` | `id` required; `version=1.0.0`; `external_effect` required; `write_requires` required; `preview_required=true`; `apply_requires=explicit-authority` |
+| `OperatingConstraints` | `max_external_effect=read-only`; `max_autonomy=suggest`; `preview_required=true`; `unknown_authority=refused`; `unknown_impact_requires_human=true` |
+| `AuthorityCeiling` | `consequence` required; `max_external_effect=read-only`; `max_autonomy=suggest`; `approval_class=refused`; `policy_evidence_refs=factory` |
+| `AuthorityDecision` | `approval_class` required; `permitted` required; `max_external_effect=read-only`; `max_autonomy=suggest`; `reason` required |
+| `DecisionRights` | `schema_version=required current 0.2`; `authority_ceilings=factory`; `unknown_authority=refused` |
+| `BlastRadius` | `consequence` required; `uncertainty` required; `coupling` required; `reversibility` required; `observability` required |
+| `AssuranceRequirement` | `blast_radius` required; `minimum_evidence_strength=moderate`; `required_evidence=factory`; `required_modes=factory`; `independent_review=false`; `human_required=false`; `minimum_distinct_actors=1`; `relaxation_evidence_refs=factory` |
+| `VerificationBudget` | `max_checks=null`; `max_evidence_items=null`; `allowed_modes=null`; allocation returns all required controls or fails |
+| `AssuranceProfile` | `requirements=factory`; `default_requirement=null`; `verification_budget=null` |
+| `RoleSeparation` | `required_roles=factory`; `independent_review_required=false`; `forbid_self_approval=true`; `minimum_distinct_actors=1`; `reviewer_roles=factory` |
+| `OverrideRule` | `source` required; `target` required; `allowed=false`; `evidence_refs=factory` |
+| `ContextSkillPolicy` | `precedence=factory canonical order`; `non_overridable=factory human,project`; `overrides=factory`; `credential_availability_grants_authority=false` |
+| `ControlCondition` | `id` required; `trigger` required; `reason` required; `requires_fresh_evidence=true` |
+| `RetryPolicy` | `max_attempts=0`; `retryable_triggers=factory` |
+| `MutationObligation` | `external_effect` required; `preview_required=true`; `apply_approval=approval-required`; `rollback_required=false`; `restoration_target=none`; `read_back_required=false`; `evidence_refs=factory` |
+| `OperatingModel` | `schema_version=required current 0.2`; `id` required; `version=1.0.0`; `description` required; `project_profile_ref=null`; `constraints=factory`; `decision_rights=factory current 0.2`; `assurance=factory`; `role_separation=factory`; `retry_policy=factory`; `stop_conditions=factory`; `escalation_conditions=factory`; `human_required_conditions=factory`; `context_skill_policy=factory`; `mutation_obligations=factory` |
+
+The closed vocabularies are:
+
+| Vocabulary | Values, in canonical order |
+|---|---|
+| `ExternalEffectClass` | `read-only`, `repository-write`, `shared-service-write`, `data-mutation`, `runtime-mutation`, `publication` |
+| `Autonomy` | `suggest`, `prepare`, `isolated-execute`, `bounded-external-write`, `approved-apply`, `continuous-operation` |
+| `AssuranceMode` | `deterministic-tests`, `statistical`, `independent-review`, `source-evidence`, `runtime-readback`, `human-acceptance` |
+| `EvidenceClass` | `repository-revision`, `deterministic-test`, `static-analysis`, `contract-validation`, `reproducible-calculation`, `statistical-evaluation`, `independent-review`, `integration-proof`, `merged-identity`, `runtime-readback`, `human-acceptance` |
+| `ControlTrigger` | `authority-unknown`, `policy-conflict`, `required-evidence-missing`, `validation-failed`, `review-failed`, `external-state-unobservable`, `rollback-required`, `budget-exhausted`, `credential-unavailable` |
+| `ApprovalClass` | `automatic`, `approval-required`, `refused` |
+| `Coupling` | `low`, `medium`, `high`, `critical`, `unknown` |
+| `CorrectnessObservability` | `high`, `partial`, `low`, `unknown` |
+| `EvidenceStrength` | `none`, `weak`, `moderate`, `strong`, `decisive` |
+| `PolicySource` | `human`, `project`, `policy`, `work-item`, `role`, `context`, `skill`, `inference`, `credential` |
+| `RestorationTarget` | `none`, `prior-adopted-policy-version` |
+
 ## 4. Normative truth versus factual truth
 
 Foundry must distinguish what should be true from what is currently true.

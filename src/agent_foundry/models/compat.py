@@ -664,6 +664,11 @@ def migrate_contract_payload(payload: Any, contract: type[BaseModel]) -> Any:
         supported = parse_schema_version(FOUNDRY_SCHEMA_VERSION)
     except ValueError:
         return payload
+    if getattr(contract, "__requires_current_schema__", False):
+        # Newly introduced persisted contracts have no legacy artifact to migrate.
+        # Preserve the raw declaration so their own validator rejects absent/old/
+        # future versions instead of laundering an old version into the current one.
+        return payload
     if declared[0] != supported[0] or declared[1] > supported[1]:
         # Already incompatible on version grounds; that is the honest failure.
         return payload

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import pytest
 from pathlib import Path
 from pydantic import ValidationError
@@ -12,6 +13,8 @@ from agent_foundry.models import (
     AssuranceMode,
     AssuranceProfile,
     AssuranceRequirement,
+    Autonomy,
+    AuthorityRequirement,
     AuthorityCeiling,
     BlastRadius,
     ContextSkillPolicy,
@@ -24,14 +27,20 @@ from agent_foundry.models import (
     ExternalEffectClass,
     MutationObligation,
     OperatingModel,
+    PermissionProfile,
     PolicySource,
     RestorationTarget,
     RetryPolicy,
     RoleSeparation,
     Reversibility,
+    dump_json,
     dump_yaml,
+    FOUNDRY_SCHEMA_VERSION,
+    VerificationBudget,
+    load_json,
     load_yaml,
 )
+import agent_foundry.models.policy as policy_models
 
 
 def _radius(
@@ -173,14 +182,59 @@ def test_explicit_case_matrix_keeps_control_strength_proportional(
     blast_radius: BlastRadius,
     effect: ExternalEffectClass,
 ) -> None:
-    requirement = AssuranceProfile(requirements=_assurance_matrix()).for_blast_radius(
-        blast_radius
+    rights = DecisionRights(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        authority_ceilings=[
+            AuthorityCeiling(
+                consequence="low",
+                max_external_effect=ExternalEffectClass.REPOSITORY_WRITE,
+                max_autonomy="bounded-external-write",
+                approval_class=ApprovalClass.AUTOMATIC,
+            ),
+            AuthorityCeiling(
+                consequence="high",
+                max_external_effect=ExternalEffectClass.REPOSITORY_WRITE,
+                max_autonomy="approved-apply",
+                approval_class=ApprovalClass.APPROVAL_REQUIRED,
+                policy_evidence_refs=["policy:high-approval"],
+            ),
+        ],
     )
-    assert requirement is not None, case_id
+    permission = PermissionProfile(
+        id=f"permission-{case_id}",
+        external_effect=effect,
+        write_requires=(
+            AuthorityRequirement.NONE
+            if effect is ExternalEffectClass.READ_ONLY
+            else AuthorityRequirement.EXPLICIT_AUTHORITY
+        ),
+    )
+    decision = rights.evaluate(
+        consequence=blast_radius.consequence,
+        requested_effect=effect,
+        requested_autonomy="bounded-external-write",
+    )
+    requirement = AssuranceProfile(
+        requirements=_assurance_matrix(),
+        verification_budget=VerificationBudget(
+            max_checks=16,
+            max_evidence_items=6,
+            allowed_modes=tuple(AssuranceMode),
+        ),
+    ).for_blast_radius(blast_radius)
+    assert permission.external_effect is effect, case_id
+    assert requirement.required_modes
     if case_id == "low-impact-deterministic-edit":
         assert not requirement.independent_review
+        assert decision.approval_class is ApprovalClass.AUTOMATIC
+        assert decision.permitted
+    elif case_id == "external-write-action":
+        assert decision.approval_class is ApprovalClass.REFUSED
+        assert not decision.permitted
     else:
         assert requirement.independent_review
+        assert decision.approval_class is ApprovalClass.APPROVAL_REQUIRED
+        assert decision.permitted
     if case_id == "external-write-action":
         obligation = MutationObligation(
             external_effect=effect,
@@ -189,6 +243,63 @@ def test_explicit_case_matrix_keeps_control_strength_proportional(
             read_back_required=True,
         )
         assert obligation.preview_required and obligation.read_back_required
+
+
+def test_uncertainty_and_observability_raise_assurance_without_control_loss() -> None:
+    low = AssuranceRequirement(
+        blast_radius=_radius("low"),
+        required_evidence=[EvidenceClass.DETERMINISTIC_TEST],
+        required_modes=[AssuranceMode.DETERMINISTIC_TESTS],
+    )
+    high_uncertainty = AssuranceRequirement(
+        blast_radius=_radius("low", uncertainty=Ambiguity.EXPLORATORY),
+        minimum_evidence_strength=EvidenceStrength.STRONG,
+        required_evidence=[EvidenceClass.DETERMINISTIC_TEST, EvidenceClass.INDEPENDENT_REVIEW],
+        required_modes=[AssuranceMode.DETERMINISTIC_TESTS, AssuranceMode.INDEPENDENT_REVIEW],
+        independent_review=True,
+    )
+    profile = AssuranceProfile(requirements=[low, high_uncertainty])
+    baseline = profile.for_blast_radius(_radius("low"))
+    raised = profile.for_blast_radius(
+        _radius("low", uncertainty=Ambiguity.EXPLORATORY)
+    )
+    assert AssuranceProfile._at_least_as_strict(raised, baseline)
+
+    unknown = profile.for_blast_radius(
+        _radius("low", observability=CorrectnessObservability.UNKNOWN)
+    )
+    assert unknown.minimum_evidence_strength is EvidenceStrength.DECISIVE
+    assert unknown.human_required and unknown.independent_review
+
+
+def test_compiler_does_not_advertise_an_unwired_decision_rights_bypass() -> None:
+    from agent_foundry.compile.authority import (
+        compute_compiled_authority,
+        validate_execution_bundle_authority,
+    )
+
+    assert "decision_rights" not in inspect.signature(compute_compiled_authority).parameters
+    assert "decision_rights" not in inspect.signature(validate_execution_bundle_authority).parameters
+
+
+def test_verification_budget_cannot_skip_required_controls() -> None:
+    requirement = AssuranceRequirement(
+        blast_radius=_radius("high"),
+        required_evidence=[EvidenceClass.DETERMINISTIC_TEST, EvidenceClass.INDEPENDENT_REVIEW],
+        required_modes=[AssuranceMode.DETERMINISTIC_TESTS, AssuranceMode.INDEPENDENT_REVIEW],
+        independent_review=True,
+        minimum_distinct_actors=2,
+    )
+    budget = VerificationBudget(
+        max_checks=4,
+        max_evidence_items=2,
+        allowed_modes=[AssuranceMode.DETERMINISTIC_TESTS, AssuranceMode.INDEPENDENT_REVIEW],
+    )
+    assert budget.allocate(requirement) == requirement
+    with pytest.raises(ValueError, match="outside the budget"):
+        VerificationBudget(allowed_modes=[AssuranceMode.DETERMINISTIC_TESTS]).allocate(requirement)
+    with pytest.raises(ValueError, match="exceed the budget"):
+        VerificationBudget(max_checks=1).allocate(requirement)
 
 
 def test_higher_blast_radius_cannot_weaken_assurance_without_policy_evidence() -> None:
@@ -211,6 +322,7 @@ def test_higher_blast_radius_cannot_weaken_assurance_without_policy_evidence() -
 
 def test_unknown_authority_and_credential_availability_never_widen_decisions() -> None:
     rights = DecisionRights(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
         authority_ceilings=[
             AuthorityCeiling(
                 consequence="low",
@@ -295,6 +407,22 @@ def test_context_skill_precedence_cannot_override_project_policy() -> None:
     assert explicit.can_override(PolicySource.POLICY, PolicySource.CONTEXT)
 
 
+@pytest.mark.parametrize(
+    "precedence",
+    [
+        [PolicySource.HUMAN, PolicySource.PROJECT],
+        [PolicySource.PROJECT, PolicySource.HUMAN, *tuple(PolicySource)[2:]],
+        [*tuple(PolicySource)[:-1]],
+    ],
+)
+def test_context_skill_precedence_requires_the_complete_canonical_order(precedence) -> None:
+    with pytest.raises(ValidationError, match="complete canonical order"):
+        ContextSkillPolicy(precedence=precedence)
+
+    with pytest.raises(ValidationError, match="complete non-overridable set"):
+        ContextSkillPolicy(non_overridable=[PolicySource.HUMAN])
+
+
 def test_retry_policy_does_not_turn_missing_authority_into_retry_permission() -> None:
     with pytest.raises(ValidationError, match="not retryable"):
         RetryPolicy(
@@ -318,6 +446,7 @@ def test_role_separation_is_a_floor_without_selecting_roles() -> None:
 
 def test_operating_model_is_versioned_and_round_trips_as_one_canonical_contract() -> None:
     model = OperatingModel(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
         id="bounded-contract-work",
         description="Generic bounded operating model",
         project_profile_ref="profile://generic/rev-1",
@@ -333,8 +462,59 @@ def test_operating_model_is_versioned_and_round_trips_as_one_canonical_contract(
     assert load_yaml(OperatingModel, dump_yaml(model)) == model
 
 
+def test_new_policy_contract_versions_are_explicit_and_current() -> None:
+    valid = OperatingModel(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        id="versioned",
+        description="explicit schema",
+    )
+    assert load_json(OperatingModel, dump_json(valid)) == valid
+
+    with pytest.raises(ValidationError):
+        OperatingModel(id="missing", description="schema is required")
+    with pytest.raises(Exception, match="introduced in schema_version"):
+        OperatingModel(schema_version="0.1", id="old", description="old schema")
+    with pytest.raises(Exception, match="introduced in schema_version"):
+        DecisionRights(schema_version="0.1")
+    with pytest.raises(Exception):
+        OperatingModel(schema_version="not-a-version", id="bad", description="bad schema")
+    with pytest.raises(Exception, match="introduced in schema_version"):
+        OperatingModel(
+            schema_version=FOUNDRY_SCHEMA_VERSION,
+            id="nested-old",
+            description="nested schema",
+            decision_rights={"schema_version": "0.1"},
+        )
+    with pytest.raises(Exception, match="introduced in schema_version"):
+        load_yaml(
+            OperatingModel,
+            "schema_version: '0.1'\nid: old-yaml\ndescription: old schema\n",
+        )
+    with pytest.raises(Exception):
+        load_json(
+            OperatingModel,
+            '{"schema_version":"0.3","id":"future-json","description":"future schema"}',
+        )
+    with pytest.raises(Exception):
+        load_yaml(
+            DecisionRights,
+            "schema_version: not-a-version\nauthority_ceilings: []\n",
+        )
+    with pytest.raises(ValidationError):
+        load_yaml(
+            DecisionRights,
+            "schema_version: '0.2'\nauthority_ceilings: not-a-sequence\n",
+        )
+    with pytest.raises(ValidationError):
+        DecisionRights(
+            schema_version=FOUNDRY_SCHEMA_VERSION,
+            authority_ceilings=[{"consequence": "low", "max_external_effect": "invalid"}],
+        )
+
+
 def test_validated_policy_collections_cannot_be_mutated_to_widen_policy() -> None:
     rights = DecisionRights(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
         authority_ceilings=[AuthorityCeiling(consequence="low")]
     )
     with pytest.raises((AttributeError, TypeError)):
@@ -351,23 +531,58 @@ def test_governance_document_covers_the_canonical_policy_surface() -> None:
         / "01-governance-and-control.md"
     ).read_text(encoding="utf-8")
     section = document[document.index("### 3.1 Canonical SUE-582 policy contracts") :]
+    schema_section = document[document.index("#### 3.2 SUE-582 wire schema and closed vocabularies") :]
     for name in (
-        "OperatingModel",
-        "DecisionRights",
+        "PermissionProfile",
+        "OperatingConstraints",
         "AuthorityCeiling",
+        "AuthorityDecision",
+        "DecisionRights",
         "BlastRadius",
+        "AssuranceRequirement",
+        "VerificationBudget",
         "AssuranceProfile",
         "RoleSeparation",
-        "RetryPolicy",
+        "OverrideRule",
         "ContextSkillPolicy",
+        "ControlCondition",
+        "RetryPolicy",
         "MutationObligation",
+        "OperatingModel",
     ):
-        assert f"`{name}`" in section
+        line = next(
+            line for line in schema_section.splitlines() if line.startswith(f"| `{name}` |")
+        )
+        for field_name, field in getattr(policy_models, name).model_fields.items():
+            assert f"`{field_name}`" in line or f"{field_name}=" in line, (name, field_name)
+            if field.is_required():
+                assert "required" in line, (name, field_name)
+            elif field.default_factory is not None:
+                assert f"{field_name}=factory" in line, (name, field_name)
+            else:
+                default = field.default
+                if hasattr(default, "value"):
+                    default = default.value
+                if default is None:
+                    default = "null"
+                assert f"{field_name}={str(default).lower()}" in line, (name, field_name)
     for enum in (
+        ExternalEffectClass,
+        Autonomy,
+        AssuranceMode,
+        EvidenceClass,
+        ControlTrigger,
         ApprovalClass,
         Coupling,
         CorrectnessObservability,
         EvidenceStrength,
+        PolicySource,
+        RestorationTarget,
     ):
+        line = next(
+            line
+            for line in schema_section.splitlines()
+            if line.startswith(f"| `{enum.__name__}` |")
+        )
         for member in enum:
-            assert f"`{member.value}`" in section
+            assert f"`{member.value}`" in line, (enum.__name__, member.value)
