@@ -12,7 +12,7 @@ Read this adapter, `docs/ai/PROJECT_AGENT_CONSTITUTION.md` and the current Work 
 - Code, tooling, tests or repository validation → `docs/ai/project-context.md` and the applicable validation contract
 - Foundry architecture / adoption / work / toolkit / compiler changes → `docs/foundry/00-overview.md` and only the applicable canonical document
 - Architecture summary and planned context-selection seams → `docs/architecture/overview.md`
-- A newly discovered security, migration or external-write consequence → load the relevant governing contract before that action
+- A newly discovered security, migration or external-write consequence → before that action, load the applicable existing governing contract: authority/external-write rules in `docs/ai/PROJECT_AGENT_CONSTITUTION.md` §6 and `docs/contracts/product-boundary.md` §External writes; governance/control rules in `docs/foundry/01-governance-and-control.md`; brownfield migration in `docs/foundry/02-project-intake-and-adoption.md`; schema/contract migration in `docs/contracts/v0.2-contract-delta.md`; or release/version policy in `docs/foundry/09-release-and-versioning.md`. No standalone security contract exists; if no listed contract applies, report UNKNOWN and do not infer permission or omit the gate.
 
 Do not load the entire `docs/foundry/` tree into every prompt. Use progressive disclosure. Keep required source locators discoverable; an unread required source is UNKNOWN, not a reason to infer permission or silently omit a gate.
 
