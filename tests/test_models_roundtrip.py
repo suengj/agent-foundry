@@ -14,6 +14,7 @@ from agent_foundry.models import (
     ExecutionReceipt,
     EvidenceBundle,
     IntegrationSpec,
+    OperatingModel,
     ProjectManifest,
     ProjectProfile,
     RoleContract,
@@ -39,6 +40,7 @@ FIXTURE_MODELS: list[tuple[str, type]] = [
     ("project_manifest.json", ProjectManifest),
     ("adoption_plan.yaml", AdoptionPlan),
     ("project_profile.yaml", ProjectProfile),
+    ("operating_model.yaml", OperatingModel),
     ("work_item_contract.yaml", WorkItemContract),
     ("toolkit_lock.yaml", ToolkitLock),
     ("task_toolkit.yaml", TaskToolkit),
@@ -104,4 +106,3 @@ def test_json_fixture_load_json(fixture_name: str, model_type: type) -> None:
     source = (FIXTURES / fixture_name).read_bytes()
     obj = load_json(model_type, source)
     assert obj.schema_version == FOUNDRY_SCHEMA_VERSION
-

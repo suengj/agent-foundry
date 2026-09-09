@@ -69,6 +69,48 @@ authority:
 
 Lower-level configuration may make a rule stricter. It must not silently weaken a non-overridable upper-level rule.
 
+### 3.1 Canonical SUE-582 policy contracts
+
+The machine-readable operating policy is the versioned `OperatingModel` in
+`agent_foundry.models.policy`. It composes the following declarations; it is not a
+project-type template and it does not select roles, resolve Skills, or execute a
+mutation.
+
+| Contract | Required responsibility |
+|---|---|
+| `OperatingConstraints` | project-wide maximum external effect/autonomy, preview floor, and unknown-authority behavior |
+| `DecisionRights` / `AuthorityCeiling` | consequence-specific maximum effect/autonomy and one approval class |
+| `BlastRadius` / `AssuranceProfile` | consequence plus uncertainty, coupling, reversibility, and correctness observability mapped to evidence/review/human floors |
+| `RoleSeparation` | logical role floors, independent-review and self-approval constraints; staffing is a later compiler concern |
+| `RetryPolicy` / `ControlCondition` | bounded retry triggers and typed stop, escalation, and human-required conditions |
+| `ContextSkillPolicy` / `OverrideRule` | deterministic precedence and explicit, evidenced exceptions for context and Skills |
+| `MutationObligation` | preview, apply approval, rollback target, and read-back obligations |
+
+The approval vocabulary is closed: `automatic`, `approval-required`, and `refused`.
+
+`DecisionRights` has no implicit ceiling: an undeclared consequence or effect is
+denied. Automatic authority is limited to read-only or repository-write effects;
+shared-service, data, runtime/live, publication/deploy, and capital-style effects
+cannot be automatic. Credential availability is not an authority input.
+
+`BlastRadius` is compositional rather than a parallel risk taxonomy. Its canonical
+dimension values are `ConsequenceClass` (`low`, `medium`, `high`, `critical`),
+`Ambiguity` (`procedural`, `bounded-judgment`, `design-trade-off`, `exploratory`),
+`Coupling` (`low`, `medium`, `high`, `critical`, `unknown`),
+`Reversibility` (`trivial`, `versioned`, `rollback-required`, `partial`,
+`effectively-irreversible`), and `CorrectnessObservability` (`high`, `partial`,
+`low`, `unknown`). Unknown or less observable dimensions strengthen the assurance
+floor; they never justify cheaper review. `EvidenceStrength` is `none`, `weak`,
+`moderate`, `strong`, or `decisive`.
+
+`ContextSkillPolicy` orders `human` → `project` → `policy` → `work-item` → `role`
+→ `context` → `skill` → `inference` → `credential`. Human and project policy are
+non-overridable. An allowed lower-level override must name evidence, and an override
+cannot grant authority. A missing required evidence result remains `NOT_RUN` or
+`UNKNOWN`; a verification budget allocates controls but never removes a required
+control. Restoration of a governed mutation targets the prior adopted policy version,
+never an implicit downgrade.
+
 ## 4. Normative truth versus factual truth
 
 Foundry must distinguish what should be true from what is currently true.

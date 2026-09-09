@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from agent_foundry.models.common import ExternalEffectClass
+from agent_foundry.models.common import ConsequenceClass, ExternalEffectClass
 from agent_foundry.models.integrations import IntegrationSpec
-from agent_foundry.models.policy import PermissionProfile
+from agent_foundry.models.policy import DecisionRights, PermissionProfile
 from agent_foundry.models.project import ProjectManifest
 from agent_foundry.models.registry import (
     CapabilityRegistry,
@@ -38,6 +38,25 @@ def effective_permission_ceiling(manifest: ProjectManifest) -> ExternalEffectCla
 def unknown_external_effect() -> ExternalEffectClass:
     """Fail-closed maximum for unknown ids, absent fields, missing specs, and None."""
     return UNKNOWN_EXTERNAL_EFFECT
+
+
+def decision_rights_ceiling(
+    decision_rights: DecisionRights | None,
+    consequence: ConsequenceClass | None,
+) -> ExternalEffectClass:
+    """Resolve a declared decision ceiling, denying undeclared authority.
+
+    This is intentionally different from ``unknown_external_effect``: missing
+    capability metadata is a maximum requirement that rejects a narrow ceiling,
+    while absent owner-declared decision rights are absence of permission and
+    therefore resolve to the minimum effect.
+    """
+    if decision_rights is None or consequence is None:
+        return ExternalEffectClass.READ_ONLY
+    ceiling = decision_rights.ceiling_for(consequence)
+    if ceiling is None:
+        return ExternalEffectClass.READ_ONLY
+    return ceiling.max_external_effect
 
 
 def capability_min_external_effect(
