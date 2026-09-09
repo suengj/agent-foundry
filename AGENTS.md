@@ -4,16 +4,17 @@ Navigation adapter for coding agents. Durable contracts live in `docs/`; current
 
 ## Read first
 
-1. `docs/ai/PROJECT_AGENT_CONSTITUTION.md` — P0 rules and authority
-2. `docs/contracts/product-boundary.md` — product scope and artifact ownership
-3. `docs/ai/project-context.md` — tooling and validation commands
+Read this adapter, `docs/ai/PROJECT_AGENT_CONSTITUTION.md` and the current Work Item. This follows the Constitution's always-read/task-read distinction; it does not relax any product or authority boundary.
 
 ## Read by task
 
+- Product scope, artifact ownership, authority or architecture changes → `docs/contracts/product-boundary.md` before deciding the change
+- Code, tooling, tests or repository validation → `docs/ai/project-context.md` and the applicable validation contract
 - Foundry architecture / adoption / work / toolkit / compiler changes → `docs/foundry/00-overview.md` and only the applicable canonical document
-- Architecture summary → `docs/architecture/overview.md`
+- Architecture summary and planned context-selection seams → `docs/architecture/overview.md`
+- A newly discovered security, migration or external-write consequence → load the relevant governing contract before that action
 
-Do not load the entire `docs/foundry/` tree into every prompt. Use progressive disclosure.
+Do not load the entire `docs/foundry/` tree into every prompt. Use progressive disclosure. Keep required source locators discoverable; an unread required source is UNKNOWN, not a reason to infer permission or silently omit a gate.
 
 ## Work authority
 
@@ -43,6 +44,8 @@ Do not duplicate volatile work state into README, constitution, or AGENTS.md.
 python -m agent_foundry doctor
 pytest
 ```
+
+Preserve applicable required gates. Documentation navigation changes do not certify compiler behavior; required checks that cannot run remain NOT_RUN. Do not introduce CI or bypass a project-required check merely to shorten the workflow.
 
 ## Out of scope unless explicitly tasked
 
