@@ -31,6 +31,7 @@
     "CapabilitySpec",
     "CapabilityUnit",
     "ClassificationFinding",
+    "CompilationCause",
     "CompilationExplanationReport",
     "CompilationTraceEntry",
     "CompiledAuthority",

@@ -22,6 +22,7 @@ from agent_foundry.models.common import (
 from agent_foundry.models.compiler import (
     AssuranceDecision,
     CapabilityDeclaration,
+    CompilationCause,
     CompilationTraceEntry,
     CompiledCapabilityRequirement,
     EscalationRequirement,
@@ -38,7 +39,7 @@ from agent_foundry.models.policy import (
     DecisionRights,
     OperatingModel,
 )
-from agent_foundry.models.project import ProfileResolution, ProjectProfile
+from agent_foundry.models.project import ProjectProfile
 from agent_foundry.models.registry import CapabilityRegistry, CapabilitySpec, RoleContract
 from agent_foundry.models.work import WorkItemContract
 from agent_foundry.toolkit.builtin_registry import build_default_registry
@@ -65,30 +66,19 @@ def _min_autonomy(left: Autonomy, right: Autonomy) -> Autonomy:
     return left if _AUTONOMY_RANK[left] <= _AUTONOMY_RANK[right] else right
 
 
-def _profile_values(profile: ProjectProfile | None, *names: str) -> tuple[str, ...]:
-    if profile is None:
-        return ()
-    wanted = set(names)
-    values: list[str] = []
-    for dimension in profile.dimensions:
-        if dimension.dimension not in wanted or dimension.resolution is not ProfileResolution.RESOLVED:
-            continue
-        values.append(dimension.attributions[0].value)
-    return tuple(sorted(set(values)))
+def _cause(locator: str, predicate: str, evaluated: bool = True) -> CompilationCause:
+    return CompilationCause(locator=locator, predicate=predicate, evaluated=evaluated)
 
 
-def _profile_list(profile: ProjectProfile | None, *names: str) -> tuple[str, ...]:
-    values: list[str] = []
-    for value in _profile_values(profile, *names):
-        values.extend(part.strip() for part in value.replace(";", ",").split(","))
-    return tuple(sorted({item for item in values if item}))
+def _unique_causes(*causes: CompilationCause) -> tuple[CompilationCause, ...]:
+    unique = {(item.locator, item.predicate, item.evaluated): item for item in causes}
+    return tuple(unique[key] for key in sorted(unique))
 
 
 def _characteristics(work: WorkCharacteristics | WorkItemContract) -> WorkCharacteristics:
     if isinstance(work, WorkCharacteristics):
         return work
     runtime = any(item in {"runtime-readback", "integration-proof"} for item in work.required_evidence)
-    sit = any("sit" in item.lower() for item in (*work.acceptance_criteria, *work.title, *work.objective))
     return WorkCharacteristics(
         workflow_kind=work.work_class.value,
         external_effect=work.authority_class,
@@ -96,7 +86,7 @@ def _characteristics(work: WorkCharacteristics | WorkItemContract) -> WorkCharac
         required_evidence=tuple(
             item for item in EvidenceClass if item.value in set(work.required_evidence)
         ),
-        requires_sit=sit,
+        requires_sit=work.runtime_external_validation_requirement is not None,
         requires_runtime_readback=runtime,
     )
 
@@ -119,73 +109,66 @@ def _assurance(
     *,
     profile: ProjectProfile | None,
 ) -> tuple[AssuranceRequirement, tuple[str, ...], tuple[AssuranceDecision, ...]]:
-    if (
-        not operating_model.assurance.requirements
-        and operating_model.assurance.default_requirement is None
-    ):
-        # A fully known low-impact work item gets the minimum executable floor.
-        # The policy contract's fail-closed resolver remains unchanged for callers
-        # asking it directly; this compiler does not turn an omitted low-risk
-        # assurance profile into an unnecessary reviewer/human gate.
-        base = AssuranceRequirement(
-            blast_radius=_blast_radius(work),
-            minimum_evidence_strength=EvidenceStrength.MODERATE,
-            required_evidence=(EvidenceClass.DETERMINISTIC_TEST,),
-            required_modes=(AssuranceMode.DETERMINISTIC_TESTS,),
-        )
-    else:
-        base = operating_model.assurance.for_blast_radius(_blast_radius(work))
+    blast_radius = _blast_radius(work)
+    base = operating_model.assurance.for_blast_radius(blast_radius)
     modes = set(base.required_modes)
     evidence = set(base.required_evidence)
-    causes_by_mode: dict[AssuranceMode, set[str]] = {
-        mode: {"operating_model.assurance"} for mode in base.required_modes
+    base_predicate = (
+        "AssuranceProfile.for_blast_radius(work blast-radius) includes the compiled floor"
+    )
+    causes_by_mode: dict[AssuranceMode, list[CompilationCause]] = {
+        mode: [_cause("operating_model.assurance", base_predicate)]
+        for mode in base.required_modes
     }
-    causes_by_evidence: dict[EvidenceClass, set[str]] = {
-        item: {"operating_model.assurance"} for item in base.required_evidence
+    causes_by_evidence: dict[EvidenceClass, list[CompilationCause]] = {
+        item: [_cause("operating_model.assurance", base_predicate)]
+        for item in base.required_evidence
     }
 
-    def require_mode(mode: AssuranceMode, cause: str) -> None:
+    def require_mode(mode: AssuranceMode, cause: CompilationCause) -> None:
         modes.add(mode)
-        causes_by_mode.setdefault(mode, set()).add(cause)
+        causes_by_mode.setdefault(mode, []).append(cause)
 
-    def require_evidence(item: EvidenceClass, cause: str) -> None:
+    def require_evidence(item: EvidenceClass, cause: CompilationCause) -> None:
         evidence.add(item)
-        causes_by_evidence.setdefault(item, set()).add(cause)
+        causes_by_evidence.setdefault(item, []).append(cause)
 
     for mode in work.required_assurance_modes:
-        require_mode(mode, "work.required_assurance_modes")
+        require_mode(
+            mode,
+            _cause("work.required_assurance_modes", f"contains {mode.value!r}"),
+        )
     for item in work.required_evidence:
-        require_evidence(item, "work.required_evidence")
-
-    kind = work.workflow_kind.lower().replace("_", "-")
-    if work.external_effect is ExternalEffectClass.READ_ONLY and (
-        "review" in kind or "exact-sha" in kind or "exact-sha" in (work.request_type or "").lower()
-    ):
-        require_mode(AssuranceMode.INDEPENDENT_REVIEW, "workflow kind requests independent review")
-        require_evidence(EvidenceClass.INDEPENDENT_REVIEW, "workflow kind requests independent review")
+        require_evidence(
+            item,
+            _cause("work.required_evidence", f"contains {item.value!r}"),
+        )
 
     # This is the high-consequence floor. It is deliberately explicit at the
     # compiler seam: deleting it must make the high-consequence topology weaker,
     # which is covered by the mutation test in test_role_assurance_compiler.py.
     if work.consequence in {ConsequenceClass.HIGH, ConsequenceClass.CRITICAL}:
-        require_mode(AssuranceMode.INDEPENDENT_REVIEW, "work.consequence>=high")
-        require_evidence(EvidenceClass.INDEPENDENT_REVIEW, "work.consequence>=high")
+        require_mode(
+            AssuranceMode.INDEPENDENT_REVIEW,
+            _cause("work.consequence", "is high or critical"),
+        )
+        require_evidence(
+            EvidenceClass.INDEPENDENT_REVIEW,
+            _cause("work.consequence", "is high or critical"),
+        )
 
     if work.requires_sit:
-        require_mode(AssuranceMode.RUNTIME_READBACK, "work.requires_sit")
-        require_evidence(EvidenceClass.INTEGRATION_PROOF, "work.requires_sit")
+        require_mode(AssuranceMode.RUNTIME_READBACK, _cause("work.requires_sit", "is true"))
+        require_evidence(EvidenceClass.INTEGRATION_PROOF, _cause("work.requires_sit", "is true"))
     if work.requires_runtime_readback:
-        require_mode(AssuranceMode.RUNTIME_READBACK, "work.requires_runtime_readback")
-        require_evidence(EvidenceClass.RUNTIME_READBACK, "work.requires_runtime_readback")
-
-    profile_modes = _profile_list(profile, "assurance.required", "assurance.mode")
-    for value in profile_modes:
-        try:
-            require_mode(AssuranceMode(value), "project_profile.assurance")
-        except ValueError:
-            # A descriptive profile value is not authority. Unknown declarations
-            # become a prerequisite rather than a silently invented mode.
-            continue
+        require_mode(
+            AssuranceMode.RUNTIME_READBACK,
+            _cause("work.requires_runtime_readback", "is true"),
+        )
+        require_evidence(
+            EvidenceClass.RUNTIME_READBACK,
+            _cause("work.requires_runtime_readback", "is true"),
+        )
 
     independent = (
         base.independent_review
@@ -201,8 +184,8 @@ def _assurance(
     requirement = AssuranceRequirement(
         blast_radius=_blast_radius(work),
         minimum_evidence_strength=base.minimum_evidence_strength,
-        required_evidence=tuple(sorted(evidence, key=lambda item: item.value)),
-        required_modes=tuple(sorted(modes, key=lambda item: item.value)),
+        required_evidence=tuple(item for item in EvidenceClass if item in evidence),
+        required_modes=tuple(mode for mode in AssuranceMode if mode in modes),
         independent_review=independent,
         human_required=human,
         minimum_distinct_actors=minimum_actors,
@@ -212,27 +195,33 @@ def _assurance(
     decisions: list[AssuranceDecision] = []
     for mode in AssuranceMode:
         selected = mode in modes
-        causes = causes_by_mode.get(mode, {"not required by supplied work/policy"})
+        causes = causes_by_mode.get(
+            mode,
+            [_cause("assurance.required_modes", f"contains {mode.value!r}", False)],
+        )
         decisions.append(
             AssuranceDecision(
                 component="assurance-mode",
                 component_id=mode.value,
                 selected=selected,
                 rationale=("required by compiled assurance floor" if selected else "not required by compiled assurance floor"),
-                causes=tuple(sorted(causes)),
+                causes=_unique_causes(*causes),
                 policy_refs=(f"operating-model:{operating_model.id}",),
             )
         )
     for item in EvidenceClass:
         selected = item in evidence
-        causes = causes_by_evidence.get(item, {"not required by supplied work/policy"})
+        causes = causes_by_evidence.get(
+            item,
+            [_cause("assurance.required_evidence", f"contains {item.value!r}", False)],
+        )
         decisions.append(
             AssuranceDecision(
                 component="assurance-evidence",
                 component_id=item.value,
                 selected=selected,
                 rationale=("required by compiled assurance floor" if selected else "not required by compiled assurance floor"),
-                causes=tuple(sorted(causes)),
+                causes=_unique_causes(*causes),
                 policy_refs=(f"operating-model:{operating_model.id}",),
             )
         )
@@ -255,11 +244,14 @@ def _authority(
     work: WorkCharacteristics,
     operating_model: OperatingModel,
     decision_rights: DecisionRights,
-) -> tuple[AuthorityCeiling, tuple[str, ...]]:
+) -> tuple[AuthorityCeiling, tuple[CompilationCause, ...]]:
     causes = [
-        f"work.consequence={work.consequence.value}",
-        f"work.external_effect={work.external_effect.value}",
-        f"decision-rights:{decision_rights.schema_version}",
+        _cause("work.consequence", f"equals {work.consequence.value!r}"),
+        _cause("work.external_effect", f"equals {work.external_effect.value!r}"),
+        _cause(
+            "decision_rights.schema_version",
+            f"equals {decision_rights.schema_version!r}",
+        ),
     ]
     declared = decision_rights.ceiling_for(work.consequence)
     if declared is None:
@@ -269,9 +261,13 @@ def _authority(
                 max_external_effect=ExternalEffectClass.READ_ONLY,
                 max_autonomy=Autonomy.SUGGEST,
                 approval_class=decision_rights.unknown_authority,
-                policy_evidence_refs=tuple(causes),
+                policy_evidence_refs=tuple(
+                    f"{item.locator}:{item.predicate}" for item in causes
+                ),
             ),
-            tuple(causes + ["no consequence-specific ceiling declared"]),
+            tuple(
+                [*causes, _cause("decision_rights.authority_ceilings", "contains the work consequence", False)]
+            ),
         )
 
     effect = _min_effect(declared.max_external_effect, operating_model.constraints.max_external_effect)
@@ -279,21 +275,38 @@ def _authority(
     approval = declared.approval_class
     if work.reserved_authority and approval is ApprovalClass.AUTOMATIC:
         approval = ApprovalClass.APPROVAL_REQUIRED
-        causes.append("work.reserved_authority=true")
+        causes.append(_cause("work.reserved_authority", "is true"))
     if _EFFECT_RANK[work.external_effect] > _EFFECT_RANK[effect]:
         approval = ApprovalClass.REFUSED
-        causes.append("requested effect exceeds effective ceiling")
+        causes.append(
+            _cause(
+                "work.external_effect and authority_ceiling.max_external_effect",
+                "requested effect is above the effective ceiling",
+            )
+        )
     if work.requested_autonomy is not None and _AUTONOMY_RANK[work.requested_autonomy] > _AUTONOMY_RANK[autonomy]:
         approval = ApprovalClass.REFUSED
-        causes.append("requested autonomy exceeds effective ceiling")
+        causes.append(
+            _cause(
+                "work.requested_autonomy and authority_ceiling.max_autonomy",
+                "requested autonomy is above the effective ceiling",
+            )
+        )
     ceiling = AuthorityCeiling(
         consequence=work.consequence,
         max_external_effect=effect,
         max_autonomy=autonomy,
         approval_class=approval,
-        policy_evidence_refs=tuple(sorted(set((*declared.policy_evidence_refs, *causes)))),
+        policy_evidence_refs=tuple(
+            sorted(
+                {
+                    *declared.policy_evidence_refs,
+                    *(f"{item.locator}:{item.predicate}" for item in causes),
+                }
+            )
+        ),
     )
-    return ceiling, tuple(sorted(set(causes)))
+    return ceiling, _unique_causes(*causes)
 
 
 def _role_ids(registry: CapabilityRegistry) -> tuple[str, ...]:
@@ -309,48 +322,76 @@ def _select_roles(
     profile: ProjectProfile | None,
     registry: CapabilityRegistry,
 ) -> tuple[LogicalRoleTopology, tuple[RoleDecision, ...], tuple[str, ...]]:
-    kind = work.workflow_kind.lower().replace("_", "-")
-    read_only_review = work.external_effect is ExternalEffectClass.READ_ONLY and (
-        "review" in kind or "exact-sha" in kind or "exact-sha" in (work.request_type or "").lower()
+    read_only_review = (
+        work.external_effect is ExternalEffectClass.READ_ONLY
+        and assurance.independent_review
     )
-    sit = work.requires_sit or "sit" in kind
-    apply_preview = work.reserved_authority or "apply" in kind
-    writer_needed = not read_only_review and work.external_effect is not ExternalEffectClass.READ_ONLY
-    if "docs" in kind or "document" in kind:
-        writer_needed = work.external_effect is not ExternalEffectClass.READ_ONLY
+    sit = work.requires_sit
+    apply_preview = work.reserved_authority
+    writer_needed = work.external_effect is not ExternalEffectClass.READ_ONLY
 
     selected: set[str] = set()
-    causes: dict[str, set[str]] = {}
+    causes: dict[str, list[CompilationCause]] = {}
 
-    def select(role_id: str, *role_causes: str) -> None:
+    def select(role_id: str, *role_causes: CompilationCause) -> None:
         selected.add(role_id)
-        causes.setdefault(role_id, set()).update(role_causes)
+        causes.setdefault(role_id, []).extend(role_causes)
 
     if writer_needed:
-        select("builder", "work requires repository/external mutation")
+        select(
+            "builder",
+            _cause("work.external_effect", "is not read-only"),
+        )
     # Deterministic validation is the reachable minimum for simple implementation,
     # documentation, review, resume, and integration work.
     if writer_needed or read_only_review or assurance.required_modes or sit:
-        select("validator", "work requires deterministic validation boundary")
+        select(
+            "validator",
+            _cause(
+                "assurance.required_modes or work.requires_sit",
+                "requires a deterministic validation boundary",
+            ),
+        )
     if read_only_review:
-        select("reviewer", "workflow kind requests exact-SHA independent review")
+        select(
+            "reviewer",
+            _cause("assurance.independent_review", "is true"),
+        )
     if assurance.independent_review:
-        select("reviewer", "compiled assurance requires independent review")
+        select(
+            "reviewer",
+            _cause("assurance.independent_review", "is true"),
+        )
     if sit or work.requires_runtime_readback or AssuranceMode.RUNTIME_READBACK in assurance.required_modes:
-        select("runtime-verifier", "compiled assurance requires external-state read-back")
+        select(
+            "runtime-verifier",
+            _cause(
+                "assurance.required_modes or work.requires_runtime_readback or work.requires_sit",
+                "requires external-state read-back",
+            ),
+        )
     if apply_preview:
-        select("integrator", "apply-preview requires a separate integration/apply gate")
-        select("manager", "reserved authority requires a logical authority owner")
+        select(
+            "integrator",
+            _cause("work.reserved_authority", "is true and requires an integration gate"),
+        )
+        select(
+            "manager",
+            _cause("work.reserved_authority", "is true and requires an authority owner"),
+        )
     if operating_model.role_separation.minimum_distinct_actors > 1:
-        select("reviewer", "role-separation requires distinct actors")
+        select(
+            "reviewer",
+            _cause("operating_model.role_separation.minimum_distinct_actors", "is greater than one"),
+        )
     for role_id in operating_model.role_separation.required_roles:
-        select(role_id, "operating_model.role_separation.required_roles")
-    for role_id in _profile_list(profile, "role.required", "roles.required"):
-        select(role_id, "project_profile.role.required")
-
-    forbidden = set(_profile_list(profile, "role.forbidden", "roles.forbidden"))
-    if forbidden:
-        selected -= forbidden
+        select(
+            role_id,
+            _cause(
+                "operating_model.role_separation.required_roles",
+                f"contains {role_id!r}",
+            ),
+        )
 
     known_roles = set(_role_ids(registry))
     missing = sorted(selected - known_roles)
@@ -358,8 +399,7 @@ def _select_roles(
     selected &= known_roles
 
     required = set(operating_model.role_separation.required_roles)
-    required.update(_profile_list(profile, "role.required", "roles.required"))
-    if operating_model.role_separation.independent_review_required:
+    if assurance.independent_review or operating_model.role_separation.independent_review_required:
         required.update(operating_model.role_separation.reviewer_roles or ("reviewer",))
     missing_required = sorted(required - selected)
     missing = sorted(set(missing).union(missing_required))
@@ -382,21 +422,34 @@ def _select_roles(
     policy_refs = (f"operating-model:{operating_model.id}",)
     for role_id in _role_ids(registry):
         is_selected = role_id in selected_roles
-        role_causes = causes.get(role_id, set())
-        if role_id in forbidden:
-            role_causes.add("project_profile.role.forbidden")
-            rationale = "excluded by project profile role subtraction"
-        elif is_selected:
+        role_causes = causes.get(role_id, [])
+        if is_selected:
             rationale = "selected for the minimum logical responsibility topology"
         else:
-            role_causes.add("not required by workflow, assurance, authority, or role floor")
+            role_causes.append(
+                _cause(
+                    (
+                        "work.external_effect"
+                        if role_id == "builder"
+                        else "assurance.independent_review"
+                        if role_id == "reviewer"
+                        else "work.reserved_authority"
+                        if role_id in {"manager", "integrator"}
+                        else "assurance.required_modes or work.requires_sit"
+                        if role_id in {"validator", "runtime-verifier"}
+                        else "operating_model.role_separation.required_roles"
+                    ),
+                    f"does not require role {role_id!r}",
+                    False,
+                )
+            )
             rationale = "materially excluded from the minimum topology"
         decisions.append(
             RoleDecision(
                 role_id=role_id,
                 selected=is_selected,
                 rationale=rationale,
-                causes=tuple(sorted(role_causes)),
+                causes=_unique_causes(*role_causes),
                 policy_refs=policy_refs,
             )
         )
@@ -425,7 +478,6 @@ def _capability_requirements(
 ) -> tuple[tuple[CompiledCapabilityRequirement, ...], tuple[UnresolvedPrerequisite, ...]]:
     role_caps = _role_capabilities(topology.selected_roles, registry)
     requested = set(work.required_capabilities)
-    requested.update(_profile_list(profile, "capability.required", "capabilities.required"))
     requested.update(role_caps)
     specs = {item.id: item for item in registry.capabilities}
     declarations = {item.capability_id: item for item in work.capability_declarations}
@@ -440,24 +492,38 @@ def _capability_requirements(
             _EFFECT_RANK[minimum] <= _EFFECT_RANK[task_effect_ceiling]
             and authority.approval_class is not ApprovalClass.REFUSED
         )
-        available = (
-            declaration.available
-            if declaration is not None and declaration.available is not None
-            else isinstance(spec, CapabilitySpec)
-        )
+        available = declaration.available if declaration is not None else None
         verified = declaration.verified if declaration is not None else None
         authorized = within_ceiling
         if declaration is not None and declaration.authorized is False:
             authorized = False
         if declaration is not None and declaration.authorized is True:
             authorized = within_ceiling
-        causes = set(role_caps.get(capability_id, set()))
+        causes: list[CompilationCause] = []
+        for role_id in sorted(
+            source.removeprefix("role:")
+            for source in role_caps.get(capability_id, set())
+        ):
+            causes.append(
+                _cause(
+                    f"topology.selected_roles[{role_id}]",
+                    f"allows capability {capability_id!r}",
+                )
+            )
         if capability_id in work.required_capabilities:
-            causes.add("work.required_capabilities")
-        if capability_id in _profile_list(profile, "capability.required", "capabilities.required"):
-            causes.add("project_profile.capability.required")
+            causes.append(
+                _cause(
+                    "work.required_capabilities",
+                    f"contains {capability_id!r}",
+                )
+            )
         if not causes:
-            causes.add("compiled role topology")
+            causes.append(
+                _cause(
+                    "topology.selected_roles",
+                    f"requires capability {capability_id!r}",
+                )
+            )
         requirement = CompiledCapabilityRequirement(
             capability_id=capability_id,
             declared=True,
@@ -465,7 +531,7 @@ def _capability_requirements(
             verified=verified,
             authorized=authorized,
             minimum_external_effect=minimum,
-            causes=tuple(sorted(causes)),
+            causes=_unique_causes(*causes),
         )
         requirements.append(requirement)
         if available is not True:
@@ -481,7 +547,10 @@ def _capability_requirements(
                 UnresolvedPrerequisite(
                     id=f"capability-authority:{capability_id}",
                     reason="required capability exceeds the compiled authority ceiling",
-                    causes=tuple(sorted((*requirement.causes, "compiled authority ceiling"))),
+                    causes=_unique_causes(
+                        *requirement.causes,
+                        _cause("authority_ceiling", "capability minimum effect is within the ceiling", False),
+                    ),
                 )
             )
     return tuple(requirements), tuple(unresolved)
@@ -502,7 +571,7 @@ def _escalations(
                 trigger=ControlTrigger.AUTHORITY_UNKNOWN,
                 reason="requested work cannot fit the declared authority ceiling",
                 action="stop and request explicit authority or a narrower work item",
-                causes=("compiled authority ceiling",),
+                causes=(_cause("authority_ceiling.approval_class", "is refused"),),
             )
         )
     elif authority.approval_class is ApprovalClass.APPROVAL_REQUIRED:
@@ -512,7 +581,7 @@ def _escalations(
                 trigger=ControlTrigger.AUTHORITY_UNKNOWN,
                 reason="apply authority is reserved and approval is required",
                 action="hold preview until the reserved authority decision is recorded",
-                causes=("authority_ceiling.approval_class=approval-required",),
+                causes=(_cause("authority_ceiling.approval_class", "is approval-required"),),
             )
         )
     if assurance.independent_review:
@@ -522,7 +591,7 @@ def _escalations(
                 trigger=ControlTrigger.REVIEW_FAILED,
                 reason="independent review is a compiled assurance floor",
                 action="stop and escalate unresolved review findings",
-                causes=("assurance.independent_review=true",),
+                causes=(_cause("assurance.independent_review", "is true"),),
             )
         )
     if assurance.required_evidence:
@@ -532,7 +601,7 @@ def _escalations(
                 trigger=ControlTrigger.REQUIRED_EVIDENCE_MISSING,
                 reason="compiled assurance requires typed evidence",
                 action="do not advance until the required evidence is present",
-                causes=("assurance.required_evidence",),
+                causes=(_cause("assurance.required_evidence", "is non-empty"),),
             )
         )
     if work.requires_sit or work.requires_runtime_readback:
@@ -542,7 +611,12 @@ def _escalations(
                 trigger=ControlTrigger.EXTERNAL_STATE_UNOBSERVABLE,
                 reason="the work requires system-level read-back",
                 action="hold and escalate when the declared read-back is unavailable",
-                causes=("work.requires_sit or work.requires_runtime_readback",),
+                causes=(
+                    _cause(
+                        "work.requires_sit or work.requires_runtime_readback",
+                        "is true",
+                    ),
+                ),
             )
         )
     for item in unresolved:
@@ -567,7 +641,12 @@ def _escalations(
                 trigger=condition.trigger,
                 reason=condition.reason,
                 action="follow operating-model escalation condition",
-                causes=(f"operating-model:{operating_model.id}",),
+                causes=(
+                    _cause(
+                        f"operating_model.escalation_conditions[{condition.id}]",
+                        "is declared",
+                    ),
+                ),
             )
         )
     unique: dict[str, EscalationRequirement] = {item.id: item for item in result}
@@ -579,7 +658,7 @@ def _trace(
     assurance_decisions: tuple[AssuranceDecision, ...],
     capability_requirements: tuple[CompiledCapabilityRequirement, ...],
     authority: AuthorityCeiling,
-    authority_causes: tuple[str, ...],
+    authority_causes: tuple[CompilationCause, ...],
 ) -> tuple[CompilationTraceEntry, ...]:
     entries: list[CompilationTraceEntry] = []
     for decision in role_decisions:
@@ -678,7 +757,7 @@ def compile_role_assurance(
             UnresolvedPrerequisite(
                 id=role_id,
                 reason="required logical role is absent from the supplied registry",
-                causes=("role topology floor",),
+                causes=(_cause("operating_model.role_separation", "requires the missing role"),),
             )
         )
     unresolved = sorted(unresolved, key=lambda item: item.id)
@@ -692,6 +771,7 @@ def compile_role_assurance(
     trace = _trace(role_decisions, assurance_decisions, capability_requirements, authority, authority_causes)
     result = RoleAssuranceCompilation(
         schema_version=FOUNDRY_SCHEMA_VERSION,
+        work_item_id=work.id if isinstance(work, WorkItemContract) else None,
         project_profile_ref=profile.source_intake_ref if profile is not None else None,
         work=characteristics,
         topology=topology,

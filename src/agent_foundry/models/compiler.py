@@ -8,7 +8,12 @@ from __future__ import annotations
 
 from pydantic import Field, model_validator
 
-from agent_foundry.models.base import FoundryModel, VersionedContract
+from agent_foundry.models.base import (
+    FOUNDRY_SCHEMA_VERSION,
+    FoundryModel,
+    SchemaCompatibilityError,
+    VersionedContract,
+)
 from agent_foundry.models.common import (
     Ambiguity,
     AssuranceMode,
@@ -80,6 +85,14 @@ class CapabilityDeclaration(FoundryModel):
 WorkCharacteristics.model_rebuild()
 
 
+class CompilationCause(FoundryModel):
+    """One independently inspectable compiler input/policy evaluation."""
+
+    locator: str = Field(min_length=1)
+    predicate: str = Field(min_length=1)
+    evaluated: bool
+
+
 class CompiledCapabilityRequirement(FoundryModel):
     """One logical capability requirement and its independently tracked statuses."""
 
@@ -89,7 +102,7 @@ class CompiledCapabilityRequirement(FoundryModel):
     verified: bool | None = None
     authorized: bool | None = None
     minimum_external_effect: ExternalEffectClass
-    causes: tuple[str, ...] = Field(default_factory=tuple)
+    causes: tuple[CompilationCause, ...] = Field(default_factory=tuple)
 
 
 class RoleDecision(FoundryModel):
@@ -98,7 +111,7 @@ class RoleDecision(FoundryModel):
     role_id: str
     selected: bool
     rationale: str
-    causes: tuple[str, ...] = Field(default_factory=tuple)
+    causes: tuple[CompilationCause, ...] = Field(default_factory=tuple)
     policy_refs: tuple[str, ...] = Field(default_factory=tuple)
 
 
@@ -109,7 +122,7 @@ class AssuranceDecision(FoundryModel):
     component_id: str
     selected: bool
     rationale: str
-    causes: tuple[str, ...] = Field(default_factory=tuple)
+    causes: tuple[CompilationCause, ...] = Field(default_factory=tuple)
     policy_refs: tuple[str, ...] = Field(default_factory=tuple)
 
 
@@ -120,7 +133,7 @@ class EscalationRequirement(FoundryModel):
     trigger: ControlTrigger
     reason: str
     action: str
-    causes: tuple[str, ...] = Field(default_factory=tuple)
+    causes: tuple[CompilationCause, ...] = Field(default_factory=tuple)
 
 
 class UnresolvedPrerequisite(FoundryModel):
@@ -128,7 +141,7 @@ class UnresolvedPrerequisite(FoundryModel):
 
     id: str
     reason: str
-    causes: tuple[str, ...] = Field(default_factory=tuple)
+    causes: tuple[CompilationCause, ...] = Field(default_factory=tuple)
 
 
 class LogicalRoleTopology(FoundryModel):
@@ -157,7 +170,7 @@ class CompilationTraceEntry(FoundryModel):
     component_id: str
     selected: bool
     rationale: str
-    causes: tuple[str, ...] = Field(default_factory=tuple)
+    causes: tuple[CompilationCause, ...] = Field(default_factory=tuple)
     policy_refs: tuple[str, ...] = Field(default_factory=tuple)
 
 
@@ -174,6 +187,9 @@ class CompilationExplanationReport(FoundryModel):
 class RoleAssuranceCompilation(VersionedContract):
     """Complete deterministic output of SUE-583 compilation."""
 
+    __requires_current_schema__ = True
+
+    work_item_id: str | None = None
     project_profile_ref: str | None = None
     work: WorkCharacteristics
     topology: LogicalRoleTopology
@@ -205,52 +221,71 @@ class RoleAssuranceCompilation(VersionedContract):
     def escalation(self) -> tuple[EscalationRequirement, ...]:
         return self.escalations
 
+    @model_validator(mode="after")
+    def _validate_current_schema(self) -> "RoleAssuranceCompilation":
+        if self.schema_version != FOUNDRY_SCHEMA_VERSION:
+            raise SchemaCompatibilityError(
+                "RoleAssuranceCompilation: schema_version "
+                f"{self.schema_version!r} is not supported; this contract was "
+                f"introduced in schema_version {FOUNDRY_SCHEMA_VERSION} and has no "
+                "legacy migration"
+            )
+        return self
+
 
 def validate_compilation_explainability(
     compilation: RoleAssuranceCompilation,
 ) -> CompilationExplanationReport:
-    """Validate that every material role and assurance decision has a cause."""
+    """Validate complete, structured cause coverage for material decisions."""
 
     findings: list[str] = []
     trace = compilation.explanation_trace
-    role_trace = {entry.component_id: entry for entry in trace if entry.component == "role"}
-    for role_id in (*compilation.topology.selected_roles, *compilation.topology.excluded_roles):
-        entry = role_trace.get(role_id)
-        if entry is None or not entry.causes:
-            findings.append(f"role {role_id!r} has no structured cause trace")
-
-    assurance_ids = {
+    material = {
         (entry.component, entry.component_id): entry
         for entry in trace
-        if entry.component in {"assurance-mode", "assurance-evidence"}
+        if entry.component
+        in {"role", "assurance-mode", "assurance-evidence", "capability"}
     }
-    selected_modes = {mode.value for mode in compilation.assurance_requirement.required_modes}
-    selected_evidence = {item.value for item in compilation.assurance_requirement.required_evidence}
-    for component, values in (
-        ("assurance-mode", selected_modes),
-        ("assurance-evidence", selected_evidence),
-    ):
-        for item in values:
-            entry = assurance_ids.get((component, item))
-            if entry is None or not entry.causes:
-                findings.append(f"{component} {item!r} has no structured cause trace")
+    expected = {
+        ("role", role_id)
+        for role_id in (*compilation.topology.selected_roles, *compilation.topology.excluded_roles)
+    }
+    expected.update(
+        ("assurance-mode", decision.component_id)
+        for decision in compilation.assurance_decisions
+        if decision.component == "assurance-mode"
+    )
+    expected.update(
+        ("assurance-evidence", item.component_id)
+        for item in compilation.assurance_decisions
+        if item.component == "assurance-evidence"
+    )
+    expected.update(
+        ("capability", requirement.capability_id)
+        for requirement in compilation.capability_requirements
+    )
 
-    for requirement in compilation.capability_requirements:
-        entries = [
-            entry
-            for entry in trace
-            if entry.component == "capability" and entry.component_id == requirement.capability_id
-        ]
-        if not entries or any(not entry.causes for entry in entries):
-            findings.append(
-                f"capability {requirement.capability_id!r} has no structured cause trace"
-            )
+    generic_predicates = {
+        "not required by workflow, assurance, authority, or role floor",
+        "not required by supplied work/policy",
+    }
+    for component, component_id in sorted(expected):
+        entry = material.get((component, component_id))
+        if entry is None or not entry.causes:
+            findings.append(f"{component} {component_id!r} has no structured cause trace")
+            continue
+        for cause in entry.causes:
+            if not cause.locator or not cause.predicate or cause.predicate in generic_predicates:
+                findings.append(
+                    f"{component} {component_id!r} has an unstructured cause trace"
+                )
     return CompilationExplanationReport(valid=not findings, findings=tuple(findings))
 
 
 __all__ = [
     "AssuranceDecision",
     "CapabilityDeclaration",
+    "CompilationCause",
     "CompilationExplanationReport",
     "CompilationTraceEntry",
     "CompiledCapabilityRequirement",

@@ -7,17 +7,28 @@ import pytest
 from agent_foundry.compile import compile_role_assurance
 from agent_foundry.models import (
     ApprovalClass,
+    Ambiguity,
+    AssuranceProfile,
     AssuranceMode,
+    AssuranceRequirement,
     Autonomy,
     AuthorityCeiling,
+    BlastRadius,
     CapabilityDeclaration,
+    CompilationCause,
     ConsequenceClass,
+    CorrectnessObservability,
     DecisionRights,
     ExternalEffectClass,
     FOUNDRY_SCHEMA_VERSION,
+    EvidenceClass,
+    EvidenceStrength,
     OperatingConstraints,
     OperatingModel,
     ProjectProfile,
+    Reversibility,
+    RoleContract,
+    SkillRoleConstraint,
     RoleAssuranceCompilation,
     ToolkitLock,
     ToolkitResolutionError,
@@ -26,7 +37,10 @@ from agent_foundry.models import (
     dump_json,
     validate_compilation_explainability,
 )
-from agent_foundry.toolkit import resolve_task_toolkit_for_work_item
+from agent_foundry.toolkit import (
+    resolve_task_toolkit_for_compilation,
+    resolve_task_toolkit_for_work_item,
+)
 from agent_foundry.toolkit.builtin_registry import (
     build_default_registry,
     build_default_registry_budget_profiles,
@@ -79,6 +93,20 @@ def _operating_model() -> OperatingModel:
             max_autonomy=Autonomy.APPROVED_APPLY,
         ),
         decision_rights=rights,
+        assurance=AssuranceProfile(
+            default_requirement=AssuranceRequirement(
+                blast_radius=BlastRadius(
+                    consequence=ConsequenceClass.LOW,
+                    uncertainty=Ambiguity.PROCEDURAL,
+                    coupling="low",
+                    reversibility=Reversibility.TRIVIAL,
+                    observability=CorrectnessObservability.HIGH,
+                ),
+                minimum_evidence_strength=EvidenceStrength.MODERATE,
+                required_evidence=(EvidenceClass.DETERMINISTIC_TEST,),
+                required_modes=(AssuranceMode.DETERMINISTIC_TESTS,),
+            )
+        ),
     )
 
 
@@ -87,6 +115,23 @@ def _work(**overrides: object) -> WorkCharacteristics:
         "workflow_kind": "behaviour-preserving-refactor",
         "external_effect": ExternalEffectClass.REPOSITORY_WRITE,
         "consequence": ConsequenceClass.LOW,
+        "capability_declarations": tuple(
+            CapabilityDeclaration(
+                capability_id=capability_id,
+                available=True,
+                verified=True,
+            )
+            for capability_id in (
+                "repository.read",
+                "repository.write",
+                "validation.test",
+                "validation.review",
+                "inspection.read",
+                "work.read",
+                "work.write",
+                "runtime.verify",
+            )
+        ),
     }
     values.update(overrides)
     return WorkCharacteristics(**values)
@@ -112,6 +157,8 @@ def _compile(work: WorkCharacteristics) -> RoleAssuranceCompilation:
             _work(
                 workflow_kind="read-only-exact-sha-review",
                 external_effect=ExternalEffectClass.READ_ONLY,
+                required_assurance_modes=(AssuranceMode.INDEPENDENT_REVIEW,),
+                required_evidence=(EvidenceClass.INDEPENDENT_REVIEW,),
             ),
             {"validator", "reviewer"},
             {"builder", "manager", "runtime-verifier"},
@@ -291,7 +338,7 @@ def test_explanation_fixture_covers_manager_reviewer_validator_selection_and_non
     assert next(item for item in high.role_decisions if item.role_id == "reviewer").selected
 
 
-def test_profile_subtracts_irrelevant_role_and_requires_declared_capability():
+def test_profile_dimensions_are_descriptive_and_cannot_change_compiler_policy():
     profile = ProjectProfile(
         schema_version=FOUNDRY_SCHEMA_VERSION,
         project_name="synthetic",
@@ -308,6 +355,315 @@ def test_profile_subtracts_irrelevant_role_and_requires_declared_capability():
             },
         ],
     )
-    result = compile_role_assurance(profile, _operating_model(), _work(consequence="low"))
-    assert "reviewer" in result.excluded_roles
-    assert any(item.id == "capability-availability:not-in-registry" for item in result.unresolved_prerequisites)
+    result = compile_role_assurance(
+        profile,
+        _operating_model(),
+        _work(
+            consequence=ConsequenceClass.HIGH,
+            required_assurance_modes=(AssuranceMode.INDEPENDENT_REVIEW,),
+        ),
+    )
+    assert "reviewer" in result.selected_roles
+    assert not any(
+        item.id == "capability-availability:not-in-registry"
+        for item in result.unresolved_prerequisites
+    )
+
+
+def test_missing_capability_availability_stays_unknown_and_unresolved():
+    result = compile_role_assurance(
+        _profile(),
+        _operating_model(),
+        _work(
+            required_capabilities=("repository.write",),
+            capability_declarations=(),
+        ),
+    )
+    requirement = next(
+        item
+        for item in result.capability_requirements
+        if item.capability_id == "repository.write"
+    )
+    assert requirement.available is None
+    assert any(
+        item.id == "capability-availability:repository.write"
+        for item in result.unresolved_prerequisites
+    )
+
+
+def test_workflow_names_do_not_infer_roles_or_gates():
+    for workflow_kind in ("apply-api-analysis", "safety-sensitive-change"):
+        result = _compile(
+            _work(
+                workflow_kind=workflow_kind,
+                external_effect=ExternalEffectClass.READ_ONLY,
+            )
+        )
+        assert set(result.selected_roles) == {"validator"}
+        assert set(result.required_gates) == {"deterministic-validation"}
+
+
+def test_empty_assurance_profile_uses_canonical_fail_closed_floor():
+    model = _operating_model().model_copy(update={"assurance": AssuranceProfile()})
+    work = _work(
+        consequence=ConsequenceClass.CRITICAL,
+        coupling="unknown",
+        observability="unknown",
+        capability_declarations=tuple(
+            CapabilityDeclaration(
+                capability_id=capability_id,
+                available=True,
+                verified=True,
+            )
+            for capability_id in (
+                "repository.read",
+                "repository.write",
+                "validation.test",
+                "validation.review",
+                "work.read",
+                "work.write",
+                "runtime.verify",
+            )
+        ),
+    )
+    result = compile_role_assurance(_profile(), model, work)
+    expected = model.assurance.for_blast_radius(
+        BlastRadius(
+            consequence=ConsequenceClass.CRITICAL,
+            uncertainty=work.uncertainty,
+            coupling=work.coupling,
+            reversibility=work.reversibility,
+            observability=work.observability,
+        )
+    )
+    assert result.assurance_requirement == expected
+    assert result.assurance_requirement.minimum_evidence_strength is EvidenceStrength.DECISIVE
+    assert result.assurance_requirement.human_required
+
+
+def _bridge_work_item(**overrides: object) -> WorkItemContract:
+    values: dict[str, object] = {
+        "schema_version": FOUNDRY_SCHEMA_VERSION,
+        "id": "WI-BRIDGE-583",
+        "title": "Compile a bounded capability change",
+        "work_class": "capability",
+        "objective": "Exercise the compiled toolkit bridge",
+        "current_facts": ("synthetic repository",),
+        "scope": ("src",),
+        "out_of_scope": ("runtime",),
+        "acceptance_criteria": ("deterministic validation",),
+        "authority_class": ExternalEffectClass.REPOSITORY_WRITE,
+        "consequence_class": ConsequenceClass.LOW,
+        "required_evidence": ("deterministic-test",),
+        "stop_conditions": ("compiled contract mismatch",),
+    }
+    values.update(overrides)
+    return WorkItemContract(**values)
+
+
+def _bridge_compilation(**overrides: object) -> RoleAssuranceCompilation:
+    values: dict[str, object] = {
+        "workflow_kind": "capability",
+        "external_effect": ExternalEffectClass.REPOSITORY_WRITE,
+        "consequence": ConsequenceClass.LOW,
+        "required_evidence": (EvidenceClass.DETERMINISTIC_TEST,),
+        "capability_declarations": tuple(
+            CapabilityDeclaration(
+                capability_id=capability_id,
+                available=True,
+                verified=True,
+            )
+            for capability_id in (
+                "repository.read",
+                "repository.write",
+                "validation.test",
+            )
+        ),
+    }
+    values.update(overrides)
+    return compile_role_assurance(_profile(), _operating_model(), WorkCharacteristics(**values))
+
+
+def _bridge_lock(*, include_reviewer: bool = True) -> ToolkitLock:
+    return ToolkitLock(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        project_name="synthetic",
+        capability_ids=[
+            "repository.read",
+            "repository.write",
+            "validation.test",
+            *( ["validation.review"] if include_reviewer else []),
+        ],
+        skill_ids=[
+            "bounded-change",
+            "deterministic-test",
+            *( ["independent-review"] if include_reviewer else []),
+        ],
+        workflow_ids=["single-worker-validation"],
+        role_ids=["builder", "validator", *( ["reviewer"] if include_reviewer else [])],
+        permission_profile_ids=["repository-write-bounded"],
+        budget_profile_ids=["default"],
+    )
+
+
+def test_compilation_bridge_refuses_unresolved_prerequisites():
+    work_item = _bridge_work_item()
+    compilation = _bridge_compilation(capability_declarations=())
+    with pytest.raises(ToolkitResolutionError, match="prerequisites remain unresolved"):
+        resolve_task_toolkit_for_compilation(
+            work_item,
+            _bridge_lock(),
+            compilation,
+            registry=build_default_registry(),
+            permission_profiles=build_default_registry_permission_profiles(),
+            budget_profiles=build_default_registry_budget_profiles(),
+        )
+
+
+def test_compilation_bridge_refuses_a_missing_compiled_reviewer():
+    work_item = _bridge_work_item(consequence_class=ConsequenceClass.HIGH)
+    compilation = _bridge_compilation(
+        consequence=ConsequenceClass.HIGH,
+        required_evidence=(EvidenceClass.DETERMINISTIC_TEST,),
+        capability_declarations=tuple(
+            CapabilityDeclaration(
+                capability_id=capability_id,
+                available=True,
+                verified=True,
+            )
+            for capability_id in (
+                "repository.read",
+                "repository.write",
+                "validation.test",
+                "validation.review",
+            )
+        ),
+    )
+    with pytest.raises(ToolkitResolutionError, match="compiled roles.*reviewer"):
+        resolve_task_toolkit_for_compilation(
+            work_item,
+            _bridge_lock(include_reviewer=False),
+            compilation,
+            registry=build_default_registry(),
+            permission_profiles=build_default_registry_permission_profiles(),
+            budget_profiles=build_default_registry_budget_profiles(),
+        )
+
+
+def test_compilation_bridge_rejects_mismatched_work_item_identity():
+    work_item = _bridge_work_item()
+    compilation = _bridge_compilation().model_copy(update={"work_item_id": "WI-OTHER"})
+    with pytest.raises(ToolkitResolutionError, match="identity does not match"):
+        resolve_task_toolkit_for_compilation(
+            work_item,
+            _bridge_lock(),
+            compilation,
+            registry=build_default_registry(),
+            permission_profiles=build_default_registry_permission_profiles(),
+            budget_profiles=build_default_registry_budget_profiles(),
+        )
+
+
+def test_explainability_requires_structured_input_predicates_for_inclusions_and_exclusions():
+    result = _compile(_work(workflow_kind="plain-name"))
+    report = validate_compilation_explainability(result)
+    assert report.accepted(), report.findings
+    for entry in result.explanation_trace:
+        if entry.component in {"role", "assurance-mode", "assurance-evidence", "capability"}:
+            assert entry.causes
+            assert all(
+                cause.locator and cause.predicate and isinstance(cause.evaluated, bool)
+                for cause in entry.causes
+            )
+
+
+def test_explainability_rejects_generic_catch_all_causes():
+    result = _compile(_work(workflow_kind="plain-name"))
+    forged_trace = tuple(
+        entry.model_copy(
+            update={
+                "causes": (
+                    CompilationCause(
+                        locator="workflow",
+                        predicate="not required by workflow, assurance, authority, or role floor",
+                        evaluated=False,
+                    ),
+                )
+            }
+        )
+        if entry.component == "role" and entry.component_id == "manager"
+        else entry
+        for entry in result.explanation_trace
+    )
+    report = validate_compilation_explainability(
+        result.model_copy(update={"explanation_trace": forged_trace})
+    )
+    assert not report.accepted()
+    assert any("unstructured cause trace" in finding for finding in report.findings)
+
+
+def test_role_assurance_compilation_rejects_schema_0_1():
+    payload = _compile(_work()).model_dump()
+    payload["schema_version"] = "0.1"
+    with pytest.raises(Exception, match="introduced in schema_version"):
+        RoleAssuranceCompilation.model_validate(payload)
+
+
+def test_read_only_task_rejects_selected_role_write_scope_escape():
+    base_registry = build_default_registry()
+    escaped_role = RoleContract(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        id="scope-bearing-reader",
+        version="1.0.0",
+        description="Synthetic reader with an invalid write bound",
+        allowed_capabilities=["repository.read"],
+        write_scope=["../outside"],
+    )
+    inspection_skill = next(
+        item for item in base_registry.skills if item.id == "repository-inspection"
+    ).model_copy(
+        update={"roles": SkillRoleConstraint(allowed=["scope-bearing-reader"])}
+    )
+    investigation_workflow = next(
+        item for item in base_registry.workflows if item.id == "investigator-synthesis"
+    ).model_copy(update={"required_roles": ["scope-bearing-reader"]})
+    registry = base_registry.model_copy(
+        update={
+            "roles": [*base_registry.roles, escaped_role],
+            "skills": [
+                inspection_skill
+                if item.id == "repository-inspection"
+                else item
+                for item in base_registry.skills
+            ],
+            "workflows": [
+                investigation_workflow
+                if item.id == "investigator-synthesis"
+                else item
+                for item in base_registry.workflows
+            ],
+        }
+    )
+    lock = ToolkitLock(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        project_name="synthetic",
+        capability_ids=["repository.read", "inspection.read"],
+        skill_ids=["repository-inspection"],
+        workflow_ids=["investigator-synthesis"],
+        role_ids=["scope-bearing-reader"],
+        permission_profile_ids=["read-only"],
+        budget_profile_ids=["default"],
+    )
+    work_item = _bridge_work_item(
+        id="WI-READONLY-SCOPE",
+        work_class="discovery",
+        authority_class=ExternalEffectClass.READ_ONLY,
+    )
+    with pytest.raises(ToolkitResolutionError, match="unusable write scope"):
+        resolve_task_toolkit_for_work_item(
+            work_item,
+            lock,
+            registry=registry,
+            permission_profiles=build_default_registry_permission_profiles(),
+            budget_profiles=build_default_registry_budget_profiles(),
+        )

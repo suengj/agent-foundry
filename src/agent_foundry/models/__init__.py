@@ -77,6 +77,7 @@ from agent_foundry.models.execution import (
 from agent_foundry.models.compiler import (
     AssuranceDecision,
     CapabilityDeclaration,
+    CompilationCause,
     CompilationExplanationReport,
     CompilationTraceEntry,
     CompiledCapabilityRequirement,
@@ -270,6 +271,7 @@ __all__ = [
     "CapabilityRegistry",
     "CapabilitySpec",
     "CapabilityDeclaration",
+    "CompilationCause",
     "CapabilityUnit",
     "ClassificationFinding",
     "CompiledAuthority",
