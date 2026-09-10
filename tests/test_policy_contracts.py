@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 import pytest
 from pathlib import Path
 from pydantic import ValidationError
@@ -245,6 +246,97 @@ def test_explicit_case_matrix_keeps_control_strength_proportional(
         assert obligation.preview_required and obligation.read_back_required
 
 
+def test_permission_profile_is_a_real_compiled_authority_bound() -> None:
+    from agent_foundry.compile.authority import compute_compiled_authority
+    from agent_foundry.models import (
+        CapabilityRegistry,
+        CapabilitySpec,
+        ProjectAccess,
+        ProjectAssurance,
+        ProjectExecution,
+        ProjectImpact,
+        ProjectInfo,
+        ProjectManifest,
+        ProjectState,
+        RoleContract,
+        TaskToolkit,
+        WorkItemContract,
+    )
+
+    manifest = ProjectManifest(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        project=ProjectInfo(name="permission-bound"),
+        state=ProjectState(),
+        impact=ProjectImpact(external_effect=ExternalEffectClass.PUBLICATION),
+        execution=ProjectExecution(),
+        assurance=ProjectAssurance(),
+        access=ProjectAccess(),
+        authority={"write_scope": ["src"]},
+    )
+    work_item = WorkItemContract(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        id="WI-PERMISSION-BOUND",
+        title="Exercise permission intersection",
+        work_class="capability",
+        objective="Prove the permission profile reaches compilation",
+        current_facts=["compiler is the authority chokepoint"],
+        scope=["src"],
+        out_of_scope=["runtime"],
+        acceptance_criteria=["permission narrowing narrows compiled authority"],
+        authority_class=ExternalEffectClass.PUBLICATION,
+        consequence_class="low",
+        required_evidence=["deterministic-test"],
+        stop_conditions=["profile is not consumed"],
+    )
+    role = RoleContract(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        id="writer",
+        version="1.0.0",
+        description="Synthetic write-capable role for the chokepoint test",
+        allowed_capabilities=["publish-capability"],
+        write_scope=["src"],
+    )
+    registry = CapabilityRegistry(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        foundry_compat=">=0.2,<0.3",
+        capabilities=[
+            CapabilitySpec(
+                schema_version=FOUNDRY_SCHEMA_VERSION,
+                id="publish-capability",
+                version="1.0.0",
+                description="Synthetic capability that permits the broad effect",
+                min_external_effect=ExternalEffectClass.PUBLICATION,
+            )
+        ],
+        roles=[role],
+    )
+    task_toolkit = TaskToolkit(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        work_item_id=work_item.id,
+        capability_ids=["publish-capability"],
+    )
+    broad = PermissionProfile(
+        id="broad",
+        external_effect=ExternalEffectClass.PUBLICATION,
+        write_requires=AuthorityRequirement.EXPLICIT_AUTHORITY,
+    )
+    narrow = PermissionProfile(
+        id="narrow",
+        external_effect=ExternalEffectClass.READ_ONLY,
+        write_requires=AuthorityRequirement.NONE,
+    )
+
+    broad_authority = compute_compiled_authority(
+        work_item, manifest, task_toolkit, role, broad, registry
+    )
+    narrow_authority = compute_compiled_authority(
+        work_item, manifest, task_toolkit, role, narrow, registry
+    )
+
+    assert broad_authority.external_effect is ExternalEffectClass.PUBLICATION
+    assert narrow_authority.external_effect is ExternalEffectClass.READ_ONLY
+
+
 def test_uncertainty_and_observability_raise_assurance_without_control_loss() -> None:
     low = AssuranceRequirement(
         blast_radius=_radius("low"),
@@ -270,6 +362,26 @@ def test_uncertainty_and_observability_raise_assurance_without_control_loss() ->
     )
     assert unknown.minimum_evidence_strength is EvidenceStrength.DECISIVE
     assert unknown.human_required and unknown.independent_review
+
+
+def test_assurance_profile_rejects_an_incomparable_cover_weakening() -> None:
+    strong_cover = AssuranceRequirement(
+        blast_radius=_radius("high"),
+        minimum_evidence_strength=EvidenceStrength.STRONG,
+        required_evidence=[EvidenceClass.DETERMINISTIC_TEST, EvidenceClass.INDEPENDENT_REVIEW],
+        required_modes=[AssuranceMode.DETERMINISTIC_TESTS, AssuranceMode.INDEPENDENT_REVIEW],
+        independent_review=True,
+        minimum_distinct_actors=2,
+    )
+    weak_cover = AssuranceRequirement(
+        blast_radius=_radius("low", uncertainty=Ambiguity.EXPLORATORY),
+        minimum_evidence_strength=EvidenceStrength.MODERATE,
+        required_evidence=[EvidenceClass.DETERMINISTIC_TEST],
+        required_modes=[AssuranceMode.DETERMINISTIC_TESTS],
+    )
+
+    with pytest.raises(ValidationError, match="effective assurance weakens"):
+        AssuranceProfile(requirements=[strong_cover, weak_cover])
 
 
 def test_compiler_does_not_advertise_an_unwired_decision_rights_bypass() -> None:
@@ -423,6 +535,17 @@ def test_context_skill_precedence_requires_the_complete_canonical_order(preceden
         ContextSkillPolicy(non_overridable=[PolicySource.HUMAN])
 
 
+def test_context_skill_non_overridable_set_rejects_supersets() -> None:
+    with pytest.raises(ValidationError, match="complete non-overridable set"):
+        ContextSkillPolicy(
+            non_overridable=[
+                PolicySource.HUMAN,
+                PolicySource.PROJECT,
+                PolicySource.POLICY,
+            ]
+        )
+
+
 def test_retry_policy_does_not_turn_missing_authority_into_retry_permission() -> None:
     with pytest.raises(ValidationError, match="not retryable"):
         RetryPolicy(
@@ -553,19 +676,41 @@ def test_governance_document_covers_the_canonical_policy_surface() -> None:
         line = next(
             line for line in schema_section.splitlines() if line.startswith(f"| `{name}` |")
         )
+
+        documented_fields: dict[str, str] = {}
+        for clause in line.split("|", 2)[2].rsplit("|", 1)[0].split(";"):
+            match = re.match(
+                r"\s*`?([a-z_][a-z0-9_]*)`?\s*(?:=|required\b)", clause
+            )
+            if match is None:
+                continue
+            field_name = match.group(1)
+            if "=" not in clause:
+                descriptor = "required"
+            else:
+                descriptor = clause.split("=", 1)[1].strip().rstrip("`")
+                if descriptor.startswith("required"):
+                    descriptor = "required"
+                elif descriptor.startswith("factory"):
+                    descriptor = "factory"
+            documented_fields[field_name] = descriptor
+
+        source_fields: dict[str, str] = {}
         for field_name, field in getattr(policy_models, name).model_fields.items():
-            assert f"`{field_name}`" in line or f"{field_name}=" in line, (name, field_name)
             if field.is_required():
-                assert "required" in line, (name, field_name)
+                descriptor = "required"
             elif field.default_factory is not None:
-                assert f"{field_name}=factory" in line, (name, field_name)
+                descriptor = "factory"
             else:
                 default = field.default
                 if hasattr(default, "value"):
                     default = default.value
                 if default is None:
                     default = "null"
-                assert f"{field_name}={str(default).lower()}" in line, (name, field_name)
+                descriptor = str(default).lower()
+            source_fields[field_name] = descriptor
+
+        assert documented_fields == source_fields, (name, source_fields, documented_fields)
     for enum in (
         ExternalEffectClass,
         Autonomy,
@@ -584,5 +729,6 @@ def test_governance_document_covers_the_canonical_policy_surface() -> None:
             for line in schema_section.splitlines()
             if line.startswith(f"| `{enum.__name__}` |")
         )
-        for member in enum:
-            assert f"`{member.value}`" in line, (enum.__name__, member.value)
+        documented_values = set(re.findall(r"`([^`]+)`", line.split("|", 2)[2]))
+        source_values = {member.value for member in enum}
+        assert documented_values == source_values, (enum.__name__, source_values, documented_values)
