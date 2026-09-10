@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from agent_foundry.models.common import ExternalEffectClass
+from agent_foundry.models.common import ApprovalClass, ExternalEffectClass
 from agent_foundry.models.integrations import IntegrationSpec
-from agent_foundry.models.policy import PermissionProfile
+from agent_foundry.models.policy import AuthorityCeiling, PermissionProfile
 from agent_foundry.models.project import ProjectManifest
 from agent_foundry.models.registry import (
     CapabilityRegistry,
@@ -190,6 +190,7 @@ def validate_task_toolkit_against_ceiling(
     permission_profiles: list[PermissionProfile],
     *,
     integrations: list[IntegrationSpec] = [],
+    compiled_ceiling: AuthorityCeiling | None = None,
 ) -> None:
     """Validate a finished task toolkit against pinned profile and work-item authority."""
     profile_by_id = {profile.id: profile for profile in permission_profiles}
@@ -211,6 +212,12 @@ def validate_task_toolkit_against_ceiling(
         )
 
     ceiling = tighten_ceiling(work_item.authority_class, pinned_profile.external_effect)
+    if compiled_ceiling is not None:
+        if compiled_ceiling.approval_class is ApprovalClass.REFUSED:
+            raise ToolkitResolutionError(
+                "compiled authority ceiling refuses this task; toolkit cannot be selected"
+            )
+        ceiling = tighten_ceiling(ceiling, compiled_ceiling.max_external_effect)
     index = _index_registry(registry)
     capabilities_by_id = index["capabilities"]
     skills_by_id = index["skills"]

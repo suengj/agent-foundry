@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from agent_foundry.models.integrations import IntegrationHealth, IntegrationSpec
-from agent_foundry.models.policy import BudgetProfile, PermissionProfile
+from agent_foundry.models.compiler import RoleAssuranceCompilation
+from agent_foundry.models.policy import AuthorityCeiling, BudgetProfile, PermissionProfile
 from agent_foundry.models.project import ProjectManifest
 from agent_foundry.models.registry import CapabilityRegistry
 from agent_foundry.models.toolkit import TaskToolkit, ToolkitLock, ToolkitResolution
@@ -64,6 +65,7 @@ def resolve_task_toolkit_for_work_item(
     budget_profiles: list[BudgetProfile] | None = None,
     integrations: list[IntegrationSpec] = [],
     integration_health: list[IntegrationHealth] = [],
+    compiled_ceiling: AuthorityCeiling | None = None,
 ) -> TaskToolkit:
     """Resolve minimum Task Toolkit for one Work Item."""
     reg = registry or build_default_registry()
@@ -85,6 +87,32 @@ def resolve_task_toolkit_for_work_item(
         budget_profiles=budgets,
         integrations=integrations,
         integration_health=integration_health,
+        compiled_ceiling=compiled_ceiling,
+    )
+
+
+def resolve_task_toolkit_for_compilation(
+    work_item: WorkItemContract,
+    project_lock: ToolkitLock,
+    compilation: RoleAssuranceCompilation,
+    *,
+    registry: CapabilityRegistry | None = None,
+    permission_profiles: list[PermissionProfile] | None = None,
+    budget_profiles: list[BudgetProfile] | None = None,
+    integrations: list[IntegrationSpec] = [],
+    integration_health: list[IntegrationHealth] = [],
+) -> TaskToolkit:
+    """Resolve a task toolkit while enforcing a SUE-583 compiled ceiling."""
+
+    return resolve_task_toolkit_for_work_item(
+        work_item,
+        project_lock,
+        registry=registry,
+        permission_profiles=permission_profiles,
+        budget_profiles=budget_profiles,
+        integrations=integrations,
+        integration_health=integration_health,
+        compiled_ceiling=compilation.authority_ceiling,
     )
 
 
