@@ -175,6 +175,35 @@ class AssuranceMode(StrEnum):
     HUMAN_ACCEPTANCE = "human-acceptance"
 
 
+class EvidenceStrength(StrEnum):
+    """Minimum strength of evidence required by an assurance profile."""
+
+    NONE = "none"
+    WEAK = "weak"
+    MODERATE = "moderate"
+    STRONG = "strong"
+    DECISIVE = "decisive"
+
+
+class Coupling(StrEnum):
+    """How many independently-owned surfaces an outcome can affect."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+    UNKNOWN = "unknown"
+
+
+class CorrectnessObservability(StrEnum):
+    """How directly correctness can be observed after a change."""
+
+    HIGH = "high"
+    PARTIAL = "partial"
+    LOW = "low"
+    UNKNOWN = "unknown"
+
+
 class Ambiguity(StrEnum):
     PROCEDURAL = "procedural"
     BOUNDED_JUDGMENT = "bounded-judgment"
@@ -207,6 +236,49 @@ class AuthorityRequirement(StrEnum):
     EXPLICIT_AUTHORITY = "explicit-authority"
     BOUNDED_POLICY = "bounded-policy"
     NONE = "none"
+
+
+class ApprovalClass(StrEnum):
+    """What may happen without a new human/project-owner decision."""
+
+    AUTOMATIC = "automatic"
+    APPROVAL_REQUIRED = "approval-required"
+    REFUSED = "refused"
+
+
+class PolicySource(StrEnum):
+    """Precedence layers for policy, context, and Skill declarations."""
+
+    HUMAN = "human"
+    PROJECT = "project"
+    POLICY = "policy"
+    WORK_ITEM = "work-item"
+    ROLE = "role"
+    CONTEXT = "context"
+    SKILL = "skill"
+    INFERENCE = "inference"
+    CREDENTIAL = "credential"
+
+
+class ControlTrigger(StrEnum):
+    """Typed causes for retry, stop, escalation, and human-required controls."""
+
+    AUTHORITY_UNKNOWN = "authority-unknown"
+    POLICY_CONFLICT = "policy-conflict"
+    REQUIRED_EVIDENCE_MISSING = "required-evidence-missing"
+    VALIDATION_FAILED = "validation-failed"
+    REVIEW_FAILED = "review-failed"
+    EXTERNAL_STATE_UNOBSERVABLE = "external-state-unobservable"
+    ROLLBACK_REQUIRED = "rollback-required"
+    BUDGET_EXHAUSTED = "budget-exhausted"
+    CREDENTIAL_UNAVAILABLE = "credential-unavailable"
+
+
+class RestorationTarget(StrEnum):
+    """Allowed restoration target for a governed mutation."""
+
+    NONE = "none"
+    PRIOR_ADOPTED_POLICY_VERSION = "prior-adopted-policy-version"
 
 
 class WorkClass(StrEnum):

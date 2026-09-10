@@ -1,0 +1,100 @@
+schema_version: "0.2"
+id: bounded-contract-work
+version: 1.0.0
+description: Generic bounded operating model
+project_profile_ref: profile://generic/rev-1
+constraints:
+  max_external_effect: repository-write
+  max_autonomy: approved-apply
+  preview_required: true
+  unknown_authority: refused
+  unknown_impact_requires_human: true
+decision_rights:
+  schema_version: "0.2"
+  authority_ceilings:
+    - consequence: low
+      max_external_effect: repository-write
+      max_autonomy: bounded-external-write
+      approval_class: automatic
+    - consequence: high
+      max_external_effect: repository-write
+      max_autonomy: approved-apply
+      approval_class: approval-required
+      policy_evidence_refs:
+        - policy:high-approval
+  unknown_authority: refused
+assurance:
+  requirements:
+    - blast_radius:
+        consequence: low
+        uncertainty: procedural
+        coupling: low
+        reversibility: trivial
+        observability: high
+      minimum_evidence_strength: moderate
+      required_evidence:
+        - deterministic-test
+      required_modes:
+        - deterministic-tests
+      independent_review: false
+      human_required: false
+      minimum_distinct_actors: 1
+    - blast_radius:
+        consequence: high
+        uncertainty: design-trade-off
+        coupling: high
+        reversibility: rollback-required
+        observability: partial
+      minimum_evidence_strength: strong
+      required_evidence:
+        - deterministic-test
+        - independent-review
+      required_modes:
+        - deterministic-tests
+        - independent-review
+      independent_review: true
+      human_required: false
+      minimum_distinct_actors: 2
+role_separation:
+  required_roles:
+    - builder
+  independent_review_required: false
+  forbid_self_approval: true
+  minimum_distinct_actors: 1
+  reviewer_roles: []
+retry_policy:
+  max_attempts: 1
+  retryable_triggers:
+    - validation-failed
+stop_conditions:
+  - id: stop-unknown-authority
+    trigger: authority-unknown
+    reason: Stop when authority cannot be determined.
+escalation_conditions:
+  - id: escalate-missing-evidence
+    trigger: required-evidence-missing
+    reason: Escalate missing required evidence.
+human_required_conditions: []
+context_skill_policy:
+  precedence:
+    - human
+    - project
+    - policy
+    - work-item
+    - role
+    - context
+    - skill
+    - inference
+    - credential
+  non_overridable:
+    - human
+    - project
+  overrides: []
+  credential_availability_grants_authority: false
+mutation_obligations:
+  - external_effect: read-only
+    preview_required: true
+    apply_approval: approval-required
+    rollback_required: false
+    restoration_target: none
+    read_back_required: false
