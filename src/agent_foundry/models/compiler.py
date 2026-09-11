@@ -228,7 +228,12 @@ class CompilationPredicate(FoundryModel):
 
 
 class CompilationCause(FoundryModel):
-    """One independently inspectable compiler input/policy evaluation."""
+    """One independently inspectable compiler input/policy evaluation.
+
+    For a capability, ``consequence`` describes the causal requirement and is
+    ``selected`` independently of readiness fields such as availability and
+    authorization.
+    """
 
     locator: CompilationInputLocator
     predicate: CompilationPredicate
@@ -237,7 +242,13 @@ class CompilationCause(FoundryModel):
 
 
 class CompiledCapabilityRequirement(FoundryModel):
-    """One logical capability requirement and its independently tracked statuses."""
+    """One logical capability requirement and its independently tracked statuses.
+
+    ``minimum_external_effect`` is validated against the retained minimal
+    ``canonical_capability_effects`` anchor. A capability cause describes why
+    the capability is required, so its consequence is ``selected`` even when
+    availability or authorization leaves the capability unresolved.
+    """
 
     capability_id: str
     declared: bool
@@ -288,7 +299,10 @@ class UnresolvedPrerequisite(FoundryModel):
 
 
 class LogicalRoleTopology(FoundryModel):
-    """Minimum logical responsibility topology, not a process or agent graph."""
+    """Minimum logical responsibility topology, not a process or agent graph.
+
+    The wire representation of ``required_roles`` is duplicate-free.
+    """
 
     selected_roles: tuple[str, ...] = Field(default_factory=tuple)
     excluded_roles: tuple[str, ...] = Field(default_factory=tuple)
@@ -309,6 +323,12 @@ class LogicalRoleTopology(FoundryModel):
                 "LogicalRoleTopology: required_roles must be a subset of selected_roles: "
                 + ", ".join(sorted(missing_required))
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_required_roles_are_unique(self) -> "LogicalRoleTopology":
+        if len(self.required_roles) != len(set(self.required_roles)):
+            raise ValueError("LogicalRoleTopology: required_roles must not contain duplicates")
         return self
 
 
@@ -338,18 +358,22 @@ class RoleAssuranceCompilation(VersionedContract):
 
     SUE-583 guarantees deterministic compilation and structural/internal
     consistency for the emitted assurance floors, required gates, selected and
-    excluded role topology (including its deterministic edges), role and
-    assurance selection flags, capability declaration statuses, authority
-    dimensions and ``policy_evidence_refs``, and prerequisite/escalation
-    identities, triggers, causes, reasons, and actions. Cause records resolve to
-    typed retained inputs and are recomputed; each component-local role,
-    assurance, and capability cause tuple must equal its corresponding trace
-    tuple. A missing applicable DecisionRights ceiling remains a typed refusal
-    with ``authority-refused``.
-    The retained ``canonical_*`` fields are trusted internal-consistency
-    anchors, not authenticity evidence for an externally persisted artifact;
-    canonical-origin binding belongs to SUE-596 provenance / ExecutionBundle
-    lineage.
+    excluded role topology (including its deterministic edges and required-role
+    multiplicity), role and assurance selection flags, capability declaration
+    statuses and minimum effects, authority dimensions and
+    ``policy_evidence_refs``, and prerequisite/escalation identities, triggers,
+    causes, reasons, and actions. Cause records resolve to typed retained inputs
+    and are recomputed; each component-local role, assurance, and capability
+    cause tuple must equal its corresponding trace tuple, and duplicated
+    explanation metadata must agree with its canonical source. A missing
+    applicable DecisionRights ceiling remains a typed refusal with
+    ``authority-refused``.
+    The retained ``canonical_*`` anchors, including the minimal capability
+    id-to-effect projection, are trusted validation inputs inside this persisted
+    compilation contract. SUE-583 validates all emitted/derived fields against
+    those anchors and retained structured inputs; it does not authenticate the
+    anchors themselves. Anchor authenticity and tamper-resistant canonical-origin
+    binding belong to SUE-596 provenance / ExecutionBundle lineage.
     """
 
     __requires_current_schema__ = True
@@ -377,6 +401,10 @@ class RoleAssuranceCompilation(VersionedContract):
     # Internal-consistency anchor for the emitted capability trace. This field
     # is not proof of canonical capability-registry origin for persistence.
     canonical_capability_ids: tuple[str, ...]
+    # Minimal internal-consistency anchor for each emitted capability effect;
+    # this retains no registry state and is trusted validation input, not
+    # authenticity evidence. SUE-596 owns anchor provenance.
+    canonical_capability_effects: tuple[tuple[str, ExternalEffectClass], ...]
     topology: LogicalRoleTopology
     assurance_requirement: AssuranceRequirement
     authority_ceiling: AuthorityCeiling
@@ -438,6 +466,18 @@ class RoleAssuranceCompilation(VersionedContract):
         if len(self.canonical_capability_ids) != len(set(self.canonical_capability_ids)):
             raise ValueError(
                 "RoleAssuranceCompilation: canonical_capability_ids must not contain duplicates"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_canonical_capability_effects_are_unique(self) -> "RoleAssuranceCompilation":
+        capability_ids = tuple(
+            capability_id for capability_id, _ in self.canonical_capability_effects
+        )
+        if len(capability_ids) != len(set(capability_ids)):
+            raise ValueError(
+                "RoleAssuranceCompilation: canonical_capability_effects must not contain "
+                "duplicate capability ids"
             )
         return self
 
@@ -809,21 +849,34 @@ def _declared_capability(
     )
 
 
+def _canonical_capability_effects(
+    compilation: RoleAssuranceCompilation,
+) -> dict[str, ExternalEffectClass]:
+    """Return the trusted minimal capability-id-to-effect validation anchor."""
+
+    return dict(compilation.canonical_capability_effects)
+
+
 def _expected_capability_authorization(
     compilation: RoleAssuranceCompilation,
     requirement: CompiledCapabilityRequirement,
     authority: tuple[ConsequenceClass, ExternalEffectClass, Autonomy, ApprovalClass],
 ) -> bool:
-    """Recompute capability authorization without trusting emitted status."""
+    """Recompute capability authorization from the trusted effect anchor."""
 
     _, authority_effect, _, approval = authority
+    minimum_external_effect = _canonical_capability_effects(compilation).get(
+        requirement.capability_id
+    )
+    if minimum_external_effect is None:
+        return False
     effective_effect = min(
         authority_effect,
         compilation.work.external_effect,
         key=_EFFECT_RANK.__getitem__,
     )
     within_ceiling = (
-        _EFFECT_RANK[requirement.minimum_external_effect]
+        _EFFECT_RANK[minimum_external_effect]
         <= _EFFECT_RANK[effective_effect]
         and approval is not ApprovalClass.REFUSED
     )
@@ -837,7 +890,11 @@ def _validate_retained_compilation_state(
     compilation: RoleAssuranceCompilation,
     findings: list[str],
 ) -> None:
-    """Close the explicitly enumerated SUE-583 retained output state."""
+    """Close SUE-583 output fields against trusted retained validation inputs.
+
+    The capability effect projection is intentionally only an id-to-effect
+    anchor; it is not a retained registry or an authenticity mechanism.
+    """
 
     expected_assurance = _expected_assurance_requirement(compilation)
     actual_assurance = compilation.assurance_requirement
@@ -909,6 +966,10 @@ def _validate_retained_compilation_state(
         )
     if compilation.topology.single_writer != compilation.work.single_writer:
         findings.append("topology single_writer does not match retained work")
+    if len(compilation.topology.required_roles) != len(
+        set(compilation.topology.required_roles)
+    ):
+        findings.append("topology.required_roles contains duplicates")
     expected_edges = _expected_topology_edges(compilation)
     if compilation.topology.edges != expected_edges:
         findings.append(
@@ -946,8 +1007,41 @@ def _validate_retained_compilation_state(
             f"retained compilation inputs {expected_policy_evidence_refs!r}"
         )
 
+    canonical_capability_effects = _canonical_capability_effects(compilation)
+    for capability_id, count in Counter(
+        capability_id for capability_id, _ in compilation.canonical_capability_effects
+    ).items():
+        if count > 1:
+            findings.append(f"duplicate canonical capability effect anchor {capability_id!r}")
+    for capability_id in sorted(
+        set(canonical_capability_effects) - set(compilation.canonical_capability_ids)
+    ):
+        findings.append(
+            f"canonical capability effect anchor {capability_id!r} is outside retained "
+            "canonical capability input"
+        )
+    for capability_id in sorted(
+        set(compilation.canonical_capability_ids) - set(canonical_capability_effects)
+    ):
+        findings.append(
+            f"canonical capability input {capability_id!r} has no canonical minimum "
+            "external effect anchor"
+        )
+
     requirement_by_id: dict[str, CompiledCapabilityRequirement] = {}
     for requirement in compilation.capability_requirements:
+        canonical_effect = canonical_capability_effects.get(requirement.capability_id)
+        if canonical_effect is None:
+            findings.append(
+                f"capability {requirement.capability_id!r} has no canonical minimum "
+                "external effect anchor"
+            )
+        elif requirement.minimum_external_effect is not canonical_effect:
+            findings.append(
+                f"capability {requirement.capability_id!r} minimum_external_effect "
+                f"{requirement.minimum_external_effect.value!r} does not match its "
+                f"canonical effect anchor {canonical_effect.value!r}"
+            )
         if requirement.capability_id not in requirement_by_id:
             requirement_by_id[requirement.capability_id] = requirement
 
@@ -1022,6 +1116,18 @@ def _validate_retained_compilation_state(
             findings.append(
                 f"{state} required escalation {escalation_id!r} for retained compilation inputs"
             )
+    retained_condition_ids = [condition.id for condition in compilation.escalation_conditions]
+    for condition_id, count in Counter(retained_condition_ids).items():
+        if count > 1:
+            findings.append(f"duplicate retained custom escalation condition {condition_id!r}")
+        if condition_id in _BUILTIN_ESCALATION_TEXT:
+            findings.append(
+                f"retained custom escalation condition {condition_id!r} conflicts with a "
+                "built-in escalation id"
+            )
+    for condition_id in sorted(set(retained_condition_ids)):
+        if condition_id not in actual_escalations:
+            findings.append(f"missing retained custom escalation {condition_id!r}")
     expected_prerequisite_escalations = {
         f"escalate:{item_id}" for item_id in expected_prerequisites
     }
@@ -1185,17 +1291,10 @@ def _resolve_compilation_input(
         ),
     }
     if path is CompilationInputPath.CAPABILITY_MIN_EXTERNAL_EFFECT:
-        requirement = next(
-            (
-                requirement
-                for requirement in compilation.capability_requirements
-                if requirement.capability_id == item
-            ),
-            None,
-        )
-        if requirement is None:
+        canonical_effect = _canonical_capability_effects(compilation).get(item)
+        if canonical_effect is None:
             return _MISSING_COMPILATION_INPUT, None
-        return requirement.minimum_external_effect, ExternalEffectClass
+        return canonical_effect, ExternalEffectClass
     return values.get(path, (_MISSING_COMPILATION_INPUT, None))
 
 
@@ -1632,7 +1731,11 @@ def _canonical_material_selections(
     compilation: RoleAssuranceCompilation,
     findings: list[str],
 ) -> dict[tuple[str, str], bool]:
-    """Derive material trace keys and selection from canonical compiler state."""
+    """Derive material trace keys from trusted canonical compiler state.
+
+    Capability causal consequences remain ``selected`` even when readiness
+    selection is false.
+    """
 
     expected: dict[tuple[str, str], bool] = {}
     topology = compilation.topology
@@ -1650,6 +1753,8 @@ def _canonical_material_selections(
         findings.append(
             "compiled excluded role topology does not match retained assurance/work inputs"
         )
+    if len(topology.required_roles) != len(set(topology.required_roles)):
+        findings.append("compiled topology.required_roles contains duplicates")
     if set(topology.required_roles) != expected_required_roles:
         findings.append(
             "compiled required role topology does not match retained assurance/work inputs"
@@ -1800,11 +1905,16 @@ def validate_compilation_explainability(
     deterministic prerequisite/escalation reasons and actions, retained custom
     escalation reasons, refusal/approval closure against retained policy/work
     inputs, and capability authorization plus prerequisite/escalation closure
-    against the effective ceiling. The retained
-    ``canonical_*`` fields are internal-consistency anchors trusted as part of
-    the artifact, not authenticity evidence that an externally persisted,
-    hand-edited artifact has canonical origin. That binding belongs to SUE-596
-    provenance / ExecutionBundle lineage.
+    against the effective ceiling and the retained minimal capability-effect
+    anchor. Duplicated role/assurance explanation metadata must match its trace;
+    closed deterministic rationales and capability/authority trace metadata are
+    recomputed where retained state supplies the source. The retained
+    ``canonical_*`` fields are trusted validation inputs inside the persisted
+    artifact, not authenticity evidence that an externally persisted, hand-edited
+    artifact has canonical origin. SUE-583 validates all emitted/derived fields
+    against those anchors and retained inputs; anchor authenticity and
+    tamper-resistant binding belong to SUE-596 provenance / ExecutionBundle
+    lineage.
     """
 
     findings: list[str] = []
@@ -1826,24 +1936,100 @@ def validate_compilation_explainability(
 
     for decision in compilation.role_decisions:
         trace_entry = material.get(("role", decision.role_id))
-        if trace_entry is not None and decision.causes != trace_entry.causes:
+        expected_rationale = (
+            "selected for the minimum logical responsibility topology"
+            if expected.get(("role", decision.role_id), decision.selected)
+            else "materially excluded from the minimum topology"
+        )
+        if decision.rationale != expected_rationale:
+            findings.append(
+                f"role decision {decision.role_id!r} rationale does not match retained "
+                "topology"
+            )
+        if trace_entry is None:
+            continue
+        if decision.causes != trace_entry.causes:
             findings.append(
                 f"role decision {decision.role_id!r} causes do not match its "
                 "canonical explanation trace"
             )
+        if decision.rationale != trace_entry.rationale:
+            findings.append(
+                f"role decision {decision.role_id!r} rationale does not match its "
+                "canonical explanation trace"
+            )
+        if decision.policy_refs != trace_entry.policy_refs:
+            findings.append(
+                f"role decision {decision.role_id!r} policy_refs do not match its "
+                "canonical explanation trace"
+            )
+        if trace_entry.rationale != expected_rationale:
+            findings.append(
+                f"role trace {decision.role_id!r} rationale does not match retained "
+                "topology"
+            )
     for decision in compilation.assurance_decisions:
         trace_entry = material.get((decision.component, decision.component_id))
-        if trace_entry is not None and decision.causes != trace_entry.causes:
+        expected_rationale = (
+            "required by compiled assurance floor"
+            if expected.get((decision.component, decision.component_id), decision.selected)
+            else "not required by compiled assurance floor"
+        )
+        if decision.rationale != expected_rationale:
+            findings.append(
+                f"assurance decision {(decision.component, decision.component_id)!r} "
+                "rationale does not match retained assurance"
+            )
+        if trace_entry is None:
+            continue
+        if decision.causes != trace_entry.causes:
             findings.append(
                 f"assurance decision {(decision.component, decision.component_id)!r} "
                 "causes do not match its canonical explanation trace"
             )
+        if decision.rationale != trace_entry.rationale:
+            findings.append(
+                f"assurance decision {(decision.component, decision.component_id)!r} "
+                "rationale does not match its canonical explanation trace"
+            )
+        if decision.policy_refs != trace_entry.policy_refs:
+            findings.append(
+                f"assurance decision {(decision.component, decision.component_id)!r} "
+                "policy_refs do not match its canonical explanation trace"
+            )
+        if trace_entry.rationale != expected_rationale:
+            findings.append(
+                f"assurance trace {(decision.component, decision.component_id)!r} "
+                "rationale does not match retained assurance"
+            )
     for requirement in compilation.capability_requirements:
         trace_entry = material.get(("capability", requirement.capability_id))
-        if trace_entry is not None and requirement.causes != trace_entry.causes:
+        if trace_entry is None:
+            continue
+        if requirement.causes != trace_entry.causes:
             findings.append(
                 f"capability requirement {requirement.capability_id!r} causes do not "
                 "match its canonical explanation trace"
+            )
+        expected_authorized = _expected_capability_authorization(
+            compilation,
+            requirement,
+            _expected_authority_dimensions(compilation),
+        )
+        expected_rationale = (
+            "required capability is within the compiled authority ceiling"
+            if expected_authorized
+            else "required capability is not authorized by the compiled ceiling"
+        )
+        if trace_entry.rationale != expected_rationale:
+            findings.append(
+                f"capability trace {requirement.capability_id!r} rationale does not "
+                "match retained capability authorization"
+            )
+        if trace_entry.policy_refs != ("compiled-authority-ceiling",):
+            findings.append(
+                f"capability trace {requirement.capability_id!r} policy_refs do not "
+                "match the compiled authority policy"
             )
 
     allowed_paths = {
@@ -1918,6 +2104,18 @@ def validate_compilation_explainability(
                 f"{component} {component_id!r} records selected={entry.selected!r}, expected "
                 f"{canonical_selected!r} from canonical compilation state"
             )
+        if component == "authority-ceiling":
+            if entry.rationale != (
+                "effective ceiling is the intersection of DecisionRights and "
+                "OperatingConstraints"
+            ):
+                findings.append(
+                    "authority trace rationale does not match retained authority inputs"
+                )
+            if entry.policy_refs != ("decision-rights", "operating-constraints"):
+                findings.append(
+                    "authority trace policy_refs do not match retained authority policy"
+                )
         for cause in entry.causes:
             if not isinstance(cause.locator, CompilationInputLocator):
                 findings.append(
@@ -2078,18 +2276,17 @@ def validate_compilation_explainability(
                     f"{cause.evaluated!r}, but recomputation produced {predicate_result!r}"
                 )
                 continue
-            if component != "capability":
-                expected_consequence = (
-                    CompilationCauseConsequence.SELECTED
-                    if canonical_selected
-                    else CompilationCauseConsequence.EXCLUDED
+            expected_consequence = (
+                CompilationCauseConsequence.SELECTED
+                if component == "capability" or canonical_selected
+                else CompilationCauseConsequence.EXCLUDED
+            )
+            if cause.consequence is not expected_consequence:
+                findings.append(
+                    f"{component} {component_id!r} records consequence "
+                    f"{cause.consequence.value!r}, expected "
+                    f"{expected_consequence.value!r}"
                 )
-                if cause.consequence is not expected_consequence:
-                    findings.append(
-                        f"{component} {component_id!r} records consequence "
-                        f"{cause.consequence.value!r}, expected "
-                        f"{expected_consequence.value!r}"
-                    )
     return CompilationExplanationReport(valid=not findings, findings=tuple(findings))
 
 

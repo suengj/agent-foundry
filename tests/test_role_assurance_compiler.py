@@ -35,6 +35,7 @@ from agent_foundry.models import (
     ProjectProfile,
     Reversibility,
     RoleContract,
+    RoleSeparation,
     SkillRoleConstraint,
     RoleAssuranceCompilation,
     TaskToolkit,
@@ -742,6 +743,282 @@ def test_tool_availability_is_not_permission():
     assert any(item.id == "capability-authority:repository.write" for item in result.unresolved_prerequisites)
 
 
+def test_explainability_rejects_capability_effect_mismatch_against_minimal_anchor():
+    result = _compile(
+        _work(
+            workflow_kind="read-only-exact-sha-review",
+            external_effect=ExternalEffectClass.READ_ONLY,
+            required_capabilities=("repository.write",),
+        )
+    )
+    assert dict(result.canonical_capability_effects)["repository.write"] is (
+        ExternalEffectClass.REPOSITORY_WRITE
+    )
+    payload = result.model_dump(mode="json")
+    requirement = next(
+        item
+        for item in payload["capability_requirements"]
+        if item["capability_id"] == "repository.write"
+    )
+    requirement["minimum_external_effect"] = ExternalEffectClass.READ_ONLY.value
+    requirement["authorized"] = True
+    payload["unresolved_prerequisites"] = [
+        item
+        for item in payload["unresolved_prerequisites"]
+        if item["id"] != "capability-authority:repository.write"
+    ]
+    payload["escalations"] = [
+        item
+        for item in payload["escalations"]
+        if item["id"] != "escalate:capability-authority:repository.write"
+    ]
+    capability_trace = next(
+        item
+        for item in payload["explanation_trace"]
+        if item["component"] == "capability"
+        and item["component_id"] == "repository.write"
+    )
+    capability_trace["selected"] = True
+    capability_trace["rationale"] = "required capability is within the compiled authority ceiling"
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any(
+        "repository.write" in finding and "canonical effect anchor" in finding
+        for finding in report.findings
+    )
+
+
+def test_explainability_rejects_missing_capability_effect_anchor():
+    result = _compile(_work(workflow_kind="plain-name"))
+    payload = result.model_dump(mode="json")
+    payload["canonical_capability_effects"] = [
+        pair
+        for pair in payload["canonical_capability_effects"]
+        if pair[0] != "repository.read"
+    ]
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any(
+        "repository.read" in finding
+        and "no canonical minimum external effect anchor" in finding
+        for finding in report.findings
+    )
+
+
+def test_explainability_rejects_excluded_consequence_on_selected_available_capability():
+    result = _compile(
+        _work(
+            external_effect=ExternalEffectClass.READ_ONLY,
+            required_capabilities=("repository.read",),
+        )
+    )
+    requirement = next(
+        item for item in result.capability_requirements if item.capability_id == "repository.read"
+    )
+    assert requirement.available is True
+    assert requirement.authorized is True
+    payload = result.model_dump(mode="json")
+    for container in (payload["capability_requirements"], payload["explanation_trace"]):
+        item = next(
+            item
+            for item in container
+            if item.get("capability_id", item.get("component_id")) == "repository.read"
+        )
+        item["causes"][0]["consequence"] = CompilationCauseConsequence.EXCLUDED.value
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any(
+        "capability 'repository.read' records consequence" in finding
+        and "expected 'selected'" in finding
+        for finding in report.findings
+    )
+
+
+def test_explainability_rejects_excluded_consequence_on_unmet_capability_requirement():
+    declarations = tuple(
+        declaration.model_copy(update={"available": False})
+        if declaration.capability_id == "repository.read"
+        else declaration
+        for declaration in _work().capability_declarations
+    )
+    result = _compile(
+        _work(
+            external_effect=ExternalEffectClass.READ_ONLY,
+            required_capabilities=("repository.read",),
+            capability_declarations=declarations,
+        )
+    )
+    requirement = next(
+        item for item in result.capability_requirements if item.capability_id == "repository.read"
+    )
+    assert requirement.available is False
+    assert requirement.authorized is True
+    capability_trace = next(
+        item
+        for item in result.explanation_trace
+        if item.component == "capability" and item.component_id == "repository.read"
+    )
+    assert capability_trace.selected is False
+    payload = result.model_dump(mode="json")
+    requirement_payload = next(
+        item
+        for item in payload["capability_requirements"]
+        if item["capability_id"] == "repository.read"
+    )
+    requirement_payload["causes"][0]["consequence"] = CompilationCauseConsequence.EXCLUDED.value
+    trace_payload = next(
+        item
+        for item in payload["explanation_trace"]
+        if item["component"] == "capability" and item["component_id"] == "repository.read"
+    )
+    trace_payload["causes"][0]["consequence"] = CompilationCauseConsequence.EXCLUDED.value
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any(
+        "capability 'repository.read' records consequence" in finding
+        and "expected 'selected'" in finding
+        for finding in report.findings
+    )
+
+
+def test_explainability_rejects_coherent_forged_role_rationale():
+    result = _compile(_work(workflow_kind="plain-name"))
+    assert next(item for item in result.role_decisions if item.role_id == "builder").selected
+    payload = result.model_dump(mode="json")
+    forged_rationale = "materially excluded from the minimum topology"
+    next(item for item in payload["role_decisions"] if item["role_id"] == "builder")[
+        "rationale"
+    ] = forged_rationale
+    next(
+        item
+        for item in payload["explanation_trace"]
+        if item["component"] == "role" and item["component_id"] == "builder"
+    )["rationale"] = forged_rationale
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any(
+        "role decision 'builder' rationale does not match retained topology" in finding
+        for finding in report.findings
+    )
+
+
+def test_explainability_rejects_mismatched_assurance_trace_policy_refs():
+    result = _compile(_work(workflow_kind="plain-name"))
+    payload = result.model_dump(mode="json")
+    next(
+        item
+        for item in payload["assurance_decisions"]
+        if item["component"] == "assurance-mode"
+        and item["component_id"] == AssuranceMode.DETERMINISTIC_TESTS.value
+    )["policy_refs"] = ["forged:policy"]
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any(
+        "assurance decision ('assurance-mode', 'deterministic-tests') policy_refs" in finding
+        for finding in report.findings
+    )
+
+
+def test_explainability_rejects_forged_capability_and_authority_trace_metadata():
+    result = _compile(_work(workflow_kind="plain-name"))
+    payload = result.model_dump(mode="json")
+    capability_trace = next(
+        item
+        for item in payload["explanation_trace"]
+        if item["component"] == "capability" and item["component_id"] == "repository.read"
+    )
+    capability_trace["rationale"] = "required capability is not authorized by the compiled ceiling"
+    capability_trace["policy_refs"] = ["forged:policy"]
+    authority_trace = next(
+        item
+        for item in payload["explanation_trace"]
+        if item["component"] == "authority-ceiling"
+    )
+    authority_trace["rationale"] = "authority is ignored"
+    authority_trace["policy_refs"] = ["forged:policy"]
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any("capability trace 'repository.read' rationale" in finding for finding in report.findings)
+    assert any("capability trace 'repository.read' policy_refs" in finding for finding in report.findings)
+    assert any("authority trace rationale" in finding for finding in report.findings)
+    assert any("authority trace policy_refs" in finding for finding in report.findings)
+
+
+def test_explainability_rejects_deleted_retained_custom_escalation():
+    condition = ControlCondition(
+        id="synthetic-policy-conflict-deletion",
+        trigger=ControlTrigger.POLICY_CONFLICT,
+        reason="retained canonical reason",
+    )
+    operating_model = _operating_model().model_copy(
+        update={"escalation_conditions": (condition,)}
+    )
+    result = compile_role_assurance(_profile(), operating_model, _work())
+    payload = result.model_dump(mode="json")
+    payload["escalations"] = [
+        item for item in payload["escalations"] if item["id"] != condition.id
+    ]
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any(
+        "missing retained custom escalation 'synthetic-policy-conflict-deletion'" in finding
+        for finding in report.findings
+    )
+
+
+def test_explainability_rejects_duplicate_topology_required_roles():
+    operating_model = _operating_model().model_copy(
+        update={"role_separation": RoleSeparation(required_roles=("builder",))}
+    )
+    result = compile_role_assurance(_profile(), operating_model, _work(workflow_kind="plain-name"))
+    assert result.topology.required_roles == ("builder",)
+    forged_topology = result.topology.model_copy(
+        update={"required_roles": ("builder", "builder")}
+    )
+    forged = result.model_copy(update={"topology": forged_topology})
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any("topology.required_roles contains duplicates" in finding for finding in report.findings)
+    assert any("compiled topology.required_roles contains duplicates" in finding for finding in report.findings)
+
+
+def test_role_assurance_compilation_rejects_duplicate_topology_required_roles_wire():
+    operating_model = _operating_model().model_copy(
+        update={"role_separation": RoleSeparation(required_roles=("builder",))}
+    )
+    result = compile_role_assurance(_profile(), operating_model, _work(workflow_kind="plain-name"))
+    payload = result.model_dump(mode="json")
+    payload["topology"]["required_roles"] = ["builder", "builder"]
+
+    with pytest.raises(Exception, match="required_roles.*duplicates"):
+        RoleAssuranceCompilation.model_validate(payload)
+
+
 def test_task_toolkit_cannot_select_capability_above_compiled_ceiling():
     work = WorkItemContract(
         schema_version=FOUNDRY_SCHEMA_VERSION,
@@ -1435,6 +1712,10 @@ def test_role_assurance_compilation_rejects_duplicate_canonical_required_roles()
 
 def test_role_assurance_compilation_rejects_duplicate_canonical_capability_ids():
     _assert_duplicate_canonical_field_rejected("canonical_capability_ids")
+
+
+def test_role_assurance_compilation_rejects_duplicate_canonical_capability_effects():
+    _assert_duplicate_canonical_field_rejected("canonical_capability_effects")
 
 
 def test_explainability_rejects_persisted_role_identity_outside_canonical_input():

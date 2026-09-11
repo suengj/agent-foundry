@@ -701,6 +701,7 @@ def _capability_requirements(
     tuple[CompiledCapabilityRequirement, ...],
     tuple[UnresolvedPrerequisite, ...],
     tuple[str, ...],
+    tuple[tuple[str, ExternalEffectClass], ...],
 ]:
     role_caps = _role_capabilities(topology.selected_roles, registry)
     requested = set(work.required_capabilities)
@@ -709,10 +710,12 @@ def _capability_requirements(
     declarations = {item.capability_id: item for item in work.capability_declarations}
     requirements: list[CompiledCapabilityRequirement] = []
     unresolved: list[UnresolvedPrerequisite] = []
+    canonical_effects: list[tuple[str, ExternalEffectClass]] = []
     for capability_id in sorted(requested):
         spec = specs.get(capability_id)
         declaration = declarations.get(capability_id)
         minimum = spec.min_external_effect if isinstance(spec, CapabilitySpec) else ExternalEffectClass.PUBLICATION
+        canonical_effects.append((capability_id, minimum))
         task_effect_ceiling = _min_effect(authority.max_external_effect, work.external_effect)
         within_ceiling = (
             _EFFECT_RANK[minimum] <= _EFFECT_RANK[task_effect_ceiling]
@@ -805,7 +808,12 @@ def _capability_requirements(
                     ),
                 )
             )
-    return tuple(requirements), tuple(unresolved), tuple(sorted(requested))
+    return (
+        tuple(requirements),
+        tuple(unresolved),
+        tuple(sorted(requested)),
+        tuple(canonical_effects),
+    )
 
 
 def _escalations(
@@ -1034,7 +1042,12 @@ def compile_role_assurance(
         profile,
         reg,
     )
-    capability_requirements, missing_capabilities, canonical_capability_ids = _capability_requirements(
+    (
+        capability_requirements,
+        missing_capabilities,
+        canonical_capability_ids,
+        canonical_capability_effects,
+    ) = _capability_requirements(
         characteristics,
         topology,
         authority,
@@ -1088,6 +1101,7 @@ def compile_role_assurance(
         canonical_role_ids=_role_ids(reg),
         canonical_required_roles=operating_model.role_separation.required_roles,
         canonical_capability_ids=canonical_capability_ids,
+        canonical_capability_effects=canonical_capability_effects,
         topology=topology,
         assurance_requirement=assurance,
         authority_ceiling=authority,
