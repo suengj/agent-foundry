@@ -249,6 +249,12 @@ def validate_task_toolkit_against_ceiling(
                 "compiled authority ceiling refuses this task; toolkit cannot be selected"
             )
         ceiling = tighten_ceiling(ceiling, compiled_ceiling.max_external_effect)
+    if exceeds_permission_ceiling(task_profile.external_effect, ceiling):
+        raise ToolkitResolutionError(
+            f"task permission profile {task_profile_id!r} effect "
+            f"{task_profile.external_effect.value} exceeds effective task ceiling "
+            f"{ceiling.value}"
+        )
     index = _index_registry(registry)
     capabilities_by_id = index["capabilities"]
     skills_by_id = index["skills"]

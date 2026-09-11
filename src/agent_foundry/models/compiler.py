@@ -19,6 +19,7 @@ from agent_foundry.models.base import (
 )
 from agent_foundry.models.common import (
     Ambiguity,
+    ApprovalClass,
     AssuranceMode,
     Autonomy,
     ConsequenceClass,
@@ -29,7 +30,12 @@ from agent_foundry.models.common import (
     ExternalEffectClass,
     Reversibility,
 )
-from agent_foundry.models.policy import AssuranceRequirement, AuthorityCeiling, DecisionRights
+from agent_foundry.models.policy import (
+    AssuranceRequirement,
+    AuthorityCeiling,
+    DecisionRights,
+    OperatingConstraints,
+)
 
 
 class WorkCharacteristics(FoundryModel):
@@ -329,9 +335,11 @@ class RoleAssuranceCompilation(VersionedContract):
     SUE-583 guarantees deterministic compilation and structural/internal
     consistency of the emitted role, assurance, and authority trace: material
     components are covered, causes resolve to typed inputs and are recomputed
-    against retained compilation state, the authority consequence is checked
-    against retained canonical work consequence, and a missing applicable
-    DecisionRights ceiling remains a typed refusal with ``authority-refused``.
+    against retained compilation state, the authority dimensions and required
+    refusal escalation are checked against retained policy/work inputs, and
+    capability authorization and prerequisite closure are checked against the
+    effective ceiling. A missing applicable DecisionRights ceiling remains a
+    typed refusal with ``authority-refused``.
     The retained ``canonical_*`` fields are trusted internal-consistency
     anchors, not authenticity evidence for an externally persisted artifact;
     canonical-origin binding belongs to SUE-596 provenance / ExecutionBundle
@@ -344,6 +352,9 @@ class RoleAssuranceCompilation(VersionedContract):
     project_profile_ref: str | None = None
     work: WorkCharacteristics
     decision_rights: DecisionRights
+    # Minimum provider-neutral policy input needed to recompute the effective
+    # authority ceiling; this is trusted artifact state, not origin evidence.
+    operating_constraints: OperatingConstraints
     # Internal-consistency anchor for the emitted role trace. This retained field
     # is trusted artifact state, not authenticity evidence for canonical origin;
     # SUE-596 owns provenance / ExecutionBundle lineage.
@@ -420,6 +431,197 @@ class RoleAssuranceCompilation(VersionedContract):
 
 
 _MISSING_COMPILATION_INPUT = object()
+
+_EFFECT_RANK = {item: index for index, item in enumerate(ExternalEffectClass)}
+_AUTONOMY_RANK = {item: index for index, item in enumerate(Autonomy)}
+
+
+def _expected_authority_dimensions(
+    compilation: RoleAssuranceCompilation,
+) -> tuple[ConsequenceClass, ExternalEffectClass, Autonomy, ApprovalClass]:
+    """Recompute authority from the retained policy and work inputs."""
+
+    work = compilation.work
+    declared = compilation.decision_rights.ceiling_for(work.consequence)
+    if declared is None:
+        # A missing ceiling is a refusal, regardless of DecisionRights' unknown
+        # presentation setting. This is the compiler's typed fail-closed rule.
+        return (
+            work.consequence,
+            ExternalEffectClass.READ_ONLY,
+            Autonomy.SUGGEST,
+            ApprovalClass.REFUSED,
+        )
+
+    effect = min(
+        declared.max_external_effect,
+        compilation.operating_constraints.max_external_effect,
+        key=_EFFECT_RANK.__getitem__,
+    )
+    autonomy = min(
+        declared.max_autonomy,
+        compilation.operating_constraints.max_autonomy,
+        key=_AUTONOMY_RANK.__getitem__,
+    )
+    approval = declared.approval_class
+    if work.reserved_authority and approval is ApprovalClass.AUTOMATIC:
+        approval = ApprovalClass.APPROVAL_REQUIRED
+    if _EFFECT_RANK[work.external_effect] > _EFFECT_RANK[effect]:
+        approval = ApprovalClass.REFUSED
+    if (
+        work.requested_autonomy is not None
+        and _AUTONOMY_RANK[work.requested_autonomy] > _AUTONOMY_RANK[autonomy]
+    ):
+        approval = ApprovalClass.REFUSED
+    return work.consequence, effect, autonomy, approval
+
+
+def _declared_capability(
+    compilation: RoleAssuranceCompilation,
+    capability_id: str,
+) -> CapabilityDeclaration | None:
+    return next(
+        (
+            declaration
+            for declaration in compilation.work.capability_declarations
+            if declaration.capability_id == capability_id
+        ),
+        None,
+    )
+
+
+def _expected_capability_authorization(
+    compilation: RoleAssuranceCompilation,
+    requirement: CompiledCapabilityRequirement,
+    authority: tuple[ConsequenceClass, ExternalEffectClass, Autonomy, ApprovalClass],
+) -> bool:
+    """Recompute capability authorization without trusting emitted status."""
+
+    _, authority_effect, _, approval = authority
+    effective_effect = min(
+        authority_effect,
+        compilation.work.external_effect,
+        key=_EFFECT_RANK.__getitem__,
+    )
+    within_ceiling = (
+        _EFFECT_RANK[requirement.minimum_external_effect]
+        <= _EFFECT_RANK[effective_effect]
+        and approval is not ApprovalClass.REFUSED
+    )
+    declaration = _declared_capability(compilation, requirement.capability_id)
+    return within_ceiling and not (
+        declaration is not None and declaration.authorized is False
+    )
+
+
+def _validate_retained_compilation_state(
+    compilation: RoleAssuranceCompilation,
+    findings: list[str],
+) -> None:
+    """Close material authority, capability, prerequisite, and escalation state."""
+
+    expected_authority = _expected_authority_dimensions(compilation)
+    expected_authority_fields = {
+        "consequence": expected_authority[0],
+        "max_external_effect": expected_authority[1],
+        "max_autonomy": expected_authority[2],
+        "approval_class": expected_authority[3],
+    }
+    for field, expected in expected_authority_fields.items():
+        actual = getattr(compilation.authority_ceiling, field)
+        if actual != expected:
+            actual_value = getattr(actual, "value", actual)
+            expected_value = getattr(expected, "value", expected)
+            findings.append(
+                f"authority ceiling {field} {actual_value!r} does not match "
+                f"retained compilation inputs {expected_value!r}"
+            )
+
+    requirement_by_id: dict[str, CompiledCapabilityRequirement] = {}
+    for requirement in compilation.capability_requirements:
+        if requirement.capability_id not in requirement_by_id:
+            requirement_by_id[requirement.capability_id] = requirement
+
+    expected_prerequisites: set[str] = set()
+    for requirement in requirement_by_id.values():
+        declaration = _declared_capability(compilation, requirement.capability_id)
+        expected_available = declaration.available if declaration is not None else None
+        expected_verified = declaration.verified if declaration is not None else None
+        expected_authorized = _expected_capability_authorization(
+            compilation,
+            requirement,
+            expected_authority,
+        )
+        for field, expected in (
+            ("declared", True),
+            ("available", expected_available),
+            ("verified", expected_verified),
+            ("authorized", expected_authorized),
+        ):
+            actual = getattr(requirement, field)
+            if actual != expected:
+                findings.append(
+                    f"capability {requirement.capability_id!r} {field} {actual!r} "
+                    f"does not match retained compilation inputs {expected!r}"
+                )
+        if expected_available is not True:
+            expected_prerequisites.add(
+                f"capability-availability:{requirement.capability_id}"
+            )
+        if not expected_authorized:
+            expected_prerequisites.add(
+                f"capability-authority:{requirement.capability_id}"
+            )
+
+    unresolved_ids = [item.id for item in compilation.unresolved_prerequisites]
+    for item_id, count in Counter(unresolved_ids).items():
+        if count > 1:
+            findings.append(f"duplicate unresolved prerequisite {item_id!r}")
+    actual_prerequisites = set(unresolved_ids)
+    for item_id in sorted(expected_prerequisites - actual_prerequisites):
+        findings.append(f"missing unresolved prerequisite {item_id!r}")
+    for item_id in sorted(actual_prerequisites - expected_prerequisites):
+        findings.append(f"unresolved prerequisite {item_id!r} is not justified by retained inputs")
+    for item in compilation.unresolved_prerequisites:
+        if not item.causes:
+            findings.append(f"unresolved prerequisite {item.id!r} has no structured causes")
+
+    escalation_ids = [item.id for item in compilation.escalations]
+    for item_id, count in Counter(escalation_ids).items():
+        if count > 1:
+            findings.append(f"duplicate escalation {item_id!r}")
+    actual_escalations = set(escalation_ids)
+    required_escalations = {
+        "authority-refused": expected_authority[3] is ApprovalClass.REFUSED,
+        "authority-approval": expected_authority[3] is ApprovalClass.APPROVAL_REQUIRED,
+        "review-failure": compilation.assurance_requirement.independent_review,
+        "required-evidence-missing": bool(compilation.assurance_requirement.required_evidence),
+        "external-state-unobservable": (
+            compilation.work.requires_sit or compilation.work.requires_runtime_readback
+        ),
+    }
+    for escalation_id, required in required_escalations.items():
+        present = escalation_id in actual_escalations
+        if present != required:
+            state = "missing" if required else "unexpected"
+            findings.append(
+                f"{state} required escalation {escalation_id!r} for retained compilation inputs"
+            )
+    expected_prerequisite_escalations = {
+        f"escalate:{item_id}" for item_id in expected_prerequisites
+    }
+    for escalation_id in sorted(expected_prerequisite_escalations - actual_escalations):
+        findings.append(f"missing escalation {escalation_id!r} for unresolved prerequisite")
+    for escalation_id in sorted(
+        item_id
+        for item_id in actual_escalations
+        if item_id.startswith("escalate:")
+        and item_id not in expected_prerequisite_escalations
+    ):
+        findings.append(f"escalation {escalation_id!r} has no unresolved prerequisite")
+    for item in compilation.escalations:
+        if not item.causes:
+            findings.append(f"escalation {item.id!r} has no structured causes")
 
 
 def _resolve_compilation_input(
@@ -764,6 +966,7 @@ def _canonical_material_selections(
             findings.append(f"compiled assurance component {key!r} has no canonical decision")
 
     canonical_capability_ids = set(compilation.canonical_capability_ids)
+    expected_authority = _expected_authority_dimensions(compilation)
     requirement_ids: set[str] = set()
     for requirement in compilation.capability_requirements:
         if requirement.capability_id in requirement_ids:
@@ -778,8 +981,10 @@ def _canonical_material_selections(
                 "retained canonical capability input"
             )
             continue
+        declaration = _declared_capability(compilation, requirement.capability_id)
         expected[("capability", requirement.capability_id)] = (
-            requirement.authorized is True and requirement.available is True
+            _expected_capability_authorization(compilation, requirement, expected_authority)
+            and (declaration is not None and declaration.available is True)
         )
     for capability_id in sorted(canonical_capability_ids - requirement_ids):
         findings.append(
@@ -802,9 +1007,10 @@ def validate_compilation_explainability(
 
     The compiler/validator contract covers deterministic compilation, every
     material trace component, typed and recomputed causes against retained
-    compilation state, the authority-ceiling consequence against retained
-    canonical work consequence, and typed ``REFUSED`` plus ``authority-refused``
-    when an applicable DecisionRights ceiling is missing. The retained
+    compilation state, all authority-ceiling dimensions and the required
+    refusal escalation against retained policy/work inputs, and capability
+    authorization plus prerequisite/escalation closure against the effective
+    ceiling. The retained
     ``canonical_*`` fields are internal-consistency anchors trusted as part of
     the artifact, not authenticity evidence that an externally persisted,
     hand-edited artifact has canonical origin. That binding belongs to SUE-596
@@ -813,6 +1019,7 @@ def validate_compilation_explainability(
 
     findings: list[str] = []
     trace = compilation.explanation_trace
+    _validate_retained_compilation_state(compilation, findings)
     expected = _canonical_material_selections(compilation, findings)
     trace_keys = [(entry.component, entry.component_id) for entry in trace]
     duplicate_trace_keys = sorted(

@@ -775,6 +775,151 @@ def test_missing_decision_rights_ceiling_returns_typed_refusal_and_escalation(
     assert validate_compilation_explainability(result).accepted()
 
 
+@pytest.mark.parametrize(
+    ("field", "forged_value"),
+    [
+        ("approval_class", ApprovalClass.AUTOMATIC.value),
+        ("max_external_effect", ExternalEffectClass.PUBLICATION.value),
+        ("max_autonomy", Autonomy.CONTINUOUS_OPERATION.value),
+    ],
+)
+def test_explainability_rejects_persisted_authority_dimension_relabel(field, forged_value):
+    operating_model = _operating_model()
+    rights = DecisionRights(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        authority_ceilings=tuple(
+            ceiling
+            for ceiling in operating_model.decision_rights.authority_ceilings
+            if ceiling.consequence is not ConsequenceClass.HIGH
+        ),
+    )
+    result = compile_role_assurance(
+        _profile(),
+        operating_model.model_copy(update={"decision_rights": rights}),
+        _work(consequence=ConsequenceClass.HIGH),
+    )
+    payload = result.model_dump(mode="json")
+    payload["authority_ceiling"][field] = forged_value
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any(f"authority ceiling {field}" in finding for finding in report.findings)
+
+
+def test_explainability_rejects_deleted_authority_refused_escalation():
+    operating_model = _operating_model()
+    rights = DecisionRights(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        authority_ceilings=tuple(
+            ceiling
+            for ceiling in operating_model.decision_rights.authority_ceilings
+            if ceiling.consequence is not ConsequenceClass.HIGH
+        ),
+    )
+    result = compile_role_assurance(
+        _profile(),
+        operating_model.model_copy(update={"decision_rights": rights}),
+        _work(consequence=ConsequenceClass.HIGH),
+    )
+    payload = result.model_dump(mode="json")
+    payload["escalations"] = [
+        item for item in payload["escalations"] if item["id"] != "authority-refused"
+    ]
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any("authority-refused" in finding for finding in report.findings)
+
+
+def test_explainability_rejects_capability_authorization_relabel_and_missing_prerequisite():
+    result = _compile(
+        _work(
+            external_effect=ExternalEffectClass.READ_ONLY,
+            required_capabilities=("repository.write",),
+            capability_declarations=(
+                CapabilityDeclaration(
+                    capability_id="repository.write",
+                    available=True,
+                    verified=True,
+                ),
+            ),
+        )
+    )
+    payload = result.model_dump(mode="json")
+    requirement = next(
+        item
+        for item in payload["capability_requirements"]
+        if item["capability_id"] == "repository.write"
+    )
+    requirement["authorized"] = True
+    for entry in payload["explanation_trace"]:
+        if entry["component"] == "capability" and entry["component_id"] == "repository.write":
+            entry["selected"] = True
+    payload["unresolved_prerequisites"] = [
+        item
+        for item in payload["unresolved_prerequisites"]
+        if item["id"] != "capability-authority:repository.write"
+    ]
+    payload["escalations"] = [
+        item
+        for item in payload["escalations"]
+        if item["id"] != "escalate:capability-authority:repository.write"
+    ]
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any(
+        "capability 'repository.write' authorized" in finding
+        for finding in report.findings
+    )
+    assert any(
+        "missing unresolved prerequisite 'capability-authority:repository.write'" in finding
+        for finding in report.findings
+    )
+
+
+def test_finished_task_rejects_permission_profile_above_effective_ceiling():
+    work_item = _bridge_work_item(
+        work_class="discovery",
+        authority_class=ExternalEffectClass.READ_ONLY,
+    )
+    lock = _bridge_lock()
+    read_only_ceiling = AuthorityCeiling(
+        consequence=ConsequenceClass.LOW,
+        max_external_effect=ExternalEffectClass.READ_ONLY,
+        max_autonomy=Autonomy.SUGGEST,
+        approval_class=ApprovalClass.AUTOMATIC,
+    )
+    task = resolve_task_toolkit_for_work_item(
+        work_item,
+        lock,
+        registry=build_default_registry(),
+        permission_profiles=build_default_registry_permission_profiles(),
+        budget_profiles=build_default_registry_budget_profiles(),
+        compiled_ceiling=read_only_ceiling,
+    )
+    assert task.permission_profile_ids == ["read-only"]
+    forged = task.model_copy(
+        update={"permission_profile_ids": ["repository-write-bounded"]}
+    )
+
+    with pytest.raises(ToolkitResolutionError, match="effective task ceiling"):
+        validate_task_toolkit_against_ceiling(
+            forged,
+            lock,
+            build_default_registry(),
+            work_item,
+            build_default_registry_permission_profiles(),
+            compiled_ceiling=read_only_ceiling,
+        )
+
+
 def _assert_duplicate_canonical_field_rejected(field_name: str) -> None:
     result = _compile(_work(workflow_kind="plain-name"))
     payload = result.model_dump(mode="json")

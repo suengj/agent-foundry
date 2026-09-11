@@ -1068,6 +1068,7 @@ def compile_role_assurance(
         project_profile_ref=profile.source_intake_ref if profile is not None else None,
         work=characteristics,
         decision_rights=rights,
+        operating_constraints=operating_model.constraints,
         canonical_role_ids=_role_ids(reg),
         canonical_required_roles=operating_model.role_separation.required_roles,
         canonical_capability_ids=canonical_capability_ids,
