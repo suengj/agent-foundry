@@ -32,6 +32,7 @@
     "CapabilityUnit",
     "ClassificationFinding",
     "CompilationCause",
+    "CompilationCauseConsequence",
     "CompilationExplanationReport",
     "CompilationInputLocator",
     "CompilationInputPath",

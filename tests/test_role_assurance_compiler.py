@@ -16,6 +16,7 @@ from agent_foundry.models import (
     BlastRadius,
     CapabilityDeclaration,
     CompilationCause,
+    CompilationCauseConsequence,
     CompilationInputLocator,
     CompilationInputPath,
     CompilationPredicate,
@@ -641,21 +642,55 @@ def test_explainability_requires_structured_input_predicates_for_inclusions_and_
             )
 
 
-def test_explainability_rejects_arbitrary_untyped_catch_all_causes():
+def test_explainability_rejects_arbitrary_semantic_void_causes():
+    result = _compile(_work(workflow_kind="plain-name"))
+    arbitrary = "a cobalt lantern asserts an unrecorded prerequisite"
+    forged_trace = tuple(
+        entry.model_copy(
+            update={
+                "causes": (
+                    CompilationCause(
+                        locator=CompilationInputLocator(
+                            path=CompilationInputPath.WORK_REQUIRED_CAPABILITIES,
+                            item=arbitrary,
+                        ),
+                        predicate=CompilationPredicate(
+                            operator=CompilationPredicateOperator.CONTAINS,
+                            value=arbitrary,
+                        ),
+                        evaluated=False,
+                        consequence=CompilationCauseConsequence.EXCLUDED,
+                    ),
+                )
+            }
+        )
+        if entry.component == "capability" and entry.component_id == "repository.read"
+        else entry
+        for entry in result.explanation_trace
+    )
+    report = validate_compilation_explainability(
+        result.model_copy(update={"explanation_trace": forged_trace})
+    )
+    assert not report.accepted()
+    assert report.findings
+
+
+def test_explainability_rejects_self_inconsistent_predicate_result():
     result = _compile(_work(workflow_kind="plain-name"))
     forged_trace = tuple(
         entry.model_copy(
             update={
                 "causes": (
-                    CompilationCause.model_construct(
+                    CompilationCause(
                         locator=CompilationInputLocator(
                             path=CompilationInputPath.WORK_RESERVED_AUTHORITY,
                         ),
-                        predicate=CompilationPredicate.model_construct(
-                            operator="not-required-anywhere",
-                            value="no applicable rule anywhere in the universe",
+                        predicate=CompilationPredicate(
+                            operator=CompilationPredicateOperator.IS,
+                            value=False,
                         ),
                         evaluated=False,
+                        consequence=CompilationCauseConsequence.EXCLUDED,
                     ),
                 )
             }
@@ -668,7 +703,7 @@ def test_explainability_rejects_arbitrary_untyped_catch_all_causes():
         result.model_copy(update={"explanation_trace": forged_trace})
     )
     assert not report.accepted()
-    assert report.findings
+    assert any("recomputation" in finding for finding in report.findings)
 
 
 def test_compilation_bridge_rejects_role_outside_compiled_topology():
@@ -696,6 +731,52 @@ def test_compilation_bridge_rejects_role_outside_compiled_topology():
             _bridge_work_item(),
             lock,
             compilation,
+            registry=registry,
+            permission_profiles=build_default_registry_permission_profiles(),
+            budget_profiles=build_default_registry_budget_profiles(),
+        )
+
+
+def test_compilation_bridge_rejects_required_role_outside_selected_roles():
+    compilation = _bridge_compilation()
+    forged_topology = compilation.topology.model_copy(
+        update={
+            "required_roles": ("manager",),
+            "excluded_roles": tuple(
+                role_id
+                for role_id in compilation.topology.excluded_roles
+                if role_id != "manager"
+            ),
+        }
+    )
+    forged_compilation = compilation.model_copy(update={"topology": forged_topology})
+    payload = compilation.model_dump()
+    payload["topology"]["required_roles"] = ["manager"]
+    with pytest.raises(Exception, match="required_roles.*subset"):
+        RoleAssuranceCompilation.model_validate(payload)
+
+    base_registry = build_default_registry()
+    altered_workflow = next(
+        item for item in base_registry.workflows if item.id == "single-worker-validation"
+    ).model_copy(update={"required_roles": ["builder", "validator", "manager"]})
+    registry = base_registry.model_copy(
+        update={
+            "workflows": [
+                altered_workflow
+                if item.id == altered_workflow.id
+                else item
+                for item in base_registry.workflows
+            ]
+        }
+    )
+    lock = _bridge_lock().model_copy(
+        update={"role_ids": [*_bridge_lock().role_ids, "manager"]}
+    )
+    with pytest.raises(ToolkitResolutionError, match="required roles.*selected_roles"):
+        resolve_task_toolkit_for_compilation(
+            _bridge_work_item(),
+            lock,
+            forged_compilation,
             registry=registry,
             permission_profiles=build_default_registry_permission_profiles(),
             budget_profiles=build_default_registry_budget_profiles(),

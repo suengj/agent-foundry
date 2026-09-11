@@ -202,12 +202,16 @@ def _validate_compiled_toolkit_contract(
 ) -> None:
     """Enforce compiled topology, prerequisites, assurance, and gates at the bridge."""
 
-    compiled_roles = (
-        set(compilation.topology.selected_roles)
-        | set(compilation.topology.required_roles)
-    )
+    selected_roles = set(compilation.topology.selected_roles)
+    required_roles = set(compilation.topology.required_roles)
+    inconsistent_required_roles = required_roles - selected_roles
+    if inconsistent_required_roles:
+        raise ToolkitResolutionError(
+            "compiled required roles are outside selected_roles: "
+            + ", ".join(sorted(inconsistent_required_roles))
+        )
     excluded_roles = set(compilation.topology.excluded_roles)
-    extra_roles = set(task.role_ids) - compiled_roles
+    extra_roles = set(task.role_ids) - selected_roles
     if extra_roles:
         raise ToolkitResolutionError(
             "task toolkit selected roles outside compiled topology: "
@@ -220,9 +224,7 @@ def _validate_compiled_toolkit_contract(
             + ", ".join(sorted(selected_excluded_roles))
         )
 
-    missing_roles = sorted(
-        compiled_roles - set(task.role_ids)
-    )
+    missing_roles = sorted(required_roles - set(task.role_ids))
     if missing_roles:
         raise ToolkitResolutionError(
             "task toolkit is missing compiled roles: " + ", ".join(missing_roles)

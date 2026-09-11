@@ -23,6 +23,7 @@ from agent_foundry.models.compiler import (
     AssuranceDecision,
     CapabilityDeclaration,
     CompilationCause,
+    CompilationCauseConsequence,
     CompilationInputLocator,
     CompilationInputPath,
     CompilationPredicate,
@@ -77,11 +78,13 @@ def _cause(
     evaluated: bool = True,
     *,
     item: str | None = None,
+    consequence: CompilationCauseConsequence = CompilationCauseConsequence.SELECTED,
 ) -> CompilationCause:
     return CompilationCause(
         locator=CompilationInputLocator(path=path, item=item),
         predicate=CompilationPredicate(operator=operator, value=value),
         evaluated=evaluated,
+        consequence=consequence,
     )
 
 
@@ -93,6 +96,7 @@ def _unique_causes(*causes: CompilationCause) -> tuple[CompilationCause, ...]:
             item.predicate.operator,
             item.predicate.value,
             item.evaluated,
+            item.consequence,
         ): item
         for item in causes
     }
@@ -140,9 +144,9 @@ def _assurance(
     causes_by_mode: dict[AssuranceMode, list[CompilationCause]] = {
         mode: [
             _cause(
-                CompilationInputPath.OPERATING_MODEL_ASSURANCE,
-                CompilationPredicateOperator.INCLUDES,
-                "assurance floor derived from work blast radius",
+                CompilationInputPath.WORK_CONSEQUENCE,
+                CompilationPredicateOperator.EQUALS,
+                work.consequence.value,
             )
         ]
         for mode in base.required_modes
@@ -150,9 +154,9 @@ def _assurance(
     causes_by_evidence: dict[EvidenceClass, list[CompilationCause]] = {
         item: [
             _cause(
-                CompilationInputPath.OPERATING_MODEL_ASSURANCE,
-                CompilationPredicateOperator.INCLUDES,
-                "assurance floor derived from work blast radius",
+                CompilationInputPath.WORK_CONSEQUENCE,
+                CompilationPredicateOperator.EQUALS,
+                work.consequence.value,
             )
         ]
         for item in base.required_evidence
@@ -277,6 +281,7 @@ def _assurance(
                     mode.value,
                     False,
                     item=mode.value,
+                    consequence=CompilationCauseConsequence.EXCLUDED,
                 )
             ],
         )
@@ -301,6 +306,7 @@ def _assurance(
                     item.value,
                     False,
                     item=item.value,
+                    consequence=CompilationCauseConsequence.EXCLUDED,
                 )
             ],
         )
@@ -653,8 +659,8 @@ def _select_roles(
                     excluded_path,
                     excluded_operator,
                     excluded_value,
-                    False,
                     item=excluded_item,
+                    consequence=CompilationCauseConsequence.EXCLUDED,
                 )
             )
             rationale = "materially excluded from the minimum topology"
@@ -721,8 +727,8 @@ def _capability_requirements(
             causes.append(
                 _cause(
                     CompilationInputPath.TOPOLOGY_SELECTED_ROLES,
-                    CompilationPredicateOperator.ALLOWS,
-                    capability_id,
+                    CompilationPredicateOperator.CONTAINS,
+                    role_id,
                     item=role_id,
                 )
             )
@@ -770,11 +776,13 @@ def _capability_requirements(
                     causes=_unique_causes(
                         *requirement.causes,
                         _cause(
-                            CompilationInputPath.AUTHORITY_CEILING,
+                            CompilationInputPath.CAPABILITY_MIN_EXTERNAL_EFFECT,
                             CompilationPredicateOperator.WITHIN,
                             authority.max_external_effect.value,
-                            False,
-                        ),
+                            within_ceiling,
+                            item=capability_id,
+                            consequence=CompilationCauseConsequence.EXCLUDED,
+                            ),
                     ),
                 )
             )
