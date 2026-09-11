@@ -23,6 +23,8 @@ from agent_foundry.models import (
     CompilationPredicateOperator,
     ConsequenceClass,
     CorrectnessObservability,
+    ControlCondition,
+    ControlTrigger,
     DecisionRights,
     ExternalEffectClass,
     FOUNDRY_SCHEMA_VERSION,
@@ -254,6 +256,199 @@ def test_smaller_prompt_cannot_omit_mandatory_high_consequence_gate():
     )
     assert "independent-review" in result.required_gates
     assert "reviewer" in result.selected_roles
+
+
+def test_explainability_rejects_persisted_assurance_blast_radius_relabel():
+    result = _compile(_work(consequence=ConsequenceClass.HIGH))
+    payload = result.model_dump(mode="json")
+    payload["assurance_requirement"]["blast_radius"]["consequence"] = ConsequenceClass.LOW.value
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any("assurance blast radius" in finding for finding in report.findings)
+
+
+def test_explainability_rejects_coherent_high_assurance_floor_downgrade():
+    result = _compile(_work(consequence=ConsequenceClass.HIGH))
+    payload = result.model_dump(mode="json")
+    independent_mode = AssuranceMode.INDEPENDENT_REVIEW.value
+    independent_evidence = EvidenceClass.INDEPENDENT_REVIEW.value
+    payload["assurance_requirement"]["required_modes"] = [
+        item
+        for item in payload["assurance_requirement"]["required_modes"]
+        if item != independent_mode
+    ]
+    payload["assurance_requirement"]["required_evidence"] = [
+        item
+        for item in payload["assurance_requirement"]["required_evidence"]
+        if item != independent_evidence
+    ]
+    payload["assurance_requirement"]["independent_review"] = False
+    payload["assurance_requirement"]["minimum_distinct_actors"] = 1
+    payload["required_gates"] = [
+        gate for gate in payload["required_gates"] if gate != "independent-review"
+    ]
+    payload["topology"]["selected_roles"].remove("reviewer")
+    payload["topology"]["excluded_roles"].append("reviewer")
+    payload["topology"]["required_roles"].remove("reviewer")
+    excluded_reviewer_cause = {
+        "locator": {
+            "path": CompilationInputPath.ASSURANCE_INDEPENDENT_REVIEW.value,
+        },
+        "predicate": {
+            "operator": CompilationPredicateOperator.IS.value,
+            "value": False,
+        },
+        "evaluated": True,
+        "consequence": CompilationCauseConsequence.EXCLUDED.value,
+    }
+    for decision in payload["role_decisions"]:
+        if decision["role_id"] == "reviewer":
+            decision["selected"] = False
+            decision["causes"] = [excluded_reviewer_cause]
+    for entry in payload["explanation_trace"]:
+        if entry["component"] == "role" and entry["component_id"] == "reviewer":
+            entry["selected"] = False
+            entry["causes"] = [excluded_reviewer_cause]
+    for decision in payload["assurance_decisions"]:
+        if decision["component"] == "assurance-mode" and decision["component_id"] == independent_mode:
+            decision["selected"] = False
+            decision["causes"] = [
+                {
+                    "locator": {
+                        "path": CompilationInputPath.ASSURANCE_REQUIRED_MODES.value,
+                        "item": independent_mode,
+                    },
+                    "predicate": {
+                        "operator": CompilationPredicateOperator.CONTAINS.value,
+                        "value": independent_mode,
+                    },
+                    "evaluated": False,
+                    "consequence": CompilationCauseConsequence.EXCLUDED.value,
+                }
+            ]
+        if decision["component"] == "assurance-evidence" and decision["component_id"] == independent_evidence:
+            decision["selected"] = False
+            decision["causes"] = [
+                {
+                    "locator": {
+                        "path": CompilationInputPath.ASSURANCE_REQUIRED_EVIDENCE.value,
+                        "item": independent_evidence,
+                    },
+                    "predicate": {
+                        "operator": CompilationPredicateOperator.CONTAINS.value,
+                        "value": independent_evidence,
+                    },
+                    "evaluated": False,
+                    "consequence": CompilationCauseConsequence.EXCLUDED.value,
+                }
+            ]
+    for entry in payload["explanation_trace"]:
+        if entry["component"] == "assurance-mode" and entry["component_id"] == independent_mode:
+            entry["selected"] = False
+            entry["causes"] = payload["assurance_decisions"][
+                next(
+                    index
+                    for index, decision in enumerate(payload["assurance_decisions"])
+                    if decision["component"] == "assurance-mode"
+                    and decision["component_id"] == independent_mode
+                )
+            ]["causes"]
+        if entry["component"] == "assurance-evidence" and entry["component_id"] == independent_evidence:
+            entry["selected"] = False
+            entry["causes"] = payload["assurance_decisions"][
+                next(
+                    index
+                    for index, decision in enumerate(payload["assurance_decisions"])
+                    if decision["component"] == "assurance-evidence"
+                    and decision["component_id"] == independent_evidence
+                )
+            ]["causes"]
+    payload["escalations"] = [
+        item for item in payload["escalations"] if item["id"] != "review-failure"
+    ]
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any("assurance floor" in finding for finding in report.findings)
+    assert any("required_gates" in finding for finding in report.findings)
+    assert any("role topology" in finding for finding in report.findings)
+    assert any("canonical assurance decision" in finding for finding in report.findings)
+
+
+def test_explainability_rejects_deleted_required_assurance_gate():
+    result = _compile(_work(consequence=ConsequenceClass.HIGH))
+    payload = result.model_dump(mode="json")
+    payload["required_gates"] = [
+        gate for gate in payload["required_gates"] if gate != "independent-review"
+    ]
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any("required_gates" in finding for finding in report.findings)
+
+
+def test_explainability_rejects_false_unresolved_prerequisite_and_escalation_cause():
+    result = _compile(
+        _work(
+            external_effect=ExternalEffectClass.READ_ONLY,
+            required_capabilities=("repository.write",),
+            capability_declarations=(
+                CapabilityDeclaration(
+                    capability_id="repository.write",
+                    available=True,
+                    verified=True,
+                ),
+            ),
+        )
+    )
+    payload = result.model_dump(mode="json")
+    false_cause = {
+        "locator": {
+            "path": CompilationInputPath.WORK_RESERVED_AUTHORITY.value,
+        },
+        "predicate": {
+            "operator": CompilationPredicateOperator.IS.value,
+            "value": True,
+        },
+        "evaluated": True,
+        "consequence": CompilationCauseConsequence.SELECTED.value,
+    }
+    assert false_cause["evaluated"] is True
+    for item in payload["unresolved_prerequisites"]:
+        if item["id"] == "capability-authority:repository.write":
+            item["causes"] = [false_cause]
+    for item in payload["escalations"]:
+        if item["id"] == "escalate:capability-authority:repository.write":
+            item["causes"] = [false_cause]
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any("unresolved prerequisite" in finding for finding in report.findings)
+    assert any("unrelated input" in finding for finding in report.findings)
+
+
+def test_explainability_accepts_retained_operating_model_escalation_condition():
+    condition = ControlCondition(
+        id="synthetic-policy-conflict",
+        trigger=ControlTrigger.POLICY_CONFLICT,
+        reason="synthetic policy conflict requires escalation",
+    )
+    operating_model = _operating_model().model_copy(
+        update={"escalation_conditions": (condition,)}
+    )
+    result = compile_role_assurance(_profile(), operating_model, _work())
+
+    assert any(item.id == condition.id for item in result.escalations)
+    assert validate_compilation_explainability(result).accepted()
 
 
 def test_tool_availability_is_not_permission():
@@ -918,6 +1113,38 @@ def test_finished_task_rejects_permission_profile_above_effective_ceiling():
             build_default_registry_permission_profiles(),
             compiled_ceiling=read_only_ceiling,
         )
+
+
+def test_finished_task_accepts_permission_profile_at_effective_ceiling():
+    work_item = _bridge_work_item(
+        work_class="discovery",
+        authority_class=ExternalEffectClass.READ_ONLY,
+    )
+    lock = _bridge_lock()
+    read_only_ceiling = AuthorityCeiling(
+        consequence=ConsequenceClass.LOW,
+        max_external_effect=ExternalEffectClass.READ_ONLY,
+        max_autonomy=Autonomy.SUGGEST,
+        approval_class=ApprovalClass.AUTOMATIC,
+    )
+    task = resolve_task_toolkit_for_work_item(
+        work_item,
+        lock,
+        registry=build_default_registry(),
+        permission_profiles=build_default_registry_permission_profiles(),
+        budget_profiles=build_default_registry_budget_profiles(),
+        compiled_ceiling=read_only_ceiling,
+    )
+
+    validate_task_toolkit_against_ceiling(
+        task,
+        lock,
+        build_default_registry(),
+        work_item,
+        build_default_registry_permission_profiles(),
+        compiled_ceiling=read_only_ceiling,
+    )
+    assert task.permission_profile_ids == ["read-only"]
 
 
 def _assert_duplicate_canonical_field_rejected(field_name: str) -> None:

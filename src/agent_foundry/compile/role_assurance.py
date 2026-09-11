@@ -775,20 +775,33 @@ def _capability_requirements(
                 )
             )
         if not authorized:
+            authorization_causes = [
+                _cause(
+                    CompilationInputPath.CAPABILITY_MIN_EXTERNAL_EFFECT,
+                    CompilationPredicateOperator.WITHIN,
+                    task_effect_ceiling.value,
+                    _EFFECT_RANK[minimum] <= _EFFECT_RANK[task_effect_ceiling],
+                    item=capability_id,
+                    consequence=CompilationCauseConsequence.EXCLUDED,
+                )
+            ]
+            if authority.approval_class is ApprovalClass.REFUSED:
+                authorization_causes.append(
+                    _cause(
+                        CompilationInputPath.AUTHORITY_CEILING_APPROVAL_CLASS,
+                        CompilationPredicateOperator.IS_NOT,
+                        ApprovalClass.REFUSED.value,
+                        False,
+                        consequence=CompilationCauseConsequence.EXCLUDED,
+                    )
+                )
             unresolved.append(
                 UnresolvedPrerequisite(
                     id=f"capability-authority:{capability_id}",
                     reason="required capability exceeds the compiled authority ceiling",
                     causes=_unique_causes(
                         *requirement.causes,
-                        _cause(
-                            CompilationInputPath.CAPABILITY_MIN_EXTERNAL_EFFECT,
-                            CompilationPredicateOperator.WITHIN,
-                            authority.max_external_effect.value,
-                            within_ceiling,
-                            item=capability_id,
-                            consequence=CompilationCauseConsequence.EXCLUDED,
-                            ),
+                        *authorization_causes,
                     ),
                 )
             )
@@ -1069,6 +1082,9 @@ def compile_role_assurance(
         work=characteristics,
         decision_rights=rights,
         operating_constraints=operating_model.constraints,
+        assurance_profile=operating_model.assurance,
+        role_separation=operating_model.role_separation,
+        escalation_conditions=operating_model.escalation_conditions,
         canonical_role_ids=_role_ids(reg),
         canonical_required_roles=operating_model.role_separation.required_roles,
         canonical_capability_ids=canonical_capability_ids,
