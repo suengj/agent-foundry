@@ -332,6 +332,11 @@ class RoleAssuranceCompilation(VersionedContract):
     project_profile_ref: str | None = None
     work: WorkCharacteristics
     decision_rights: DecisionRights
+    # These are the compiler-input identities retained so persisted output cannot
+    # enlarge the material trace universe by editing another compiled component.
+    canonical_role_ids: tuple[str, ...]
+    canonical_required_roles: tuple[str, ...]
+    canonical_capability_ids: tuple[str, ...]
     topology: LogicalRoleTopology
     assurance_requirement: AssuranceRequirement
     authority_ceiling: AuthorityCeiling
@@ -411,7 +416,7 @@ def _resolve_compilation_input(
             None,
         ),
         CompilationInputPath.OPERATING_MODEL_REQUIRED_ROLES: (
-            compilation.topology.required_roles,
+            compilation.canonical_required_roles,
             None,
         ),
         CompilationInputPath.ASSURANCE_INDEPENDENT_REVIEW: (
@@ -620,6 +625,19 @@ def _canonical_material_selections(
     selected_roles = set(topology.selected_roles)
     excluded_roles = set(topology.excluded_roles)
     topology_roles = selected_roles | excluded_roles
+    canonical_role_ids = set(compilation.canonical_role_ids)
+    unexpected_topology_roles = sorted(topology_roles - canonical_role_ids)
+    missing_topology_roles = sorted(canonical_role_ids - topology_roles)
+    if unexpected_topology_roles:
+        findings.append(
+            "compiled topology contains role ids outside retained canonical role input: "
+            + ", ".join(unexpected_topology_roles)
+        )
+    if missing_topology_roles:
+        findings.append(
+            "compiled topology omits retained canonical role ids: "
+            + ", ".join(missing_topology_roles)
+        )
 
     topology_role_ids = (*topology.selected_roles, *topology.excluded_roles)
     duplicate_topology_roles = sorted(
@@ -643,7 +661,7 @@ def _canonical_material_selections(
             + ", ".join(missing_required)
         )
 
-    for role_id in sorted(topology_roles):
+    for role_id in sorted(canonical_role_ids):
         expected[("role", role_id)] = role_id in selected_roles
 
     role_decisions: dict[str, RoleDecision] = {}
@@ -652,6 +670,11 @@ def _canonical_material_selections(
             findings.append(f"duplicate canonical role decision for {decision.role_id!r}")
             continue
         role_decisions[decision.role_id] = decision
+        if decision.role_id not in canonical_role_ids:
+            findings.append(
+                f"canonical role decision {decision.role_id!r} is outside retained canonical role input"
+            )
+            continue
         if decision.role_id not in topology_roles:
             findings.append(
                 f"canonical role decision {decision.role_id!r} is outside the compiled topology"
@@ -663,7 +686,7 @@ def _canonical_material_selections(
                 f"canonical role decision {decision.role_id!r} records selected="
                 f"{decision.selected!r}, expected {canonical_selected!r} from the compiled topology"
             )
-    for role_id in sorted(topology_roles):
+    for role_id in sorted(canonical_role_ids):
         if role_id not in role_decisions:
             findings.append(f"compiled role {role_id!r} has no canonical role decision")
 
@@ -699,9 +722,27 @@ def _canonical_material_selections(
         if key not in assurance_decisions:
             findings.append(f"compiled assurance component {key!r} has no canonical decision")
 
+    canonical_capability_ids = set(compilation.canonical_capability_ids)
+    requirement_ids: set[str] = set()
     for requirement in compilation.capability_requirements:
+        if requirement.capability_id in requirement_ids:
+            findings.append(
+                f"duplicate canonical capability requirement for {requirement.capability_id!r}"
+            )
+            continue
+        requirement_ids.add(requirement.capability_id)
+        if requirement.capability_id not in canonical_capability_ids:
+            findings.append(
+                f"canonical capability requirement {requirement.capability_id!r} is outside "
+                "retained canonical capability input"
+            )
+            continue
         expected[("capability", requirement.capability_id)] = (
             requirement.authorized is True and requirement.available is True
+        )
+    for capability_id in sorted(canonical_capability_ids - requirement_ids):
+        findings.append(
+            f"compiled capability {capability_id!r} has no canonical capability requirement"
         )
     if compilation.authority_ceiling.consequence is not compilation.work.consequence:
         findings.append(

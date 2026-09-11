@@ -364,7 +364,9 @@ def _authority(
                 consequence=work.consequence,
                 max_external_effect=ExternalEffectClass.READ_ONLY,
                 max_autonomy=Autonomy.SUGGEST,
-                approval_class=decision_rights.unknown_authority,
+                # A missing ceiling is a refusal, regardless of the configurable
+                # presentation used by DecisionRights.evaluate for unknown input.
+                approval_class=ApprovalClass.REFUSED,
                 policy_evidence_refs=tuple(
                     f"{item.locator.render()}:{item.predicate.render()}" for item in causes
                 ),
@@ -695,7 +697,11 @@ def _capability_requirements(
     authority: AuthorityCeiling,
     profile: ProjectProfile | None,
     registry: CapabilityRegistry,
-) -> tuple[tuple[CompiledCapabilityRequirement, ...], tuple[UnresolvedPrerequisite, ...]]:
+) -> tuple[
+    tuple[CompiledCapabilityRequirement, ...],
+    tuple[UnresolvedPrerequisite, ...],
+    tuple[str, ...],
+]:
     role_caps = _role_capabilities(topology.selected_roles, registry)
     requested = set(work.required_capabilities)
     requested.update(role_caps)
@@ -786,7 +792,7 @@ def _capability_requirements(
                     ),
                 )
             )
-    return tuple(requirements), tuple(unresolved)
+    return tuple(requirements), tuple(unresolved), tuple(sorted(requested))
 
 
 def _escalations(
@@ -1015,7 +1021,7 @@ def compile_role_assurance(
         profile,
         reg,
     )
-    capability_requirements, missing_capabilities = _capability_requirements(
+    capability_requirements, missing_capabilities, canonical_capability_ids = _capability_requirements(
         characteristics,
         topology,
         authority,
@@ -1062,6 +1068,9 @@ def compile_role_assurance(
         project_profile_ref=profile.source_intake_ref if profile is not None else None,
         work=characteristics,
         decision_rights=rights,
+        canonical_role_ids=_role_ids(reg),
+        canonical_required_roles=operating_model.role_separation.required_roles,
+        canonical_capability_ids=canonical_capability_ids,
         topology=topology,
         assurance_requirement=assurance,
         authority_ceiling=authority,

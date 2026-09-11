@@ -748,7 +748,10 @@ def test_explainability_rejects_trace_selection_contradicting_persisted_topology
     assert any("records consequence" in finding for finding in report.findings)
 
 
-def test_missing_decision_rights_ceiling_returns_typed_refusal_and_escalation():
+@pytest.mark.parametrize("unknown_authority", tuple(ApprovalClass))
+def test_missing_decision_rights_ceiling_returns_typed_refusal_and_escalation(
+    unknown_authority: ApprovalClass,
+):
     operating_model = _operating_model()
     rights = DecisionRights(
         schema_version=FOUNDRY_SCHEMA_VERSION,
@@ -757,6 +760,7 @@ def test_missing_decision_rights_ceiling_returns_typed_refusal_and_escalation():
             for ceiling in operating_model.decision_rights.authority_ceilings
             if ceiling.consequence is not ConsequenceClass.HIGH
         ),
+        unknown_authority=unknown_authority,
     )
     operating_model = operating_model.model_copy(update={"decision_rights": rights})
 
@@ -769,6 +773,75 @@ def test_missing_decision_rights_ceiling_returns_typed_refusal_and_escalation():
     assert result.authority_ceiling.approval_class is ApprovalClass.REFUSED
     assert any(item.id == "authority-refused" for item in result.escalations)
     assert validate_compilation_explainability(result).accepted()
+
+
+def test_explainability_rejects_persisted_role_identity_outside_canonical_input():
+    result = _compile(_work(workflow_kind="plain-name"))
+    shadow_role = "review6-shadow-role"
+    payload = result.model_dump(mode="json")
+    payload["topology"]["selected_roles"].append(shadow_role)
+    payload["topology"]["required_roles"].append(shadow_role)
+    shadow_cause = {
+        "locator": {
+            "path": CompilationInputPath.OPERATING_MODEL_REQUIRED_ROLES.value,
+            "item": shadow_role,
+        },
+        "predicate": {
+            "operator": CompilationPredicateOperator.CONTAINS.value,
+            "value": shadow_role,
+        },
+        "evaluated": True,
+        "consequence": CompilationCauseConsequence.SELECTED.value,
+    }
+    payload["role_decisions"].append(
+        {
+            "role_id": shadow_role,
+            "selected": True,
+            "rationale": "selected for the minimum logical responsibility topology",
+            "causes": [shadow_cause],
+            "policy_refs": [],
+        }
+    )
+    payload["explanation_trace"].append(
+        {
+            "component": "role",
+            "component_id": shadow_role,
+            "selected": True,
+            "rationale": "selected for the minimum logical responsibility topology",
+            "causes": [shadow_cause],
+            "policy_refs": [],
+        }
+    )
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any("outside retained canonical role input" in finding for finding in report.findings)
+
+
+def test_explainability_rejects_persisted_capability_identity_outside_canonical_input():
+    result = _compile(_work(workflow_kind="plain-name"))
+    shadow_capability = "review6.shadow-capability"
+    payload = result.model_dump(mode="json")
+    source_requirement = payload["capability_requirements"][0]
+    forged_requirement = {**source_requirement, "capability_id": shadow_capability}
+    payload["capability_requirements"].append(forged_requirement)
+    source_trace = next(
+        entry for entry in payload["explanation_trace"] if entry["component"] == "capability"
+    )
+    payload["explanation_trace"].append(
+        {**source_trace, "component_id": shadow_capability}
+    )
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any(
+        "outside retained canonical capability input" in finding
+        for finding in report.findings
+    )
 
 
 def test_explainability_rejects_persisted_authority_consequence_relabel():
