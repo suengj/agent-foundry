@@ -630,16 +630,15 @@ def test_explainability_requires_structured_input_predicates_for_inclusions_and_
     report = validate_compilation_explainability(result)
     assert report.accepted(), report.findings
     for entry in result.explanation_trace:
-        if entry.component in {"role", "assurance-mode", "assurance-evidence", "capability"}:
-            assert entry.causes
-            assert all(
-                isinstance(cause.locator, CompilationInputLocator)
-                and isinstance(cause.locator.path, CompilationInputPath)
-                and isinstance(cause.predicate, CompilationPredicate)
-                and isinstance(cause.predicate.operator, CompilationPredicateOperator)
-                and isinstance(cause.evaluated, bool)
-                for cause in entry.causes
-            )
+        assert entry.causes
+        assert all(
+            isinstance(cause.locator, CompilationInputLocator)
+            and isinstance(cause.locator.path, CompilationInputPath)
+            and isinstance(cause.predicate, CompilationPredicate)
+            and isinstance(cause.predicate.operator, CompilationPredicateOperator)
+            and isinstance(cause.evaluated, bool)
+            for cause in entry.causes
+        )
 
 
 def test_explainability_rejects_arbitrary_semantic_void_causes():
@@ -706,6 +705,64 @@ def test_explainability_rejects_self_inconsistent_predicate_result():
     assert any("recomputation" in finding for finding in report.findings)
 
 
+def test_explainability_rejects_semantic_void_authority_trace_from_persisted_artifact():
+    result = _compile(_work(workflow_kind="plain-name"))
+    arbitrary = "a brass compass validates a silent boundary"
+    payload = result.model_dump(mode="json")
+    for entry in payload["explanation_trace"]:
+        if entry["component"] == "authority-ceiling":
+            entry["causes"] = [
+                {
+                    "locator": {
+                        "path": CompilationInputPath.WORK_RESERVED_AUTHORITY.value,
+                    },
+                    "predicate": {
+                        "operator": CompilationPredicateOperator.IS.value,
+                        "value": arbitrary,
+                    },
+                    "evaluated": False,
+                    "consequence": CompilationCauseConsequence.EXCLUDED.value,
+                }
+            ]
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+    assert not report.accepted()
+    assert any("authority-ceiling" in finding for finding in report.findings)
+    assert any("invalid predicate" in finding for finding in report.findings)
+
+
+def test_explainability_rejects_trace_selection_contradicting_persisted_topology():
+    result = _compile(_work(workflow_kind="plain-name"))
+    payload = result.model_dump(mode="json")
+    for entry in payload["explanation_trace"]:
+        if entry["component"] == "role" and entry["component_id"] == "manager":
+            entry["selected"] = True
+            entry["causes"] = [
+                {**cause, "consequence": CompilationCauseConsequence.SELECTED.value}
+                for cause in entry["causes"]
+            ]
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+    assert not report.accepted()
+    assert any("canonical compilation state" in finding for finding in report.findings)
+    assert any("records consequence" in finding for finding in report.findings)
+
+
+def test_explainability_rejects_duplicate_and_unknown_persisted_material_entries():
+    result = _compile(_work(workflow_kind="plain-name"))
+    payload = result.model_dump(mode="json")
+    duplicate = dict(payload["explanation_trace"][0])
+    unknown = dict(duplicate)
+    unknown["component"] = "unregistered-material"
+    unknown["component_id"] = "synthetic"
+    payload["explanation_trace"].extend((duplicate, unknown))
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+    assert not report.accepted()
+    assert any("duplicate material trace entry" in finding for finding in report.findings)
+    assert any("unknown material trace entry" in finding for finding in report.findings)
+
+
 def test_compilation_bridge_rejects_role_outside_compiled_topology():
     base_registry = build_default_registry()
     altered_workflow = next(
@@ -750,7 +807,7 @@ def test_compilation_bridge_rejects_required_role_outside_selected_roles():
         }
     )
     forged_compilation = compilation.model_copy(update={"topology": forged_topology})
-    payload = compilation.model_dump()
+    payload = forged_compilation.model_dump()
     payload["topology"]["required_roles"] = ["manager"]
     with pytest.raises(Exception, match="required_roles.*subset"):
         RoleAssuranceCompilation.model_validate(payload)

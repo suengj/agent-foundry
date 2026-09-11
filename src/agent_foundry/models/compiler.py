@@ -6,6 +6,7 @@ describe process topology, provider/model choices, dispatch, or execution state.
 
 from __future__ import annotations
 
+from collections import Counter
 from enum import Enum, StrEnum
 
 from pydantic import Field, model_validator
@@ -423,6 +424,10 @@ def _resolve_compilation_input(
             assurance.required_evidence,
             EvidenceClass,
         ),
+        CompilationInputPath.DECISION_RIGHTS_SCHEMA_VERSION: (
+            compilation.schema_version,
+            None,
+        ),
         CompilationInputPath.AUTHORITY_CEILING: (
             authority.max_external_effect,
             ExternalEffectClass,
@@ -598,6 +603,104 @@ def _evaluate_compilation_predicate(
     return None, "cause locator resolved to an unsupported or absent input"
 
 
+def _canonical_material_selections(
+    compilation: RoleAssuranceCompilation,
+    findings: list[str],
+) -> dict[tuple[str, str], bool]:
+    """Derive material trace keys and selection from canonical compiler state."""
+
+    expected: dict[tuple[str, str], bool] = {}
+    topology = compilation.topology
+    selected_roles = set(topology.selected_roles)
+    excluded_roles = set(topology.excluded_roles)
+    topology_roles = selected_roles | excluded_roles
+
+    topology_role_ids = (*topology.selected_roles, *topology.excluded_roles)
+    duplicate_topology_roles = sorted(
+        role_id for role_id, count in Counter(topology_role_ids).items() if count > 1
+    )
+    if duplicate_topology_roles:
+        findings.append(
+            "compiled topology repeats role ids: "
+            + ", ".join(duplicate_topology_roles)
+        )
+    overlapping_roles = sorted(selected_roles & excluded_roles)
+    if overlapping_roles:
+        findings.append(
+            "compiled topology marks roles both selected and excluded: "
+            + ", ".join(overlapping_roles)
+        )
+    missing_required = sorted(set(topology.required_roles) - selected_roles)
+    if missing_required:
+        findings.append(
+            "compiled topology required roles are not selected: "
+            + ", ".join(missing_required)
+        )
+
+    for role_id in sorted(topology_roles):
+        expected[("role", role_id)] = role_id in selected_roles
+
+    role_decisions: dict[str, RoleDecision] = {}
+    for decision in compilation.role_decisions:
+        if decision.role_id in role_decisions:
+            findings.append(f"duplicate canonical role decision for {decision.role_id!r}")
+            continue
+        role_decisions[decision.role_id] = decision
+        if decision.role_id not in topology_roles:
+            findings.append(
+                f"canonical role decision {decision.role_id!r} is outside the compiled topology"
+            )
+            continue
+        canonical_selected = decision.role_id in selected_roles
+        if decision.selected is not canonical_selected:
+            findings.append(
+                f"canonical role decision {decision.role_id!r} records selected="
+                f"{decision.selected!r}, expected {canonical_selected!r} from the compiled topology"
+            )
+    for role_id in sorted(topology_roles):
+        if role_id not in role_decisions:
+            findings.append(f"compiled role {role_id!r} has no canonical role decision")
+
+    assurance_selections: dict[tuple[str, str], bool] = {
+        **{
+            ("assurance-mode", mode.value): mode in compilation.assurance_requirement.required_modes
+            for mode in AssuranceMode
+        },
+        **{
+            ("assurance-evidence", evidence.value): evidence
+            in compilation.assurance_requirement.required_evidence
+            for evidence in EvidenceClass
+        },
+    }
+    expected.update(assurance_selections)
+    assurance_decisions: dict[tuple[str, str], AssuranceDecision] = {}
+    for decision in compilation.assurance_decisions:
+        key = (decision.component, decision.component_id)
+        if key in assurance_decisions:
+            findings.append(f"duplicate canonical assurance decision for {key!r}")
+            continue
+        assurance_decisions[key] = decision
+        canonical_selected = assurance_selections.get(key)
+        if canonical_selected is None:
+            findings.append(f"canonical assurance decision {key!r} is unknown")
+            continue
+        if decision.selected is not canonical_selected:
+            findings.append(
+                f"canonical assurance decision {key!r} records selected="
+                f"{decision.selected!r}, expected {canonical_selected!r} from the assurance requirement"
+            )
+    for key in sorted(assurance_selections):
+        if key not in assurance_decisions:
+            findings.append(f"compiled assurance component {key!r} has no canonical decision")
+
+    for requirement in compilation.capability_requirements:
+        expected[("capability", requirement.capability_id)] = (
+            requirement.authorized is True and requirement.available is True
+        )
+    expected[("authority-ceiling", compilation.authority_ceiling.consequence.value)] = True
+    return expected
+
+
 def validate_compilation_explainability(
     compilation: RoleAssuranceCompilation,
 ) -> CompilationExplanationReport:
@@ -605,30 +708,19 @@ def validate_compilation_explainability(
 
     findings: list[str] = []
     trace = compilation.explanation_trace
+    expected = _canonical_material_selections(compilation, findings)
+    trace_keys = [(entry.component, entry.component_id) for entry in trace]
+    duplicate_trace_keys = sorted(
+        key for key, count in Counter(trace_keys).items() if count > 1
+    )
+    for key in duplicate_trace_keys:
+        findings.append(f"duplicate material trace entry for {key!r}")
     material = {
         (entry.component, entry.component_id): entry
         for entry in trace
-        if entry.component
-        in {"role", "assurance-mode", "assurance-evidence", "capability"}
     }
-    expected = {
-        ("role", role_id)
-        for role_id in (*compilation.topology.selected_roles, *compilation.topology.excluded_roles)
-    }
-    expected.update(
-        ("assurance-mode", decision.component_id)
-        for decision in compilation.assurance_decisions
-        if decision.component == "assurance-mode"
-    )
-    expected.update(
-        ("assurance-evidence", item.component_id)
-        for item in compilation.assurance_decisions
-        if item.component == "assurance-evidence"
-    )
-    expected.update(
-        ("capability", requirement.capability_id)
-        for requirement in compilation.capability_requirements
-    )
+    for key in sorted(set(material) - set(expected)):
+        findings.append(f"unknown material trace entry {key!r}")
 
     allowed_paths = {
         "role": {
@@ -661,6 +753,15 @@ def validate_compilation_explainability(
             CompilationInputPath.AUTHORITY_CEILING,
             CompilationInputPath.CAPABILITY_MIN_EXTERNAL_EFFECT,
         },
+        "authority-ceiling": {
+            CompilationInputPath.WORK_CONSEQUENCE,
+            CompilationInputPath.WORK_EXTERNAL_EFFECT,
+            CompilationInputPath.WORK_RESERVED_AUTHORITY,
+            CompilationInputPath.DECISION_RIGHTS_SCHEMA_VERSION,
+            CompilationInputPath.DECISION_RIGHTS_AUTHORITY_CEILINGS,
+            CompilationInputPath.AUTHORITY_CEILING_MAX_EFFECT,
+            CompilationInputPath.AUTHORITY_CEILING_MAX_AUTONOMY,
+        },
     }
     role_specific_paths = {
         "builder": {CompilationInputPath.WORK_EXTERNAL_EFFECT},
@@ -687,6 +788,12 @@ def validate_compilation_explainability(
         if entry is None or not entry.causes:
             findings.append(f"{component} {component_id!r} has no structured cause trace")
             continue
+        canonical_selected = expected[(component, component_id)]
+        if entry.selected is not canonical_selected:
+            findings.append(
+                f"{component} {component_id!r} records selected={entry.selected!r}, expected "
+                f"{canonical_selected!r} from canonical compilation state"
+            )
         for cause in entry.causes:
             if not isinstance(cause.locator, CompilationInputLocator):
                 findings.append(
@@ -718,7 +825,13 @@ def validate_compilation_explainability(
                     f"{component} {component_id!r} has a non-boolean predicate result"
                 )
                 continue
-            if cause.locator.path not in allowed_paths[component]:
+            component_paths = allowed_paths.get(component)
+            if component_paths is None:
+                findings.append(
+                    f"{component} {component_id!r} has no validator for its material component"
+                )
+                continue
+            if cause.locator.path not in component_paths:
                 findings.append(
                     f"{component} {component_id!r} has a cause from unrelated input "
                     f"{cause.locator.path.value!r}"
@@ -844,7 +957,7 @@ def validate_compilation_explainability(
             if component != "capability":
                 expected_consequence = (
                     CompilationCauseConsequence.SELECTED
-                    if entry.selected
+                    if canonical_selected
                     else CompilationCauseConsequence.EXCLUDED
                 )
                 if cause.consequence is not expected_consequence:
