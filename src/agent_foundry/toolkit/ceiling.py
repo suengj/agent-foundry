@@ -292,6 +292,14 @@ def validate_task_toolkit_against_ceiling(
                 f"task role {role_id!r} allows capabilities outside project lock: "
                 + ", ".join(missing_role_capabilities)
             )
+        for capability_id in role.allowed_capabilities:
+            min_effect = capability_min_external_effect(capability_id, capabilities_by_id)
+            if exceeds_permission_ceiling(min_effect, ceiling):
+                raise ToolkitResolutionError(
+                    f"task role {role_id!r} allows capability {capability_id!r} "
+                    f"with min_external_effect {min_effect.value} above task ceiling "
+                    f"{ceiling.value}"
+                )
         for role_scope in role.write_scope:
             if _normalize_role_scope(role_scope) is None:
                 raise ToolkitResolutionError(

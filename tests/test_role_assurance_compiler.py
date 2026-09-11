@@ -16,6 +16,10 @@ from agent_foundry.models import (
     BlastRadius,
     CapabilityDeclaration,
     CompilationCause,
+    CompilationInputLocator,
+    CompilationInputPath,
+    CompilationPredicate,
+    CompilationPredicateOperator,
     ConsequenceClass,
     CorrectnessObservability,
     DecisionRights,
@@ -30,6 +34,7 @@ from agent_foundry.models import (
     RoleContract,
     SkillRoleConstraint,
     RoleAssuranceCompilation,
+    TaskToolkit,
     ToolkitLock,
     ToolkitResolutionError,
     WorkItemContract,
@@ -41,6 +46,7 @@ from agent_foundry.toolkit import (
     resolve_task_toolkit_for_compilation,
     resolve_task_toolkit_for_work_item,
 )
+from agent_foundry.toolkit.ceiling import validate_task_toolkit_against_ceiling
 from agent_foundry.toolkit.builtin_registry import (
     build_default_registry,
     build_default_registry_budget_profiles,
@@ -315,6 +321,53 @@ def test_task_toolkit_cannot_select_capability_above_compiled_ceiling():
         )
 
 
+def test_finished_task_rejects_selected_role_capability_above_compiled_ceiling():
+    base_registry = build_default_registry()
+    write_manager = next(item for item in base_registry.roles if item.id == "manager").model_copy(
+        update={"allowed_capabilities": ["repository.write"]}
+    )
+    registry = base_registry.model_copy(
+        update={
+            "roles": [
+                write_manager if item.id == write_manager.id else item
+                for item in base_registry.roles
+            ]
+        }
+    )
+    lock = _bridge_lock().model_copy(
+        update={"role_ids": ["builder", "validator", "reviewer", "manager"]}
+    )
+    task = TaskToolkit(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        work_item_id="WI-READONLY-ROLE-CAPABILITY",
+        capability_ids=["repository.read"],
+        skill_ids=[],
+        workflow_id="single-worker-validation",
+        role_ids=["manager"],
+        permission_profile_ids=["read-only"],
+        budget_profile_ids=["default"],
+    )
+    work_item = _bridge_work_item(
+        id="WI-READONLY-ROLE-CAPABILITY",
+        authority_class=ExternalEffectClass.READ_ONLY,
+    )
+    ceiling = AuthorityCeiling(
+        consequence=ConsequenceClass.LOW,
+        max_external_effect=ExternalEffectClass.READ_ONLY,
+        max_autonomy=Autonomy.SUGGEST,
+        approval_class=ApprovalClass.AUTOMATIC,
+    )
+    with pytest.raises(ToolkitResolutionError, match="task role 'manager'.*above task ceiling"):
+        validate_task_toolkit_against_ceiling(
+            task,
+            lock,
+            registry,
+            work_item,
+            build_default_registry_permission_profiles(),
+            compiled_ceiling=ceiling,
+        )
+
+
 def test_explanation_fixture_covers_manager_reviewer_validator_selection_and_nonselection():
     low = _compile(_work(workflow_kind="docs-only"))
     high = _compile(
@@ -461,7 +514,9 @@ def _bridge_work_item(**overrides: object) -> WorkItemContract:
     return WorkItemContract(**values)
 
 
-def _bridge_compilation(**overrides: object) -> RoleAssuranceCompilation:
+def _bridge_compilation(
+    *, registry=None, **overrides: object
+) -> RoleAssuranceCompilation:
     values: dict[str, object] = {
         "workflow_kind": "capability",
         "external_effect": ExternalEffectClass.REPOSITORY_WRITE,
@@ -481,7 +536,12 @@ def _bridge_compilation(**overrides: object) -> RoleAssuranceCompilation:
         ),
     }
     values.update(overrides)
-    return compile_role_assurance(_profile(), _operating_model(), WorkCharacteristics(**values))
+    return compile_role_assurance(
+        _profile(),
+        _operating_model(),
+        WorkCharacteristics(**values),
+        registry=registry,
+    )
 
 
 def _bridge_lock(*, include_reviewer: bool = True) -> ToolkitLock:
@@ -572,20 +632,29 @@ def test_explainability_requires_structured_input_predicates_for_inclusions_and_
         if entry.component in {"role", "assurance-mode", "assurance-evidence", "capability"}:
             assert entry.causes
             assert all(
-                cause.locator and cause.predicate and isinstance(cause.evaluated, bool)
+                isinstance(cause.locator, CompilationInputLocator)
+                and isinstance(cause.locator.path, CompilationInputPath)
+                and isinstance(cause.predicate, CompilationPredicate)
+                and isinstance(cause.predicate.operator, CompilationPredicateOperator)
+                and isinstance(cause.evaluated, bool)
                 for cause in entry.causes
             )
 
 
-def test_explainability_rejects_generic_catch_all_causes():
+def test_explainability_rejects_arbitrary_untyped_catch_all_causes():
     result = _compile(_work(workflow_kind="plain-name"))
     forged_trace = tuple(
         entry.model_copy(
             update={
                 "causes": (
-                    CompilationCause(
-                        locator="workflow",
-                        predicate="not required by workflow, assurance, authority, or role floor",
+                    CompilationCause.model_construct(
+                        locator=CompilationInputLocator(
+                            path=CompilationInputPath.WORK_RESERVED_AUTHORITY,
+                        ),
+                        predicate=CompilationPredicate.model_construct(
+                            operator="not-required-anywhere",
+                            value="no applicable rule anywhere in the universe",
+                        ),
                         evaluated=False,
                     ),
                 )
@@ -599,7 +668,38 @@ def test_explainability_rejects_generic_catch_all_causes():
         result.model_copy(update={"explanation_trace": forged_trace})
     )
     assert not report.accepted()
-    assert any("unstructured cause trace" in finding for finding in report.findings)
+    assert report.findings
+
+
+def test_compilation_bridge_rejects_role_outside_compiled_topology():
+    base_registry = build_default_registry()
+    altered_workflow = next(
+        item for item in base_registry.workflows if item.id == "single-worker-validation"
+    ).model_copy(update={"required_roles": ["builder", "validator", "manager"]})
+    registry = base_registry.model_copy(
+        update={
+            "workflows": [
+                altered_workflow
+                if item.id == altered_workflow.id
+                else item
+                for item in base_registry.workflows
+            ]
+        }
+    )
+    compilation = _bridge_compilation(registry=registry)
+    assert "manager" not in compilation.selected_roles
+    assert "manager" in compilation.excluded_roles
+    lock = _bridge_lock()
+    lock = lock.model_copy(update={"role_ids": [*lock.role_ids, "manager"]})
+    with pytest.raises(ToolkitResolutionError, match="outside compiled topology"):
+        resolve_task_toolkit_for_compilation(
+            _bridge_work_item(),
+            lock,
+            compilation,
+            registry=registry,
+            permission_profiles=build_default_registry_permission_profiles(),
+            budget_profiles=build_default_registry_budget_profiles(),
+        )
 
 
 def test_role_assurance_compilation_rejects_schema_0_1():

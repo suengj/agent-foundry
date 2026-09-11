@@ -23,6 +23,10 @@ from agent_foundry.models.compiler import (
     AssuranceDecision,
     CapabilityDeclaration,
     CompilationCause,
+    CompilationInputLocator,
+    CompilationInputPath,
+    CompilationPredicate,
+    CompilationPredicateOperator,
     CompilationTraceEntry,
     CompiledCapabilityRequirement,
     EscalationRequirement,
@@ -66,12 +70,32 @@ def _min_autonomy(left: Autonomy, right: Autonomy) -> Autonomy:
     return left if _AUTONOMY_RANK[left] <= _AUTONOMY_RANK[right] else right
 
 
-def _cause(locator: str, predicate: str, evaluated: bool = True) -> CompilationCause:
-    return CompilationCause(locator=locator, predicate=predicate, evaluated=evaluated)
+def _cause(
+    path: CompilationInputPath,
+    operator: CompilationPredicateOperator,
+    value: object = None,
+    evaluated: bool = True,
+    *,
+    item: str | None = None,
+) -> CompilationCause:
+    return CompilationCause(
+        locator=CompilationInputLocator(path=path, item=item),
+        predicate=CompilationPredicate(operator=operator, value=value),
+        evaluated=evaluated,
+    )
 
 
 def _unique_causes(*causes: CompilationCause) -> tuple[CompilationCause, ...]:
-    unique = {(item.locator, item.predicate, item.evaluated): item for item in causes}
+    unique = {
+        (
+            item.locator.path,
+            item.locator.item,
+            item.predicate.operator,
+            item.predicate.value,
+            item.evaluated,
+        ): item
+        for item in causes
+    }
     return tuple(unique[key] for key in sorted(unique))
 
 
@@ -113,15 +137,24 @@ def _assurance(
     base = operating_model.assurance.for_blast_radius(blast_radius)
     modes = set(base.required_modes)
     evidence = set(base.required_evidence)
-    base_predicate = (
-        "AssuranceProfile.for_blast_radius(work blast-radius) includes the compiled floor"
-    )
     causes_by_mode: dict[AssuranceMode, list[CompilationCause]] = {
-        mode: [_cause("operating_model.assurance", base_predicate)]
+        mode: [
+            _cause(
+                CompilationInputPath.OPERATING_MODEL_ASSURANCE,
+                CompilationPredicateOperator.INCLUDES,
+                "assurance floor derived from work blast radius",
+            )
+        ]
         for mode in base.required_modes
     }
     causes_by_evidence: dict[EvidenceClass, list[CompilationCause]] = {
-        item: [_cause("operating_model.assurance", base_predicate)]
+        item: [
+            _cause(
+                CompilationInputPath.OPERATING_MODEL_ASSURANCE,
+                CompilationPredicateOperator.INCLUDES,
+                "assurance floor derived from work blast radius",
+            )
+        ]
         for item in base.required_evidence
     }
 
@@ -136,12 +169,22 @@ def _assurance(
     for mode in work.required_assurance_modes:
         require_mode(
             mode,
-            _cause("work.required_assurance_modes", f"contains {mode.value!r}"),
+            _cause(
+                CompilationInputPath.WORK_REQUIRED_ASSURANCE_MODES,
+                CompilationPredicateOperator.CONTAINS,
+                mode.value,
+                item=mode.value,
+            ),
         )
     for item in work.required_evidence:
         require_evidence(
             item,
-            _cause("work.required_evidence", f"contains {item.value!r}"),
+            _cause(
+                CompilationInputPath.WORK_REQUIRED_EVIDENCE,
+                CompilationPredicateOperator.CONTAINS,
+                item.value,
+                item=item.value,
+            ),
         )
 
     # This is the high-consequence floor. It is deliberately explicit at the
@@ -150,24 +193,54 @@ def _assurance(
     if work.consequence in {ConsequenceClass.HIGH, ConsequenceClass.CRITICAL}:
         require_mode(
             AssuranceMode.INDEPENDENT_REVIEW,
-            _cause("work.consequence", "is high or critical"),
+            _cause(
+                CompilationInputPath.WORK_CONSEQUENCE,
+                CompilationPredicateOperator.IN,
+                (ConsequenceClass.HIGH.value, ConsequenceClass.CRITICAL.value),
+            ),
         )
         require_evidence(
             EvidenceClass.INDEPENDENT_REVIEW,
-            _cause("work.consequence", "is high or critical"),
+            _cause(
+                CompilationInputPath.WORK_CONSEQUENCE,
+                CompilationPredicateOperator.IN,
+                (ConsequenceClass.HIGH.value, ConsequenceClass.CRITICAL.value),
+            ),
         )
 
     if work.requires_sit:
-        require_mode(AssuranceMode.RUNTIME_READBACK, _cause("work.requires_sit", "is true"))
-        require_evidence(EvidenceClass.INTEGRATION_PROOF, _cause("work.requires_sit", "is true"))
+        require_mode(
+            AssuranceMode.RUNTIME_READBACK,
+            _cause(
+                CompilationInputPath.WORK_REQUIRES_SIT,
+                CompilationPredicateOperator.IS,
+                True,
+            ),
+        )
+        require_evidence(
+            EvidenceClass.INTEGRATION_PROOF,
+            _cause(
+                CompilationInputPath.WORK_REQUIRES_SIT,
+                CompilationPredicateOperator.IS,
+                True,
+            ),
+        )
     if work.requires_runtime_readback:
         require_mode(
             AssuranceMode.RUNTIME_READBACK,
-            _cause("work.requires_runtime_readback", "is true"),
+            _cause(
+                CompilationInputPath.WORK_REQUIRES_RUNTIME_READBACK,
+                CompilationPredicateOperator.IS,
+                True,
+            ),
         )
         require_evidence(
             EvidenceClass.RUNTIME_READBACK,
-            _cause("work.requires_runtime_readback", "is true"),
+            _cause(
+                CompilationInputPath.WORK_REQUIRES_RUNTIME_READBACK,
+                CompilationPredicateOperator.IS,
+                True,
+            ),
         )
 
     independent = (
@@ -197,7 +270,15 @@ def _assurance(
         selected = mode in modes
         causes = causes_by_mode.get(
             mode,
-            [_cause("assurance.required_modes", f"contains {mode.value!r}", False)],
+            [
+                _cause(
+                    CompilationInputPath.ASSURANCE_REQUIRED_MODES,
+                    CompilationPredicateOperator.CONTAINS,
+                    mode.value,
+                    False,
+                    item=mode.value,
+                )
+            ],
         )
         decisions.append(
             AssuranceDecision(
@@ -213,7 +294,15 @@ def _assurance(
         selected = item in evidence
         causes = causes_by_evidence.get(
             item,
-            [_cause("assurance.required_evidence", f"contains {item.value!r}", False)],
+            [
+                _cause(
+                    CompilationInputPath.ASSURANCE_REQUIRED_EVIDENCE,
+                    CompilationPredicateOperator.CONTAINS,
+                    item.value,
+                    False,
+                    item=item.value,
+                )
+            ],
         )
         decisions.append(
             AssuranceDecision(
@@ -246,11 +335,20 @@ def _authority(
     decision_rights: DecisionRights,
 ) -> tuple[AuthorityCeiling, tuple[CompilationCause, ...]]:
     causes = [
-        _cause("work.consequence", f"equals {work.consequence.value!r}"),
-        _cause("work.external_effect", f"equals {work.external_effect.value!r}"),
         _cause(
-            "decision_rights.schema_version",
-            f"equals {decision_rights.schema_version!r}",
+            CompilationInputPath.WORK_CONSEQUENCE,
+            CompilationPredicateOperator.EQUALS,
+            work.consequence.value,
+        ),
+        _cause(
+            CompilationInputPath.WORK_EXTERNAL_EFFECT,
+            CompilationPredicateOperator.EQUALS,
+            work.external_effect.value,
+        ),
+        _cause(
+            CompilationInputPath.DECISION_RIGHTS_SCHEMA_VERSION,
+            CompilationPredicateOperator.EQUALS,
+            decision_rights.schema_version,
         ),
     ]
     declared = decision_rights.ceiling_for(work.consequence)
@@ -262,11 +360,19 @@ def _authority(
                 max_autonomy=Autonomy.SUGGEST,
                 approval_class=decision_rights.unknown_authority,
                 policy_evidence_refs=tuple(
-                    f"{item.locator}:{item.predicate}" for item in causes
+                    f"{item.locator.render()}:{item.predicate.render()}" for item in causes
                 ),
             ),
             tuple(
-                [*causes, _cause("decision_rights.authority_ceilings", "contains the work consequence", False)]
+                [
+                    *causes,
+                    _cause(
+                        CompilationInputPath.DECISION_RIGHTS_AUTHORITY_CEILINGS,
+                        CompilationPredicateOperator.CONTAINS,
+                        work.consequence.value,
+                        False,
+                    ),
+                ]
             ),
         )
 
@@ -275,21 +381,29 @@ def _authority(
     approval = declared.approval_class
     if work.reserved_authority and approval is ApprovalClass.AUTOMATIC:
         approval = ApprovalClass.APPROVAL_REQUIRED
-        causes.append(_cause("work.reserved_authority", "is true"))
+        causes.append(
+            _cause(
+                CompilationInputPath.WORK_RESERVED_AUTHORITY,
+                CompilationPredicateOperator.IS,
+                True,
+            )
+        )
     if _EFFECT_RANK[work.external_effect] > _EFFECT_RANK[effect]:
         approval = ApprovalClass.REFUSED
         causes.append(
             _cause(
-                "work.external_effect and authority_ceiling.max_external_effect",
-                "requested effect is above the effective ceiling",
+                CompilationInputPath.AUTHORITY_CEILING_MAX_EFFECT,
+                CompilationPredicateOperator.WITHIN,
+                effect.value,
             )
         )
     if work.requested_autonomy is not None and _AUTONOMY_RANK[work.requested_autonomy] > _AUTONOMY_RANK[autonomy]:
         approval = ApprovalClass.REFUSED
         causes.append(
             _cause(
-                "work.requested_autonomy and authority_ceiling.max_autonomy",
-                "requested autonomy is above the effective ceiling",
+                CompilationInputPath.AUTHORITY_CEILING_MAX_AUTONOMY,
+                CompilationPredicateOperator.WITHIN,
+                autonomy.value,
             )
         )
     ceiling = AuthorityCeiling(
@@ -301,7 +415,7 @@ def _authority(
             sorted(
                 {
                     *declared.policy_evidence_refs,
-                    *(f"{item.locator}:{item.predicate}" for item in causes),
+                    *(f"{item.locator.render()}:{item.predicate.render()}" for item in causes),
                 }
             )
         ),
@@ -340,56 +454,134 @@ def _select_roles(
     if writer_needed:
         select(
             "builder",
-            _cause("work.external_effect", "is not read-only"),
+            _cause(
+                CompilationInputPath.WORK_EXTERNAL_EFFECT,
+                CompilationPredicateOperator.IS_NOT,
+                ExternalEffectClass.READ_ONLY.value,
+            ),
         )
     # Deterministic validation is the reachable minimum for simple implementation,
     # documentation, review, resume, and integration work.
     if writer_needed or read_only_review or assurance.required_modes or sit:
+        validator_causes: list[CompilationCause] = []
+        if writer_needed:
+            validator_causes.append(
+                _cause(
+                    CompilationInputPath.WORK_EXTERNAL_EFFECT,
+                    CompilationPredicateOperator.IS_NOT,
+                    ExternalEffectClass.READ_ONLY.value,
+                )
+            )
+        if read_only_review:
+            validator_causes.append(
+                _cause(
+                    CompilationInputPath.ASSURANCE_INDEPENDENT_REVIEW,
+                    CompilationPredicateOperator.IS,
+                    True,
+                )
+            )
+        if assurance.required_modes:
+            validator_causes.append(
+                _cause(
+                    CompilationInputPath.ASSURANCE_REQUIRED_MODES,
+                    CompilationPredicateOperator.NON_EMPTY,
+                )
+            )
+        if sit:
+            validator_causes.append(
+                _cause(
+                    CompilationInputPath.WORK_REQUIRES_SIT,
+                    CompilationPredicateOperator.IS,
+                    True,
+                )
+            )
         select(
             "validator",
-            _cause(
-                "assurance.required_modes or work.requires_sit",
-                "requires a deterministic validation boundary",
-            ),
+            *validator_causes,
         )
     if read_only_review:
         select(
             "reviewer",
-            _cause("assurance.independent_review", "is true"),
+            _cause(
+                CompilationInputPath.ASSURANCE_INDEPENDENT_REVIEW,
+                CompilationPredicateOperator.IS,
+                True,
+            ),
         )
     if assurance.independent_review:
         select(
             "reviewer",
-            _cause("assurance.independent_review", "is true"),
+            _cause(
+                CompilationInputPath.ASSURANCE_INDEPENDENT_REVIEW,
+                CompilationPredicateOperator.IS,
+                True,
+            ),
         )
     if sit or work.requires_runtime_readback or AssuranceMode.RUNTIME_READBACK in assurance.required_modes:
+        runtime_causes: list[CompilationCause] = []
+        if sit:
+            runtime_causes.append(
+                _cause(
+                    CompilationInputPath.WORK_REQUIRES_SIT,
+                    CompilationPredicateOperator.IS,
+                    True,
+                )
+            )
+        if work.requires_runtime_readback:
+            runtime_causes.append(
+                _cause(
+                    CompilationInputPath.WORK_REQUIRES_RUNTIME_READBACK,
+                    CompilationPredicateOperator.IS,
+                    True,
+                )
+            )
+        if AssuranceMode.RUNTIME_READBACK in assurance.required_modes:
+            runtime_causes.append(
+                _cause(
+                    CompilationInputPath.ASSURANCE_REQUIRED_MODES,
+                    CompilationPredicateOperator.CONTAINS,
+                    AssuranceMode.RUNTIME_READBACK.value,
+                    item=AssuranceMode.RUNTIME_READBACK.value,
+                )
+            )
         select(
             "runtime-verifier",
-            _cause(
-                "assurance.required_modes or work.requires_runtime_readback or work.requires_sit",
-                "requires external-state read-back",
-            ),
+            *runtime_causes,
         )
     if apply_preview:
         select(
             "integrator",
-            _cause("work.reserved_authority", "is true and requires an integration gate"),
+            _cause(
+                CompilationInputPath.WORK_RESERVED_AUTHORITY,
+                CompilationPredicateOperator.IS,
+                True,
+            ),
         )
         select(
             "manager",
-            _cause("work.reserved_authority", "is true and requires an authority owner"),
+            _cause(
+                CompilationInputPath.WORK_RESERVED_AUTHORITY,
+                CompilationPredicateOperator.IS,
+                True,
+            ),
         )
     if operating_model.role_separation.minimum_distinct_actors > 1:
         select(
             "reviewer",
-            _cause("operating_model.role_separation.minimum_distinct_actors", "is greater than one"),
+            _cause(
+                CompilationInputPath.OPERATING_MODEL_ROLE_MINIMUM_ACTORS,
+                CompilationPredicateOperator.EXCEEDS,
+                1,
+            ),
         )
     for role_id in operating_model.role_separation.required_roles:
         select(
             role_id,
             _cause(
-                "operating_model.role_separation.required_roles",
-                f"contains {role_id!r}",
+                CompilationInputPath.OPERATING_MODEL_REQUIRED_ROLES,
+                CompilationPredicateOperator.CONTAINS,
+                role_id,
+                item=role_id,
             ),
         )
 
@@ -426,21 +618,43 @@ def _select_roles(
         if is_selected:
             rationale = "selected for the minimum logical responsibility topology"
         else:
+            if role_id == "builder":
+                excluded_path = CompilationInputPath.WORK_EXTERNAL_EFFECT
+                excluded_operator = CompilationPredicateOperator.IS
+                excluded_value: object = ExternalEffectClass.READ_ONLY.value
+                excluded_item = None
+            elif role_id == "reviewer":
+                excluded_path = CompilationInputPath.ASSURANCE_INDEPENDENT_REVIEW
+                excluded_operator = CompilationPredicateOperator.IS
+                excluded_value = False
+                excluded_item = None
+            elif role_id in {"manager", "integrator"}:
+                excluded_path = CompilationInputPath.WORK_RESERVED_AUTHORITY
+                excluded_operator = CompilationPredicateOperator.IS
+                excluded_value = False
+                excluded_item = None
+            elif role_id == "validator":
+                excluded_path = CompilationInputPath.ASSURANCE_REQUIRED_MODES
+                excluded_operator = CompilationPredicateOperator.EMPTY
+                excluded_value = None
+                excluded_item = None
+            elif role_id == "runtime-verifier":
+                excluded_path = CompilationInputPath.WORK_REQUIRES_RUNTIME_READBACK
+                excluded_operator = CompilationPredicateOperator.IS
+                excluded_value = False
+                excluded_item = None
+            else:
+                excluded_path = CompilationInputPath.OPERATING_MODEL_REQUIRED_ROLES
+                excluded_operator = CompilationPredicateOperator.DOES_NOT_CONTAIN
+                excluded_value = role_id
+                excluded_item = role_id
             role_causes.append(
                 _cause(
-                    (
-                        "work.external_effect"
-                        if role_id == "builder"
-                        else "assurance.independent_review"
-                        if role_id == "reviewer"
-                        else "work.reserved_authority"
-                        if role_id in {"manager", "integrator"}
-                        else "assurance.required_modes or work.requires_sit"
-                        if role_id in {"validator", "runtime-verifier"}
-                        else "operating_model.role_separation.required_roles"
-                    ),
-                    f"does not require role {role_id!r}",
+                    excluded_path,
+                    excluded_operator,
+                    excluded_value,
                     False,
+                    item=excluded_item,
                 )
             )
             rationale = "materially excluded from the minimum topology"
@@ -506,22 +720,28 @@ def _capability_requirements(
         ):
             causes.append(
                 _cause(
-                    f"topology.selected_roles[{role_id}]",
-                    f"allows capability {capability_id!r}",
+                    CompilationInputPath.TOPOLOGY_SELECTED_ROLES,
+                    CompilationPredicateOperator.ALLOWS,
+                    capability_id,
+                    item=role_id,
                 )
             )
         if capability_id in work.required_capabilities:
             causes.append(
                 _cause(
-                    "work.required_capabilities",
-                    f"contains {capability_id!r}",
+                    CompilationInputPath.WORK_REQUIRED_CAPABILITIES,
+                    CompilationPredicateOperator.CONTAINS,
+                    capability_id,
+                    item=capability_id,
                 )
             )
         if not causes:
             causes.append(
                 _cause(
-                    "topology.selected_roles",
-                    f"requires capability {capability_id!r}",
+                    CompilationInputPath.WORK_REQUIRED_CAPABILITIES,
+                    CompilationPredicateOperator.REQUIRES,
+                    capability_id,
+                    item=capability_id,
                 )
             )
         requirement = CompiledCapabilityRequirement(
@@ -549,7 +769,12 @@ def _capability_requirements(
                     reason="required capability exceeds the compiled authority ceiling",
                     causes=_unique_causes(
                         *requirement.causes,
-                        _cause("authority_ceiling", "capability minimum effect is within the ceiling", False),
+                        _cause(
+                            CompilationInputPath.AUTHORITY_CEILING,
+                            CompilationPredicateOperator.WITHIN,
+                            authority.max_external_effect.value,
+                            False,
+                        ),
                     ),
                 )
             )
@@ -571,7 +796,13 @@ def _escalations(
                 trigger=ControlTrigger.AUTHORITY_UNKNOWN,
                 reason="requested work cannot fit the declared authority ceiling",
                 action="stop and request explicit authority or a narrower work item",
-                causes=(_cause("authority_ceiling.approval_class", "is refused"),),
+                causes=(
+                    _cause(
+                        CompilationInputPath.AUTHORITY_CEILING_APPROVAL_CLASS,
+                        CompilationPredicateOperator.IS,
+                        ApprovalClass.REFUSED.value,
+                    ),
+                ),
             )
         )
     elif authority.approval_class is ApprovalClass.APPROVAL_REQUIRED:
@@ -581,7 +812,13 @@ def _escalations(
                 trigger=ControlTrigger.AUTHORITY_UNKNOWN,
                 reason="apply authority is reserved and approval is required",
                 action="hold preview until the reserved authority decision is recorded",
-                causes=(_cause("authority_ceiling.approval_class", "is approval-required"),),
+                causes=(
+                    _cause(
+                        CompilationInputPath.AUTHORITY_CEILING_APPROVAL_CLASS,
+                        CompilationPredicateOperator.IS,
+                        ApprovalClass.APPROVAL_REQUIRED.value,
+                    ),
+                ),
             )
         )
     if assurance.independent_review:
@@ -591,7 +828,13 @@ def _escalations(
                 trigger=ControlTrigger.REVIEW_FAILED,
                 reason="independent review is a compiled assurance floor",
                 action="stop and escalate unresolved review findings",
-                causes=(_cause("assurance.independent_review", "is true"),),
+                causes=(
+                    _cause(
+                        CompilationInputPath.ASSURANCE_INDEPENDENT_REVIEW,
+                        CompilationPredicateOperator.IS,
+                        True,
+                    ),
+                ),
             )
         )
     if assurance.required_evidence:
@@ -601,7 +844,12 @@ def _escalations(
                 trigger=ControlTrigger.REQUIRED_EVIDENCE_MISSING,
                 reason="compiled assurance requires typed evidence",
                 action="do not advance until the required evidence is present",
-                causes=(_cause("assurance.required_evidence", "is non-empty"),),
+                causes=(
+                    _cause(
+                        CompilationInputPath.ASSURANCE_REQUIRED_EVIDENCE,
+                        CompilationPredicateOperator.NON_EMPTY,
+                    ),
+                ),
             )
         )
     if work.requires_sit or work.requires_runtime_readback:
@@ -611,11 +859,25 @@ def _escalations(
                 trigger=ControlTrigger.EXTERNAL_STATE_UNOBSERVABLE,
                 reason="the work requires system-level read-back",
                 action="hold and escalate when the declared read-back is unavailable",
-                causes=(
-                    _cause(
-                        "work.requires_sit or work.requires_runtime_readback",
-                        "is true",
-                    ),
+                causes=tuple(
+                    cause
+                    for cause in (
+                        _cause(
+                            CompilationInputPath.WORK_REQUIRES_SIT,
+                            CompilationPredicateOperator.IS,
+                            True,
+                        )
+                        if work.requires_sit
+                        else None,
+                        _cause(
+                            CompilationInputPath.WORK_REQUIRES_RUNTIME_READBACK,
+                            CompilationPredicateOperator.IS,
+                            True,
+                        )
+                        if work.requires_runtime_readback
+                        else None,
+                    )
+                    if cause is not None
                 ),
             )
         )
@@ -643,8 +905,10 @@ def _escalations(
                 action="follow operating-model escalation condition",
                 causes=(
                     _cause(
-                        f"operating_model.escalation_conditions[{condition.id}]",
-                        "is declared",
+                        CompilationInputPath.OPERATING_MODEL_ESCALATION_CONDITIONS,
+                        CompilationPredicateOperator.CONTAINS,
+                        condition.id,
+                        item=condition.id,
                     ),
                 ),
             )
@@ -757,7 +1021,14 @@ def compile_role_assurance(
             UnresolvedPrerequisite(
                 id=role_id,
                 reason="required logical role is absent from the supplied registry",
-                causes=(_cause("operating_model.role_separation", "requires the missing role"),),
+                causes=(
+                    _cause(
+                        CompilationInputPath.OPERATING_MODEL_REQUIRED_ROLES,
+                        CompilationPredicateOperator.CONTAINS,
+                        role_id,
+                        item=role_id,
+                    ),
+                ),
             )
         )
     unresolved = sorted(unresolved, key=lambda item: item.id)

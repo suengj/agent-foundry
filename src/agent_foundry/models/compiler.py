@@ -6,6 +6,8 @@ describe process topology, provider/model choices, dispatch, or execution state.
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from pydantic import Field, model_validator
 
 from agent_foundry.models.base import (
@@ -85,11 +87,122 @@ class CapabilityDeclaration(FoundryModel):
 WorkCharacteristics.model_rebuild()
 
 
+class CompilationInputPath(StrEnum):
+    """Closed set of compiler inputs that can justify a material decision."""
+
+    WORK_CONSEQUENCE = "work.consequence"
+    WORK_EXTERNAL_EFFECT = "work.external_effect"
+    WORK_REQUIRED_ASSURANCE_MODES = "work.required_assurance_modes"
+    WORK_REQUIRED_EVIDENCE = "work.required_evidence"
+    WORK_REQUIRED_CAPABILITIES = "work.required_capabilities"
+    WORK_REQUIRES_SIT = "work.requires_sit"
+    WORK_REQUIRES_RUNTIME_READBACK = "work.requires_runtime_readback"
+    WORK_RESERVED_AUTHORITY = "work.reserved_authority"
+    WORK_REQUESTED_AUTONOMY = "work.requested_autonomy"
+    OPERATING_MODEL_ASSURANCE = "operating_model.assurance"
+    OPERATING_MODEL_ROLE_MINIMUM_ACTORS = (
+        "operating_model.role_separation.minimum_distinct_actors"
+    )
+    OPERATING_MODEL_REQUIRED_ROLES = "operating_model.role_separation.required_roles"
+    OPERATING_MODEL_ESCALATION_CONDITIONS = "operating_model.escalation_conditions"
+    ASSURANCE_INDEPENDENT_REVIEW = "assurance.independent_review"
+    ASSURANCE_REQUIRED_MODES = "assurance.required_modes"
+    ASSURANCE_REQUIRED_EVIDENCE = "assurance.required_evidence"
+    DECISION_RIGHTS_SCHEMA_VERSION = "decision_rights.schema_version"
+    DECISION_RIGHTS_AUTHORITY_CEILINGS = "decision_rights.authority_ceilings"
+    AUTHORITY_CEILING = "authority_ceiling"
+    AUTHORITY_CEILING_APPROVAL_CLASS = "authority_ceiling.approval_class"
+    AUTHORITY_CEILING_MAX_EFFECT = "authority_ceiling.max_external_effect"
+    AUTHORITY_CEILING_MAX_AUTONOMY = "authority_ceiling.max_autonomy"
+    TOPOLOGY_SELECTED_ROLES = "topology.selected_roles"
+
+
+class CompilationPredicateOperator(StrEnum):
+    """Closed vocabulary for predicates in a compilation cause."""
+
+    EQUALS = "equals"
+    DOES_NOT_EQUAL = "does-not-equal"
+    CONTAINS = "contains"
+    DOES_NOT_CONTAIN = "does-not-contain"
+    IS = "is"
+    IS_NOT = "is-not"
+    IN = "in"
+    NOT_IN = "not-in"
+    INCLUDES = "includes"
+    EXCEEDS = "exceeds"
+    WITHIN = "within"
+    NON_EMPTY = "non-empty"
+    EMPTY = "empty"
+    REQUIRES = "requires"
+    DOES_NOT_REQUIRE = "does-not-require"
+    ALLOWS = "allows"
+
+
+class CompilationInputLocator(FoundryModel):
+    """Typed locator for one closed compiler input path and optional item."""
+
+    path: CompilationInputPath
+    item: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_item_shape(self) -> "CompilationInputLocator":
+        item_paths = {
+            CompilationInputPath.WORK_REQUIRED_ASSURANCE_MODES,
+            CompilationInputPath.WORK_REQUIRED_EVIDENCE,
+            CompilationInputPath.OPERATING_MODEL_REQUIRED_ROLES,
+            CompilationInputPath.OPERATING_MODEL_ESCALATION_CONDITIONS,
+            CompilationInputPath.TOPOLOGY_SELECTED_ROLES,
+        }
+        if self.path in item_paths and not self.item:
+            raise ValueError(f"{self.path.value} requires an item locator")
+        if self.item is not None and not self.item.strip():
+            raise ValueError("CompilationInputLocator.item must not be blank")
+        return self
+
+    def render(self) -> str:
+        return f"{self.path.value}[{self.item}]" if self.item is not None else self.path.value
+
+
+CompilationPredicateValue = str | bool | int | float | tuple[str, ...]
+
+
+class CompilationPredicate(FoundryModel):
+    """Structured operator/value predicate evaluated against a typed input."""
+
+    operator: CompilationPredicateOperator
+    value: CompilationPredicateValue | None = None
+
+    @model_validator(mode="after")
+    def _validate_value_shape(self) -> "CompilationPredicate":
+        if self.operator in {
+            CompilationPredicateOperator.EMPTY,
+            CompilationPredicateOperator.NON_EMPTY,
+        }:
+            if self.value is not None:
+                raise ValueError(f"{self.operator.value} predicates do not take a value")
+            return self
+        if self.value is None:
+            raise ValueError(f"{self.operator.value} predicates require a value")
+        if isinstance(self.value, str) and not self.value.strip():
+            raise ValueError("CompilationPredicate.value must not be blank")
+        if self.operator in {
+            CompilationPredicateOperator.IN,
+            CompilationPredicateOperator.NOT_IN,
+        } and not isinstance(self.value, tuple):
+            raise ValueError(f"{self.operator.value} predicates require a tuple value")
+        return self
+
+    def render(self) -> str:
+        if self.value is None:
+            return self.operator.value
+        return f"{self.operator.value} {self.value!r}"
+
+
 class CompilationCause(FoundryModel):
     """One independently inspectable compiler input/policy evaluation."""
 
-    locator: str = Field(min_length=1)
-    predicate: str = Field(min_length=1)
+    locator: CompilationInputLocator
+    predicate: CompilationPredicate
     evaluated: bool
 
 
@@ -265,9 +378,38 @@ def validate_compilation_explainability(
         for requirement in compilation.capability_requirements
     )
 
-    generic_predicates = {
-        "not required by workflow, assurance, authority, or role floor",
-        "not required by supplied work/policy",
+    allowed_paths = {
+        "role": {
+            CompilationInputPath.WORK_EXTERNAL_EFFECT,
+            CompilationInputPath.WORK_REQUIRES_SIT,
+            CompilationInputPath.WORK_REQUIRES_RUNTIME_READBACK,
+            CompilationInputPath.WORK_RESERVED_AUTHORITY,
+            CompilationInputPath.OPERATING_MODEL_ROLE_MINIMUM_ACTORS,
+            CompilationInputPath.OPERATING_MODEL_REQUIRED_ROLES,
+            CompilationInputPath.ASSURANCE_INDEPENDENT_REVIEW,
+            CompilationInputPath.ASSURANCE_REQUIRED_MODES,
+        },
+        "assurance-mode": {
+            CompilationInputPath.OPERATING_MODEL_ASSURANCE,
+            CompilationInputPath.WORK_REQUIRED_ASSURANCE_MODES,
+            CompilationInputPath.WORK_CONSEQUENCE,
+            CompilationInputPath.WORK_REQUIRES_SIT,
+            CompilationInputPath.WORK_REQUIRES_RUNTIME_READBACK,
+            CompilationInputPath.ASSURANCE_REQUIRED_MODES,
+        },
+        "assurance-evidence": {
+            CompilationInputPath.OPERATING_MODEL_ASSURANCE,
+            CompilationInputPath.WORK_REQUIRED_EVIDENCE,
+            CompilationInputPath.WORK_CONSEQUENCE,
+            CompilationInputPath.WORK_REQUIRES_SIT,
+            CompilationInputPath.WORK_REQUIRES_RUNTIME_READBACK,
+            CompilationInputPath.ASSURANCE_REQUIRED_EVIDENCE,
+        },
+        "capability": {
+            CompilationInputPath.TOPOLOGY_SELECTED_ROLES,
+            CompilationInputPath.WORK_REQUIRED_CAPABILITIES,
+            CompilationInputPath.AUTHORITY_CEILING,
+        },
     }
     for component, component_id in sorted(expected):
         entry = material.get((component, component_id))
@@ -275,9 +417,64 @@ def validate_compilation_explainability(
             findings.append(f"{component} {component_id!r} has no structured cause trace")
             continue
         for cause in entry.causes:
-            if not cause.locator or not cause.predicate or cause.predicate in generic_predicates:
+            if not isinstance(cause.locator, CompilationInputLocator):
                 findings.append(
-                    f"{component} {component_id!r} has an unstructured cause trace"
+                    f"{component} {component_id!r} has an untyped cause locator"
+                )
+                continue
+            if not isinstance(cause.locator.path, CompilationInputPath):
+                findings.append(
+                    f"{component} {component_id!r} has an unknown cause input path"
+                )
+                continue
+            if not isinstance(cause.predicate, CompilationPredicate):
+                findings.append(
+                    f"{component} {component_id!r} has an unstructured cause predicate"
+                )
+                continue
+            if not isinstance(cause.predicate.operator, CompilationPredicateOperator):
+                findings.append(
+                    f"{component} {component_id!r} has an unknown cause predicate operator"
+                )
+                continue
+            if cause.locator.path not in allowed_paths[component]:
+                findings.append(
+                    f"{component} {component_id!r} has a cause from unrelated input "
+                    f"{cause.locator.path.value!r}"
+                )
+                continue
+            if (
+                cause.locator.path is CompilationInputPath.TOPOLOGY_SELECTED_ROLES
+                and cause.locator.item not in compilation.topology.selected_roles
+            ):
+                findings.append(
+                    f"{component} {component_id!r} names a role outside the compiled topology"
+                )
+                continue
+            if (
+                component == "assurance-mode"
+                and cause.locator.path
+                in {
+                    CompilationInputPath.WORK_REQUIRED_ASSURANCE_MODES,
+                    CompilationInputPath.ASSURANCE_REQUIRED_MODES,
+                }
+                and cause.locator.item != component_id
+            ):
+                findings.append(
+                    f"assurance-mode {component_id!r} has a cause for a different mode"
+                )
+                continue
+            if (
+                component == "assurance-evidence"
+                and cause.locator.path
+                in {
+                    CompilationInputPath.WORK_REQUIRED_EVIDENCE,
+                    CompilationInputPath.ASSURANCE_REQUIRED_EVIDENCE,
+                }
+                and cause.locator.item != component_id
+            ):
+                findings.append(
+                    f"assurance-evidence {component_id!r} has a cause for different evidence"
                 )
     return CompilationExplanationReport(valid=not findings, findings=tuple(findings))
 
@@ -287,6 +484,10 @@ __all__ = [
     "CapabilityDeclaration",
     "CompilationCause",
     "CompilationExplanationReport",
+    "CompilationInputLocator",
+    "CompilationInputPath",
+    "CompilationPredicate",
+    "CompilationPredicateOperator",
     "CompilationTraceEntry",
     "CompiledCapabilityRequirement",
     "EscalationRequirement",
