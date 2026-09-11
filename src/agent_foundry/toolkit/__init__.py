@@ -3,6 +3,7 @@
 from agent_foundry.toolkit.api import (
     check_integrations,
     default_registry,
+    resolve_task_toolkit_for_compilation,
     resolve_task_toolkit_for_work_item,
     resolve_toolkit,
 )
@@ -10,6 +11,7 @@ from agent_foundry.toolkit.api import (
 __all__ = [
     "check_integrations",
     "default_registry",
+    "resolve_task_toolkit_for_compilation",
     "resolve_task_toolkit_for_work_item",
     "resolve_toolkit",
 ]

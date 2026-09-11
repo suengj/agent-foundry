@@ -7,6 +7,7 @@ from typing import Callable
 from agent_foundry.models.base import FOUNDRY_SCHEMA_VERSION, SchemaCompatibilityError
 from agent_foundry.models.common import (
     AssuranceMode,
+    ApprovalClass,
     AuthorityRequirement,
     ConsequenceClass,
     ExternalEffectClass,
@@ -15,7 +16,7 @@ from agent_foundry.models.common import (
     WorkClass,
 )
 from agent_foundry.models.integrations import IntegrationHealth, IntegrationSpec
-from agent_foundry.models.policy import BudgetProfile, PermissionProfile, PolicyRule
+from agent_foundry.models.policy import AuthorityCeiling, BudgetProfile, PermissionProfile, PolicyRule
 from agent_foundry.models.project import ProjectManifest
 from agent_foundry.models.registry import CapabilityRegistry
 from agent_foundry.models.toolkit import (
@@ -1579,6 +1580,7 @@ def resolve_task_toolkit(
     budget_profiles: list[BudgetProfile] = [],
     integrations: list[IntegrationSpec] = [],
     integration_health: list[IntegrationHealth] = [],
+    compiled_ceiling: AuthorityCeiling | None = None,
 ) -> TaskToolkit:
     """Resolve minimum Task Toolkit — strict subset of project lock, may only tighten controls."""
     index = _index_registry(registry)
@@ -1810,9 +1812,19 @@ def resolve_task_toolkit(
     project_profile = _lookup_permission_profile(project_profile_id, permission_profiles)
     project_ceiling = project_profile.external_effect
 
+    if compiled_ceiling is not None and compiled_ceiling.approval_class is ApprovalClass.REFUSED:
+        raise PolicyViolationError(
+            "compiled authority ceiling refuses this task; toolkit cannot be selected"
+        )
+    compiled_effect = (
+        compiled_ceiling.max_external_effect
+        if compiled_ceiling is not None
+        else ExternalEffectClass.PUBLICATION
+    )
     ceiling_rank = min(
         EFFECT_RANK[work_item.authority_class],
         EFFECT_RANK[project_ceiling],
+        EFFECT_RANK[compiled_effect],
     )
     candidates = [
         profile
@@ -1857,7 +1869,10 @@ def resolve_task_toolkit(
         project_lock,
         integrations,
         integration_health,
-        tighten_ceiling(work_item.authority_class, project_ceiling),
+        tighten_ceiling(
+            tighten_ceiling(work_item.authority_class, project_ceiling),
+            compiled_effect,
+        ),
         capabilities_by_id,
         decisions,
     )
@@ -1895,6 +1910,7 @@ def resolve_task_toolkit(
         work_item,
         permission_profiles,
         integrations=integrations,
+        compiled_ceiling=compiled_ceiling,
     )
     return task_toolkit
 

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from agent_foundry.models.common import ExternalEffectClass
+import posixpath
+
+from agent_foundry.models.common import ApprovalClass, ExternalEffectClass
 from agent_foundry.models.integrations import IntegrationSpec
-from agent_foundry.models.policy import PermissionProfile
+from agent_foundry.models.policy import AuthorityCeiling, PermissionProfile
 from agent_foundry.models.project import ProjectManifest
 from agent_foundry.models.registry import (
     CapabilityRegistry,
@@ -65,6 +67,35 @@ def tighten_ceiling(
     if EFFECT_RANK[bound] < EFFECT_RANK[ceiling]:
         return bound
     return ceiling
+
+
+def _normalize_role_scope(scope: str) -> str | None:
+    """Normalize a role write bound without allowing repository escape."""
+
+    value = scope.strip().replace("\\", "/")
+    if not value or value.startswith("/") or ":" in value.split("/", 1)[0]:
+        return None
+    normalized = posixpath.normpath(value)
+    if normalized in {"", "."} or normalized == ".." or normalized.startswith("../"):
+        return None
+    return normalized
+
+
+def _role_scope_overlaps_work_item(role_scope: str, work_scopes: list[str]) -> bool:
+    normalized_role = _normalize_role_scope(role_scope)
+    if normalized_role is None:
+        return False
+    for work_scope in work_scopes:
+        normalized_work = _normalize_role_scope(work_scope)
+        if normalized_work is None:
+            continue
+        if (
+            normalized_role == normalized_work
+            or normalized_role.startswith(f"{normalized_work}/")
+            or normalized_work.startswith(f"{normalized_role}/")
+        ):
+            return True
+    return False
 
 
 def _index_registry(registry: CapabilityRegistry) -> dict[str, dict[str, object]]:
@@ -190,6 +221,7 @@ def validate_task_toolkit_against_ceiling(
     permission_profiles: list[PermissionProfile],
     *,
     integrations: list[IntegrationSpec] = [],
+    compiled_ceiling: AuthorityCeiling | None = None,
 ) -> None:
     """Validate a finished task toolkit against pinned profile and work-item authority."""
     profile_by_id = {profile.id: profile for profile in permission_profiles}
@@ -211,9 +243,22 @@ def validate_task_toolkit_against_ceiling(
         )
 
     ceiling = tighten_ceiling(work_item.authority_class, pinned_profile.external_effect)
+    if compiled_ceiling is not None:
+        if compiled_ceiling.approval_class is ApprovalClass.REFUSED:
+            raise ToolkitResolutionError(
+                "compiled authority ceiling refuses this task; toolkit cannot be selected"
+            )
+        ceiling = tighten_ceiling(ceiling, compiled_ceiling.max_external_effect)
+    if exceeds_permission_ceiling(task_profile.external_effect, ceiling):
+        raise ToolkitResolutionError(
+            f"task permission profile {task_profile_id!r} effect "
+            f"{task_profile.external_effect.value} exceeds effective task ceiling "
+            f"{ceiling.value}"
+        )
     index = _index_registry(registry)
     capabilities_by_id = index["capabilities"]
     skills_by_id = index["skills"]
+    roles_by_id = index["roles"]
 
     for capability_id in task.capability_ids:
         if capability_id not in project_lock.capability_ids:
@@ -235,6 +280,45 @@ def validate_task_toolkit_against_ceiling(
             if exceeds_permission_ceiling(ExternalEffectClass.REPOSITORY_WRITE, ceiling):
                 raise ToolkitResolutionError(
                     f"task skill {skill_id!r} external_write exceeds task ceiling {ceiling.value}"
+                )
+
+    for role_id in task.role_ids:
+        if role_id not in project_lock.role_ids:
+            raise ToolkitResolutionError(
+                f"task role {role_id!r} not in project lock"
+            )
+        role = roles_by_id.get(role_id)
+        if not isinstance(role, RoleContract):
+            raise ToolkitResolutionError(f"task role {role_id!r} missing from registry")
+        missing_role_capabilities = sorted(
+            set(role.allowed_capabilities) - set(project_lock.capability_ids)
+        )
+        if missing_role_capabilities:
+            raise ToolkitResolutionError(
+                f"task role {role_id!r} allows capabilities outside project lock: "
+                + ", ".join(missing_role_capabilities)
+            )
+        for capability_id in role.allowed_capabilities:
+            min_effect = capability_min_external_effect(capability_id, capabilities_by_id)
+            if exceeds_permission_ceiling(min_effect, ceiling):
+                raise ToolkitResolutionError(
+                    f"task role {role_id!r} allows capability {capability_id!r} "
+                    f"with min_external_effect {min_effect.value} above task ceiling "
+                    f"{ceiling.value}"
+                )
+        for role_scope in role.write_scope:
+            if _normalize_role_scope(role_scope) is None:
+                raise ToolkitResolutionError(
+                    f"task role {role_id!r} has unusable write scope {role_scope!r}"
+                )
+            if ceiling is ExternalEffectClass.READ_ONLY:
+                raise ToolkitResolutionError(
+                    f"task role {role_id!r} write scope exceeds read-only task ceiling"
+                )
+            if not _role_scope_overlaps_work_item(role_scope, list(work_item.scope)):
+                raise ToolkitResolutionError(
+                    f"task role {role_id!r} write scope {role_scope!r} "
+                    "does not intersect the Work Item scope"
                 )
 
     integration_specs = {spec.id: spec for spec in integrations}
