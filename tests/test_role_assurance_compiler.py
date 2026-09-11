@@ -775,6 +775,28 @@ def test_missing_decision_rights_ceiling_returns_typed_refusal_and_escalation(
     assert validate_compilation_explainability(result).accepted()
 
 
+def _assert_duplicate_canonical_field_rejected(field_name: str) -> None:
+    result = _compile(_work(workflow_kind="plain-name"))
+    payload = result.model_dump(mode="json")
+    seed = payload[field_name][0] if payload[field_name] else "synthetic-duplicate"
+    payload[field_name] = [*payload[field_name], seed, seed]
+
+    with pytest.raises(Exception, match=field_name):
+        RoleAssuranceCompilation.model_validate(payload)
+
+
+def test_role_assurance_compilation_rejects_duplicate_canonical_role_ids():
+    _assert_duplicate_canonical_field_rejected("canonical_role_ids")
+
+
+def test_role_assurance_compilation_rejects_duplicate_canonical_required_roles():
+    _assert_duplicate_canonical_field_rejected("canonical_required_roles")
+
+
+def test_role_assurance_compilation_rejects_duplicate_canonical_capability_ids():
+    _assert_duplicate_canonical_field_rejected("canonical_capability_ids")
+
+
 def test_explainability_rejects_persisted_role_identity_outside_canonical_input():
     result = _compile(_work(workflow_kind="plain-name"))
     shadow_role = "review6-shadow-role"

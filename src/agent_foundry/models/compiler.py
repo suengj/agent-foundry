@@ -324,7 +324,19 @@ class CompilationExplanationReport(FoundryModel):
 
 
 class RoleAssuranceCompilation(VersionedContract):
-    """Complete deterministic output of SUE-583 compilation."""
+    """Complete deterministic output of SUE-583 compilation.
+
+    SUE-583 guarantees deterministic compilation and structural/internal
+    consistency of the emitted role, assurance, and authority trace: material
+    components are covered, causes resolve to typed inputs and are recomputed
+    against retained compilation state, the authority consequence is checked
+    against retained canonical work consequence, and a missing applicable
+    DecisionRights ceiling remains a typed refusal with ``authority-refused``.
+    The retained ``canonical_*`` fields are trusted internal-consistency
+    anchors, not authenticity evidence for an externally persisted artifact;
+    canonical-origin binding belongs to SUE-596 provenance / ExecutionBundle
+    lineage.
+    """
 
     __requires_current_schema__ = True
 
@@ -332,10 +344,15 @@ class RoleAssuranceCompilation(VersionedContract):
     project_profile_ref: str | None = None
     work: WorkCharacteristics
     decision_rights: DecisionRights
-    # These are the compiler-input identities retained so persisted output cannot
-    # enlarge the material trace universe by editing another compiled component.
+    # Internal-consistency anchor for the emitted role trace. This retained field
+    # is trusted artifact state, not authenticity evidence for canonical origin;
+    # SUE-596 owns provenance / ExecutionBundle lineage.
     canonical_role_ids: tuple[str, ...]
+    # Internal-consistency anchor for the retained required-role input. This
+    # field is not proof of canonical OperatingModel origin for persistence.
     canonical_required_roles: tuple[str, ...]
+    # Internal-consistency anchor for the emitted capability trace. This field
+    # is not proof of canonical capability-registry origin for persistence.
     canonical_capability_ids: tuple[str, ...]
     topology: LogicalRoleTopology
     assurance_requirement: AssuranceRequirement
@@ -374,6 +391,30 @@ class RoleAssuranceCompilation(VersionedContract):
                 f"{self.schema_version!r} is not supported; this contract was "
                 f"introduced in schema_version {FOUNDRY_SCHEMA_VERSION} and has no "
                 "legacy migration"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_canonical_role_ids_are_unique(self) -> "RoleAssuranceCompilation":
+        if len(self.canonical_role_ids) != len(set(self.canonical_role_ids)):
+            raise ValueError(
+                "RoleAssuranceCompilation: canonical_role_ids must not contain duplicates"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_canonical_required_roles_are_unique(self) -> "RoleAssuranceCompilation":
+        if len(self.canonical_required_roles) != len(set(self.canonical_required_roles)):
+            raise ValueError(
+                "RoleAssuranceCompilation: canonical_required_roles must not contain duplicates"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_canonical_capability_ids_are_unique(self) -> "RoleAssuranceCompilation":
+        if len(self.canonical_capability_ids) != len(set(self.canonical_capability_ids)):
+            raise ValueError(
+                "RoleAssuranceCompilation: canonical_capability_ids must not contain duplicates"
             )
         return self
 
@@ -757,7 +798,18 @@ def _canonical_material_selections(
 def validate_compilation_explainability(
     compilation: RoleAssuranceCompilation,
 ) -> CompilationExplanationReport:
-    """Validate complete, semantic cause coverage for material decisions."""
+    """Validate SUE-583's structural/internal explainability guarantee.
+
+    The compiler/validator contract covers deterministic compilation, every
+    material trace component, typed and recomputed causes against retained
+    compilation state, the authority-ceiling consequence against retained
+    canonical work consequence, and typed ``REFUSED`` plus ``authority-refused``
+    when an applicable DecisionRights ceiling is missing. The retained
+    ``canonical_*`` fields are internal-consistency anchors trusted as part of
+    the artifact, not authenticity evidence that an externally persisted,
+    hand-edited artifact has canonical origin. That binding belongs to SUE-596
+    provenance / ExecutionBundle lineage.
+    """
 
     findings: list[str] = []
     trace = compilation.explanation_trace
