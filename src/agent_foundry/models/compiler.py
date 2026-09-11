@@ -337,15 +337,15 @@ class RoleAssuranceCompilation(VersionedContract):
     """Complete deterministic output of SUE-583 compilation.
 
     SUE-583 guarantees deterministic compilation and structural/internal
-    consistency of the emitted role, assurance, authority, capability,
-    prerequisite, escalation, and gate state: material components are covered,
-    assurance floors, role topology, and required gates are recomputed from
-    retained policy/work inputs, causes resolve to typed inputs and are
-    recomputed against retained compilation state, authority dimensions and
-    refusal/approval closure are checked against retained policy/work inputs,
-    and capability authorization plus prerequisite/escalation closure are
-    checked against the effective ceiling. A missing applicable DecisionRights
-    ceiling remains a typed refusal with ``authority-refused``.
+    consistency for the emitted assurance floors, required gates, selected and
+    excluded role topology (including its deterministic edges), role and
+    assurance selection flags, capability declaration statuses, authority
+    dimensions and ``policy_evidence_refs``, and prerequisite/escalation
+    identities, triggers, causes, reasons, and actions. Cause records resolve to
+    typed retained inputs and are recomputed; each component-local role,
+    assurance, and capability cause tuple must equal its corresponding trace
+    tuple. A missing applicable DecisionRights ceiling remains a typed refusal
+    with ``authority-refused``.
     The retained ``canonical_*`` fields are trusted internal-consistency
     anchors, not authenticity evidence for an externally persisted artifact;
     canonical-origin binding belongs to SUE-596 provenance / ExecutionBundle
@@ -446,6 +446,15 @@ _MISSING_COMPILATION_INPUT = object()
 
 _EFFECT_RANK = {item: index for index, item in enumerate(ExternalEffectClass)}
 _AUTONOMY_RANK = {item: index for index, item in enumerate(Autonomy)}
+_ROLE_ORDER = (
+    "manager",
+    "explorer",
+    "builder",
+    "validator",
+    "reviewer",
+    "integrator",
+    "runtime-verifier",
+)
 
 
 def _work_blast_radius(compilation: RoleAssuranceCompilation) -> BlastRadius:
@@ -601,6 +610,191 @@ def _expected_authority_dimensions(
     return work.consequence, effect, autonomy, approval
 
 
+def _expected_authority_causes(
+    compilation: RoleAssuranceCompilation,
+) -> tuple[CompilationCause, ...]:
+    """Recompute the causes used to derive the retained authority ceiling."""
+
+    work = compilation.work
+    decision_rights = compilation.decision_rights
+    causes = [
+        CompilationCause(
+            locator=CompilationInputLocator(path=CompilationInputPath.WORK_CONSEQUENCE),
+            predicate=CompilationPredicate(
+                operator=CompilationPredicateOperator.EQUALS,
+                value=work.consequence.value,
+            ),
+            evaluated=True,
+            consequence=CompilationCauseConsequence.SELECTED,
+        ),
+        CompilationCause(
+            locator=CompilationInputLocator(path=CompilationInputPath.WORK_EXTERNAL_EFFECT),
+            predicate=CompilationPredicate(
+                operator=CompilationPredicateOperator.EQUALS,
+                value=work.external_effect.value,
+            ),
+            evaluated=True,
+            consequence=CompilationCauseConsequence.SELECTED,
+        ),
+        CompilationCause(
+            locator=CompilationInputLocator(
+                path=CompilationInputPath.DECISION_RIGHTS_SCHEMA_VERSION
+            ),
+            predicate=CompilationPredicate(
+                operator=CompilationPredicateOperator.EQUALS,
+                value=decision_rights.schema_version,
+            ),
+            evaluated=True,
+            consequence=CompilationCauseConsequence.SELECTED,
+        ),
+    ]
+    declared = decision_rights.ceiling_for(work.consequence)
+    if declared is None:
+        causes.append(
+            CompilationCause(
+                locator=CompilationInputLocator(
+                    path=CompilationInputPath.DECISION_RIGHTS_AUTHORITY_CEILINGS
+                ),
+                predicate=CompilationPredicate(
+                    operator=CompilationPredicateOperator.CONTAINS,
+                    value=work.consequence.value,
+                ),
+                evaluated=False,
+                consequence=CompilationCauseConsequence.SELECTED,
+            )
+        )
+        return tuple(causes)
+
+    effect = min(
+        declared.max_external_effect,
+        compilation.operating_constraints.max_external_effect,
+        key=_EFFECT_RANK.__getitem__,
+    )
+    autonomy = min(
+        declared.max_autonomy,
+        compilation.operating_constraints.max_autonomy,
+        key=_AUTONOMY_RANK.__getitem__,
+    )
+    if work.reserved_authority and declared.approval_class is ApprovalClass.AUTOMATIC:
+        causes.append(
+            CompilationCause(
+                locator=CompilationInputLocator(path=CompilationInputPath.WORK_RESERVED_AUTHORITY),
+                predicate=CompilationPredicate(
+                    operator=CompilationPredicateOperator.IS,
+                    value=True,
+                ),
+                evaluated=True,
+                consequence=CompilationCauseConsequence.SELECTED,
+            )
+        )
+    if _EFFECT_RANK[work.external_effect] > _EFFECT_RANK[effect]:
+        causes.append(
+            CompilationCause(
+                locator=CompilationInputLocator(
+                    path=CompilationInputPath.AUTHORITY_CEILING_MAX_EFFECT
+                ),
+                predicate=CompilationPredicate(
+                    operator=CompilationPredicateOperator.WITHIN,
+                    value=effect.value,
+                ),
+                evaluated=True,
+                consequence=CompilationCauseConsequence.SELECTED,
+            )
+        )
+    if (
+        work.requested_autonomy is not None
+        and _AUTONOMY_RANK[work.requested_autonomy] > _AUTONOMY_RANK[autonomy]
+    ):
+        causes.append(
+            CompilationCause(
+                locator=CompilationInputLocator(
+                    path=CompilationInputPath.AUTHORITY_CEILING_MAX_AUTONOMY
+                ),
+                predicate=CompilationPredicate(
+                    operator=CompilationPredicateOperator.WITHIN,
+                    value=autonomy.value,
+                ),
+                evaluated=True,
+                consequence=CompilationCauseConsequence.SELECTED,
+            )
+        )
+    return tuple(causes)
+
+
+def _expected_authority_policy_evidence_refs(
+    compilation: RoleAssuranceCompilation,
+) -> tuple[str, ...]:
+    """Recompute the authority evidence references from retained inputs."""
+
+    causes = _expected_authority_causes(compilation)
+    declared = compilation.decision_rights.ceiling_for(compilation.work.consequence)
+    cause_refs = tuple(
+        f"{cause.locator.render()}:{cause.predicate.render()}" for cause in causes
+    )
+    if declared is None:
+        # The compiler records the missing-ceiling evidence from only the base
+        # inputs; the false membership cause is an explanation, not evidence.
+        cause_refs = cause_refs[:3]
+        return cause_refs
+    return tuple(sorted({*declared.policy_evidence_refs, *cause_refs}))
+
+
+def _ordered_role_ids(role_ids: set[str]) -> tuple[str, ...]:
+    """Return the compiler's deterministic role ordering for a selected set."""
+
+    return tuple(
+        [role_id for role_id in _ROLE_ORDER if role_id in role_ids]
+        + sorted(role_ids - set(_ROLE_ORDER))
+    )
+
+
+def _expected_topology_edges(compilation: RoleAssuranceCompilation) -> tuple[str, ...]:
+    """Recompute the emitted edge sequence from retained selected topology."""
+
+    selected, _, _ = _expected_role_topology(compilation)
+    ordered = _ordered_role_ids(selected)
+    return tuple(f"{left}->{right}" for left, right in zip(ordered, ordered[1:]))
+
+
+def _expected_prerequisite_reason(item_id: str) -> str | None:
+    """Return the deterministic reason for a known prerequisite identity."""
+
+    if item_id.startswith("role:"):
+        return "required logical role is absent from the supplied registry"
+    prefix, separator, _ = item_id.partition(":")
+    if not separator:
+        return None
+    if prefix == "capability-availability":
+        return "required capability is not declared available; no equivalent is substituted"
+    if prefix == "capability-authority":
+        return "required capability exceeds the compiled authority ceiling"
+    return None
+
+
+_BUILTIN_ESCALATION_TEXT = {
+    "authority-refused": (
+        "requested work cannot fit the declared authority ceiling",
+        "stop and request explicit authority or a narrower work item",
+    ),
+    "authority-approval": (
+        "apply authority is reserved and approval is required",
+        "hold preview until the reserved authority decision is recorded",
+    ),
+    "review-failure": (
+        "independent review is a compiled assurance floor",
+        "stop and escalate unresolved review findings",
+    ),
+    "required-evidence-missing": (
+        "compiled assurance requires typed evidence",
+        "do not advance until the required evidence is present",
+    ),
+    "external-state-unobservable": (
+        "the work requires system-level read-back",
+        "hold and escalate when the declared read-back is unavailable",
+    ),
+}
+
+
 def _declared_capability(
     compilation: RoleAssuranceCompilation,
     capability_id: str,
@@ -643,7 +837,7 @@ def _validate_retained_compilation_state(
     compilation: RoleAssuranceCompilation,
     findings: list[str],
 ) -> None:
-    """Close material assurance, topology, authority, prerequisite, and escalation state."""
+    """Close the explicitly enumerated SUE-583 retained output state."""
 
     expected_assurance = _expected_assurance_requirement(compilation)
     actual_assurance = compilation.assurance_requirement
@@ -715,6 +909,12 @@ def _validate_retained_compilation_state(
         )
     if compilation.topology.single_writer != compilation.work.single_writer:
         findings.append("topology single_writer does not match retained work")
+    expected_edges = _expected_topology_edges(compilation)
+    if compilation.topology.edges != expected_edges:
+        findings.append(
+            f"topology edges {compilation.topology.edges!r} do not match retained "
+            f"selected topology {expected_edges!r}"
+        )
     if set(compilation.canonical_required_roles) != set(
         compilation.role_separation.required_roles
     ):
@@ -738,6 +938,13 @@ def _validate_retained_compilation_state(
                 f"authority ceiling {field} {actual_value!r} does not match "
                 f"retained compilation inputs {expected_value!r}"
             )
+    expected_policy_evidence_refs = _expected_authority_policy_evidence_refs(compilation)
+    if compilation.authority_ceiling.policy_evidence_refs != expected_policy_evidence_refs:
+        findings.append(
+            "authority ceiling policy_evidence_refs "
+            f"{compilation.authority_ceiling.policy_evidence_refs!r} does not match "
+            f"retained compilation inputs {expected_policy_evidence_refs!r}"
+        )
 
     requirement_by_id: dict[str, CompiledCapabilityRequirement] = {}
     for requirement in compilation.capability_requirements:
@@ -787,6 +994,12 @@ def _validate_retained_compilation_state(
     for item in compilation.unresolved_prerequisites:
         if not item.causes:
             findings.append(f"unresolved prerequisite {item.id!r} has no structured causes")
+        expected_reason = _expected_prerequisite_reason(item.id)
+        if expected_reason is not None and item.reason != expected_reason:
+            findings.append(
+                f"unresolved prerequisite {item.id!r} reason {item.reason!r} does not "
+                f"match its deterministic reason {expected_reason!r}"
+            )
 
     escalation_ids = [item.id for item in compilation.escalations]
     for item_id, count in Counter(escalation_ids).items():
@@ -824,6 +1037,53 @@ def _validate_retained_compilation_state(
     for item in compilation.escalations:
         if not item.causes:
             findings.append(f"escalation {item.id!r} has no structured causes")
+        if item.id.startswith("escalate:"):
+            prerequisite_id = item.id.removeprefix("escalate:")
+            expected_reason = _expected_prerequisite_reason(prerequisite_id)
+            if expected_reason is not None and item.reason != expected_reason:
+                findings.append(
+                    f"escalation {item.id!r} reason {item.reason!r} does not match "
+                    f"its deterministic prerequisite reason {expected_reason!r}"
+                )
+            expected_action = "stop; obtain the missing declared prerequisite"
+            if item.action != expected_action:
+                findings.append(
+                    f"escalation {item.id!r} action {item.action!r} does not match "
+                    f"its deterministic action {expected_action!r}"
+                )
+        elif item.id in _BUILTIN_ESCALATION_TEXT:
+            expected_reason, expected_action = _BUILTIN_ESCALATION_TEXT[item.id]
+            if item.reason != expected_reason:
+                findings.append(
+                    f"escalation {item.id!r} reason {item.reason!r} does not match "
+                    f"its deterministic reason {expected_reason!r}"
+                )
+            if item.action != expected_action:
+                findings.append(
+                    f"escalation {item.id!r} action {item.action!r} does not match "
+                    f"its deterministic action {expected_action!r}"
+                )
+        else:
+            condition = next(
+                (
+                    condition
+                    for condition in compilation.escalation_conditions
+                    if condition.id == item.id
+                ),
+                None,
+            )
+            if condition is not None:
+                expected_action = "follow operating-model escalation condition"
+                if item.reason != condition.reason:
+                    findings.append(
+                        f"escalation {item.id!r} reason {item.reason!r} does not match "
+                        "the retained ControlCondition reason"
+                    )
+                if item.action != expected_action:
+                    findings.append(
+                        f"escalation {item.id!r} action {item.action!r} does not match "
+                        f"its deterministic action {expected_action!r}"
+                    )
     prerequisites_by_id = {
         item.id: item for item in compilation.unresolved_prerequisites
     }
@@ -1091,6 +1351,9 @@ def _validate_referenced_causes(
     allowed_paths: set[CompilationInputPath],
     findings: list[str],
     expected_consequences: set[CompilationCauseConsequence] | None = None,
+    expected_consequences_by_path: dict[
+        CompilationInputPath, set[CompilationCauseConsequence]
+    ] | None = None,
     required_item: str | None = None,
     capability_id: str | None = None,
 ) -> None:
@@ -1182,10 +1445,10 @@ def _validate_referenced_causes(
                 f"{component} {component_id!r} records predicate result "
                 f"{cause.evaluated!r}, but recomputation produced {predicate_result!r}"
             )
-        if (
-            expected_consequences is not None
-            and cause.consequence not in expected_consequences
-        ):
+        allowed_consequences = expected_consequences
+        if expected_consequences_by_path is not None:
+            allowed_consequences = expected_consequences_by_path.get(path)
+        if allowed_consequences is not None and cause.consequence not in allowed_consequences:
             findings.append(
                 f"{component} {component_id!r} records consequence "
                 f"{cause.consequence.value!r}, which is not valid for this component"
@@ -1224,6 +1487,7 @@ def _validate_prerequisite_causes(
         CompilationInputPath.WORK_REQUIRED_CAPABILITIES,
     }
     expected_consequences = {CompilationCauseConsequence.SELECTED}
+    expected_consequences_by_path = None
     if prefix == "capability-authority":
         allowed_paths.update(
             {
@@ -1232,7 +1496,27 @@ def _validate_prerequisite_causes(
                 CompilationInputPath.CAPABILITY_MIN_EXTERNAL_EFFECT,
             }
         )
-        expected_consequences.update({CompilationCauseConsequence.EXCLUDED})
+        # Requirement causes establish why the capability is required; authority
+        # causes establish why it cannot be selected. These are different paths
+        # in one prerequisite and must not share a union of consequences.
+        expected_consequences = None
+        expected_consequences_by_path = {
+            CompilationInputPath.TOPOLOGY_SELECTED_ROLES: {
+                CompilationCauseConsequence.SELECTED
+            },
+            CompilationInputPath.WORK_REQUIRED_CAPABILITIES: {
+                CompilationCauseConsequence.SELECTED
+            },
+            CompilationInputPath.AUTHORITY_CEILING: {
+                CompilationCauseConsequence.EXCLUDED
+            },
+            CompilationInputPath.AUTHORITY_CEILING_APPROVAL_CLASS: {
+                CompilationCauseConsequence.EXCLUDED
+            },
+            CompilationInputPath.CAPABILITY_MIN_EXTERNAL_EFFECT: {
+                CompilationCauseConsequence.EXCLUDED
+            },
+        }
     _validate_referenced_causes(
         compilation,
         component="unresolved prerequisite",
@@ -1240,6 +1524,7 @@ def _validate_prerequisite_causes(
         causes=item.causes,
         allowed_paths=allowed_paths,
         expected_consequences=expected_consequences,
+        expected_consequences_by_path=expected_consequences_by_path,
         capability_id=capability_id,
         findings=findings,
     )
@@ -1509,10 +1794,13 @@ def validate_compilation_explainability(
 
     The compiler/validator contract covers deterministic compilation, every
     material trace component, retained assurance/role-separation floors and
-    required gates, typed and recomputed causes against retained compilation
-    state, all authority-ceiling dimensions and refusal/approval escalation
-    closure against retained policy/work inputs, and capability authorization
-    plus prerequisite/escalation closure against the effective ceiling. The retained
+    required gates, deterministic role topology edges, typed and recomputed
+    causes against retained compilation state, component-local cause equality
+    with the trace, all authority-ceiling dimensions and policy evidence refs,
+    deterministic prerequisite/escalation reasons and actions, retained custom
+    escalation reasons, refusal/approval closure against retained policy/work
+    inputs, and capability authorization plus prerequisite/escalation closure
+    against the effective ceiling. The retained
     ``canonical_*`` fields are internal-consistency anchors trusted as part of
     the artifact, not authenticity evidence that an externally persisted,
     hand-edited artifact has canonical origin. That binding belongs to SUE-596
@@ -1535,6 +1823,28 @@ def validate_compilation_explainability(
     }
     for key in sorted(set(material) - set(expected)):
         findings.append(f"unknown material trace entry {key!r}")
+
+    for decision in compilation.role_decisions:
+        trace_entry = material.get(("role", decision.role_id))
+        if trace_entry is not None and decision.causes != trace_entry.causes:
+            findings.append(
+                f"role decision {decision.role_id!r} causes do not match its "
+                "canonical explanation trace"
+            )
+    for decision in compilation.assurance_decisions:
+        trace_entry = material.get((decision.component, decision.component_id))
+        if trace_entry is not None and decision.causes != trace_entry.causes:
+            findings.append(
+                f"assurance decision {(decision.component, decision.component_id)!r} "
+                "causes do not match its canonical explanation trace"
+            )
+    for requirement in compilation.capability_requirements:
+        trace_entry = material.get(("capability", requirement.capability_id))
+        if trace_entry is not None and requirement.causes != trace_entry.causes:
+            findings.append(
+                f"capability requirement {requirement.capability_id!r} causes do not "
+                "match its canonical explanation trace"
+            )
 
     allowed_paths = {
         "role": {

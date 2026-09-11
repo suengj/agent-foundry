@@ -228,6 +228,40 @@ def test_golden_matrix_compiles_minimum_topology(case_id, work, selected, exclud
     assert validate_compilation_explainability(result).accepted(), case_id
 
 
+def test_no_over_refusal_across_six_work_items_and_consequence_variants():
+    work_items = (
+        _work(workflow_kind="docs-only"),
+        _work(
+            workflow_kind="read-only-exact-sha-review",
+            external_effect=ExternalEffectClass.READ_ONLY,
+            required_assurance_modes=(AssuranceMode.INDEPENDENT_REVIEW,),
+            required_evidence=(EvidenceClass.INDEPENDENT_REVIEW,),
+        ),
+        _work(workflow_kind="behaviour-preserving-refactor"),
+        _work(
+            workflow_kind="cross-component-change",
+            requires_sit=True,
+            coupling="high",
+        ),
+        _work(workflow_kind="source-change-resume"),
+        _work(
+            workflow_kind="apply-preview",
+            external_effect=ExternalEffectClass.SHARED_SERVICE_WRITE,
+            reserved_authority=True,
+        ),
+    )
+    checked = 0
+    for work in work_items:
+        for consequence in ConsequenceClass:
+            result = _compile(work.model_copy(update={"consequence": consequence}))
+            assert validate_compilation_explainability(result).accepted(), (
+                work.workflow_kind,
+                consequence,
+            )
+            checked += 1
+    assert checked == 24
+
+
 def test_compilation_is_byte_deterministic_for_identical_inputs():
     work = _work(workflow_kind="cross-component-change", requires_sit=True, coupling="high")
     assert dump_json(_compile(work)) == dump_json(_compile(work))
@@ -434,6 +468,240 @@ def test_explainability_rejects_false_unresolved_prerequisite_and_escalation_cau
     assert not report.accepted()
     assert any("unresolved prerequisite" in finding for finding in report.findings)
     assert any("unrelated input" in finding for finding in report.findings)
+
+
+def test_explainability_rejects_authority_cause_consequence_inversion_and_linked_escalation():
+    result = _compile(
+        _work(
+            external_effect=ExternalEffectClass.READ_ONLY,
+            required_capabilities=("repository.write",),
+            capability_declarations=(
+                CapabilityDeclaration(
+                    capability_id="repository.write",
+                    available=True,
+                    verified=True,
+                ),
+            ),
+        )
+    )
+    payload = result.model_dump(mode="json")
+    prerequisite = next(
+        item
+        for item in payload["unresolved_prerequisites"]
+        if item["id"] == "capability-authority:repository.write"
+    )
+    ceiling_cause = next(
+        cause
+        for cause in prerequisite["causes"]
+        if cause["locator"]["path"] == CompilationInputPath.CAPABILITY_MIN_EXTERNAL_EFFECT.value
+    )
+    assert ceiling_cause["evaluated"] is False
+    ceiling_cause["consequence"] = CompilationCauseConsequence.SELECTED.value
+    escalation = next(
+        item
+        for item in payload["escalations"]
+        if item["id"] == "escalate:capability-authority:repository.write"
+    )
+    escalation["causes"] = list(prerequisite["causes"])
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any("consequence" in finding for finding in report.findings)
+
+
+@pytest.mark.parametrize(
+    "edges",
+    [
+        ("builder->reviewer",),
+        ("validator->validator",),
+        (),
+    ],
+    ids=("excluded-role", "self-loop", "missing-edge"),
+)
+def test_explainability_rejects_forged_topology_edges(edges):
+    result = _compile(_work())
+    payload = result.model_dump(mode="json")
+    payload["topology"]["edges"] = list(edges)
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any("topology edges" in finding for finding in report.findings)
+
+
+def test_compiler_emits_natural_topology_edges_in_selected_order():
+    result = _compile(_work())
+
+    assert result.topology.edges == ("builder->validator",)
+    assert validate_compilation_explainability(result).accepted()
+
+
+def test_explainability_rejects_role_decision_cause_not_matching_trace():
+    result = _compile(_work())
+    payload = result.model_dump(mode="json")
+    false_cause = {
+        "locator": {"path": CompilationInputPath.WORK_RESERVED_AUTHORITY.value},
+        "predicate": {
+            "operator": CompilationPredicateOperator.IS.value,
+            "value": True,
+        },
+        "evaluated": True,
+        "consequence": CompilationCauseConsequence.SELECTED.value,
+    }
+    next(item for item in payload["role_decisions"] if item["role_id"] == "builder")[
+        "causes"
+    ] = [false_cause]
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any("role decision 'builder' causes" in finding for finding in report.findings)
+
+
+def test_explainability_rejects_assurance_decision_cause_not_matching_trace():
+    result = _compile(_work())
+    payload = result.model_dump(mode="json")
+    false_cause = {
+        "locator": {"path": CompilationInputPath.WORK_RESERVED_AUTHORITY.value},
+        "predicate": {
+            "operator": CompilationPredicateOperator.IS.value,
+            "value": True,
+        },
+        "evaluated": True,
+        "consequence": CompilationCauseConsequence.SELECTED.value,
+    }
+    next(
+        item
+        for item in payload["assurance_decisions"]
+        if item["component"] == "assurance-mode"
+        and item["component_id"] == AssuranceMode.DETERMINISTIC_TESTS.value
+    )["causes"] = [false_cause]
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any("assurance decision" in finding and "causes" in finding for finding in report.findings)
+
+
+def test_explainability_rejects_capability_requirement_cause_not_matching_trace():
+    result = _compile(_work())
+    payload = result.model_dump(mode="json")
+    false_cause = {
+        "locator": {"path": CompilationInputPath.WORK_RESERVED_AUTHORITY.value},
+        "predicate": {
+            "operator": CompilationPredicateOperator.IS.value,
+            "value": True,
+        },
+        "evaluated": True,
+        "consequence": CompilationCauseConsequence.SELECTED.value,
+    }
+    next(
+        item
+        for item in payload["capability_requirements"]
+        if item["capability_id"] == "repository.read"
+    )["causes"] = [false_cause]
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any("capability requirement 'repository.read' causes" in finding for finding in report.findings)
+
+
+def test_explainability_rejects_forged_authority_policy_evidence_refs():
+    result = _compile(_work())
+    payload = result.model_dump(mode="json")
+    payload["authority_ceiling"]["policy_evidence_refs"] = ["forged:authority-proof"]
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any("policy_evidence_refs" in finding for finding in report.findings)
+
+
+def test_explainability_rejects_forged_builtin_escalation_reason_and_action():
+    result = _compile(_work())
+    payload = result.model_dump(mode="json")
+    escalation = next(
+        item
+        for item in payload["escalations"]
+        if item["id"] == "required-evidence-missing"
+    )
+    escalation["reason"] = "there is no required evidence"
+    escalation["action"] = "continue without evidence"
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert sum("deterministic" in finding for finding in report.findings) >= 2
+
+
+def test_explainability_rejects_forged_prerequisite_and_linked_escalation_reasons():
+    result = _compile(
+        _work(
+            external_effect=ExternalEffectClass.READ_ONLY,
+            required_capabilities=("repository.write",),
+            capability_declarations=(
+                CapabilityDeclaration(
+                    capability_id="repository.write",
+                    available=True,
+                    verified=True,
+                ),
+            ),
+        )
+    )
+    payload = result.model_dump(mode="json")
+    prerequisite = next(
+        item
+        for item in payload["unresolved_prerequisites"]
+        if item["id"] == "capability-authority:repository.write"
+    )
+    prerequisite["reason"] = "capability is within the ceiling"
+    escalation = next(
+        item
+        for item in payload["escalations"]
+        if item["id"] == "escalate:capability-authority:repository.write"
+    )
+    escalation["reason"] = "capability is within the ceiling"
+    escalation["action"] = "continue"
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any("deterministic" in finding for finding in report.findings)
+    assert any("deterministic action" in finding for finding in report.findings)
+
+
+def test_explainability_rejects_forged_retained_custom_escalation_reason():
+    condition = ControlCondition(
+        id="synthetic-policy-conflict",
+        trigger=ControlTrigger.POLICY_CONFLICT,
+        reason="retained canonical reason",
+    )
+    operating_model = _operating_model().model_copy(
+        update={"escalation_conditions": (condition,)}
+    )
+    result = compile_role_assurance(_profile(), operating_model, _work())
+    payload = result.model_dump(mode="json")
+    next(
+        item
+        for item in payload["escalations"]
+        if item["id"] == condition.id
+    )["reason"] = "there is no policy conflict"
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any("retained ControlCondition reason" in finding for finding in report.findings)
 
 
 def test_explainability_accepts_retained_operating_model_escalation_condition():
