@@ -29,7 +29,7 @@ from agent_foundry.models.common import (
     ExternalEffectClass,
     Reversibility,
 )
-from agent_foundry.models.policy import AssuranceRequirement, AuthorityCeiling
+from agent_foundry.models.policy import AssuranceRequirement, AuthorityCeiling, DecisionRights
 
 
 class WorkCharacteristics(FoundryModel):
@@ -331,6 +331,7 @@ class RoleAssuranceCompilation(VersionedContract):
     work_item_id: str | None = None
     project_profile_ref: str | None = None
     work: WorkCharacteristics
+    decision_rights: DecisionRights
     topology: LogicalRoleTopology
     assurance_requirement: AssuranceRequirement
     authority_ceiling: AuthorityCeiling
@@ -383,6 +384,7 @@ def _resolve_compilation_input(
     """Resolve one cause locator to an input retained by the compilation."""
 
     work = compilation.work
+    decision_rights = compilation.decision_rights
     assurance = compilation.assurance_requirement
     authority = compilation.authority_ceiling
     values: dict[CompilationInputPath, tuple[object, type[Enum] | None]] = {
@@ -425,8 +427,12 @@ def _resolve_compilation_input(
             EvidenceClass,
         ),
         CompilationInputPath.DECISION_RIGHTS_SCHEMA_VERSION: (
-            compilation.schema_version,
+            decision_rights.schema_version,
             None,
+        ),
+        CompilationInputPath.DECISION_RIGHTS_AUTHORITY_CEILINGS: (
+            tuple(item.consequence for item in decision_rights.authority_ceilings),
+            ConsequenceClass,
         ),
         CompilationInputPath.AUTHORITY_CEILING: (
             authority.max_external_effect,
@@ -697,7 +703,13 @@ def _canonical_material_selections(
         expected[("capability", requirement.capability_id)] = (
             requirement.authorized is True and requirement.available is True
         )
-    expected[("authority-ceiling", compilation.authority_ceiling.consequence.value)] = True
+    if compilation.authority_ceiling.consequence is not compilation.work.consequence:
+        findings.append(
+            "authority ceiling consequence "
+            f"{compilation.authority_ceiling.consequence.value!r} does not match "
+            f"canonical work consequence {compilation.work.consequence.value!r}"
+        )
+    expected[("authority-ceiling", compilation.work.consequence.value)] = True
     return expected
 
 

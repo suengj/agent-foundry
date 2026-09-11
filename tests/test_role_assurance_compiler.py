@@ -748,6 +748,55 @@ def test_explainability_rejects_trace_selection_contradicting_persisted_topology
     assert any("records consequence" in finding for finding in report.findings)
 
 
+def test_missing_decision_rights_ceiling_returns_typed_refusal_and_escalation():
+    operating_model = _operating_model()
+    rights = DecisionRights(
+        schema_version=FOUNDRY_SCHEMA_VERSION,
+        authority_ceilings=tuple(
+            ceiling
+            for ceiling in operating_model.decision_rights.authority_ceilings
+            if ceiling.consequence is not ConsequenceClass.HIGH
+        ),
+    )
+    operating_model = operating_model.model_copy(update={"decision_rights": rights})
+
+    result = compile_role_assurance(
+        _profile(),
+        operating_model,
+        _work(consequence=ConsequenceClass.HIGH),
+    )
+
+    assert result.authority_ceiling.approval_class is ApprovalClass.REFUSED
+    assert any(item.id == "authority-refused" for item in result.escalations)
+    assert validate_compilation_explainability(result).accepted()
+
+
+def test_explainability_rejects_persisted_authority_consequence_relabel():
+    result = _compile(_work(workflow_kind="plain-name"))
+    payload = result.model_dump(mode="json")
+    for entry in payload["explanation_trace"]:
+        if entry["component"] == "authority-ceiling":
+            entry["component_id"] = ConsequenceClass.HIGH.value
+    payload["authority_ceiling"]["consequence"] = ConsequenceClass.HIGH.value
+
+    forged = RoleAssuranceCompilation.model_validate(payload)
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any("does not match canonical work consequence" in finding for finding in report.findings)
+
+
+def test_explainability_rejects_decision_rights_schema_provenance_from_compilation_schema():
+    result = _compile(_work(workflow_kind="plain-name"))
+    forged_rights = result.decision_rights.model_copy(update={"schema_version": "0.9"})
+    forged = result.model_copy(update={"decision_rights": forged_rights})
+
+    report = validate_compilation_explainability(forged)
+
+    assert not report.accepted()
+    assert any("records predicate result" in finding for finding in report.findings)
+
+
 def test_explainability_rejects_duplicate_and_unknown_persisted_material_entries():
     result = _compile(_work(workflow_kind="plain-name"))
     payload = result.model_dump(mode="json")

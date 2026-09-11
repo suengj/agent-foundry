@@ -929,6 +929,7 @@ def _trace(
     role_decisions: tuple[RoleDecision, ...],
     assurance_decisions: tuple[AssuranceDecision, ...],
     capability_requirements: tuple[CompiledCapabilityRequirement, ...],
+    canonical_consequence: ConsequenceClass,
     authority: AuthorityCeiling,
     authority_causes: tuple[CompilationCause, ...],
 ) -> tuple[CompilationTraceEntry, ...]:
@@ -973,7 +974,7 @@ def _trace(
     entries.append(
         CompilationTraceEntry(
             component="authority-ceiling",
-            component_id=authority.consequence.value,
+            component_id=canonical_consequence.value,
             selected=True,
             rationale="effective ceiling is the intersection of DecisionRights and OperatingConstraints",
             causes=authority_causes,
@@ -1047,12 +1048,20 @@ def compile_role_assurance(
         tuple(unresolved),
         assurance,
     )
-    trace = _trace(role_decisions, assurance_decisions, capability_requirements, authority, authority_causes)
+    trace = _trace(
+        role_decisions,
+        assurance_decisions,
+        capability_requirements,
+        characteristics.consequence,
+        authority,
+        authority_causes,
+    )
     result = RoleAssuranceCompilation(
         schema_version=FOUNDRY_SCHEMA_VERSION,
         work_item_id=work.id if isinstance(work, WorkItemContract) else None,
         project_profile_ref=profile.source_intake_ref if profile is not None else None,
         work=characteristics,
+        decision_rights=rights,
         topology=topology,
         assurance_requirement=assurance,
         authority_ceiling=authority,
